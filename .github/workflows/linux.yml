@@ -145,10 +145,10 @@ jobs:
       - name: buildcore -test
         run: go run ./scripts/buildcore -test
 
-      # coreproc на настоящем ядре: запуск, события, выход по STOP. Сервер не
-      # нужен: пир — документационный адрес, хеш выдуман.
-      - name: coreproc на ядре
-        run: CSQTT_TEST_CORE="$PWD/build/out/csqtt-core" go test -count=1 -run TestRealCore -v ./internal/coreproc
+      # coreproc и supervisor на настоящем ядре: запуск, события, выход по STOP,
+      # конец хешей. Сервер не нужен: пир — документационный адрес, хеш выдуман.
+      - name: coreproc и supervisor на ядре
+        run: CSQTT_TEST_CORE="$PWD/build/out/csqtt-core" go test -count=1 -run TestRealCore -v ./internal/coreproc ./internal/supervisor
 
       # Ни одного символа glibc новее 2.35 — иначе бинарь не запустится на
       # системах, которые мы обещаем.

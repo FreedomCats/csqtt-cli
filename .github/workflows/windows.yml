@@ -101,7 +101,7 @@ jobs:
       - name: buildcore -test
         run: go run ./scripts/buildcore -test
 
-      # coreproc на настоящем ядре: запуск, события, выход по STOP. Сервер не
-      # нужен: пир — документационный адрес, хеш выдуман.
-      - name: coreproc на ядре
-        run: CSQTT_TEST_CORE="$(pwd -W)/build/out/csqtt-core.exe" go test -count=1 -run TestRealCore -v ./internal/coreproc
+      # coreproc и supervisor на настоящем ядре: запуск, события, выход по STOP,
+      # конец хешей. Сервер не нужен: пир — документационный адрес, хеш выдуман.
+      - name: coreproc и supervisor на ядре
+        run: CSQTT_TEST_CORE="$(pwd -W)/build/out/csqtt-core.exe" go test -count=1 -run TestRealCore -v ./internal/coreproc ./internal/supervisor
