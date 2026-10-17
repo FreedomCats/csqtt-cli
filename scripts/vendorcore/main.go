@@ -1,7 +1,8 @@
 // Команда vendorcore переносит ядро CSQTT из клона апстрима в core/.
 //
+//	go run ./scripts/vendorcore
 //	go run ./scripts/vendorcore -upstream <клон amurcanov/csqtt>
-//	go run ./scripts/vendorcore -upstream <клон> -check
+//	go run ./scripts/vendorcore -check
 //
 // Единственный способ обновить ядро (решение Р2 в doc/architecture.md).
 // Наши правки живут правилами в rules.go, поэтому обновление сводится к
@@ -19,6 +20,10 @@
 //
 // Текстовые файлы пишутся в UTF-8 с LF, как они лежат в git апстрима: клон
 // на Windows может отдать их с CRLF. -check концы строк тоже не различает.
+//
+// -upstream — каталог клона апстрима; по умолчанию — csqtt, соседний с этим
+// репозиторием. Клон должен быть свежим: апстрим публикует версии снимками,
+// и старый клон перенесёт старое ядро.
 //
 // -check ничего не пишет, только сообщает, разошёлся ли core/ с апстримом и
 // правилами: лишний, недостающий или изменённый файл называется по имени,
@@ -48,10 +53,10 @@ const self = "vendorcore"
 const upstreamURL = "https://github.com/amurcanov/csqtt"
 
 func main() {
-	upstream := flag.String("upstream", "", "каталог клона "+upstreamURL+" (обязателен)")
+	upstream := flag.String("upstream", "", "каталог клона "+upstreamURL+" (по умолчанию — соседний csqtt)")
 	check := flag.Bool("check", false, "ничего не писать, только сообщить о расхождениях (код 1, если они есть)")
 	flag.Parse()
-	if flag.NArg() > 0 || *upstream == "" {
+	if flag.NArg() > 0 {
 		flag.Usage()
 		os.Exit(2)
 	}
@@ -181,6 +186,9 @@ func field(plan map[string][]byte, name string, re *regexp.Regexp) (string, erro
 
 func run(root, upstream string, check bool) (int, error) {
 	target := filepath.Join(root, "core")
+	if upstream == "" {
+		upstream = filepath.Join(filepath.Dir(root), "csqtt")
+	}
 	for _, dir := range vendoredDirs {
 		if fi, err := os.Stat(filepath.Join(upstream, dir)); err != nil || !fi.IsDir() {
 			return 0, fmt.Errorf("в %s нет каталога %s — укажите клон %s через -upstream", upstream, dir, upstreamURL)
