@@ -163,6 +163,25 @@ var rules = []rule{
 		Pattern: `(?m)^( +)let previous = client\.load\(\);\n +if previous\.as_deref\(\) != Some\(&address\) \{\n +client\.store\(Some\(Arc::new\(address\)\)\);\n +\}$`,
 		Replace: to("${1}if !gate.admit(address, &client) {\n${1}    continue;\n${1}}"),
 	},
+
+	// П5: ручное окно капчи в конце цепочки auto — 180 секунд вместо 60:
+	// человеку минуты не хватает. Тесты — files/rust-client/captcha_window_tests.rs.
+	{
+		File: "rust-client/captcha.rs", Count: 1,
+		Pattern: `(?m)^()pub struct CaptchaSolver \{$`,
+		InsertBefore: "/// Правка П5 csqtt-cli: ручное окно капчи. У апстрима — 60 секунд.\n" +
+			"const MANUAL_WEBVIEW_TIMEOUT: Duration = Duration::from_secs(180);\n",
+	},
+	{
+		File: "rust-client/captcha.rs", Count: 1,
+		Pattern: `(?m)^( +)self\.webview\(stream_id, captcha, "manual", Duration::from_secs\(60\)\)$`,
+		Replace: to(`${1}self.webview(stream_id, captcha, "manual", MANUAL_WEBVIEW_TIMEOUT)`),
+	},
+	{
+		File: "rust-client/captcha.rs", Count: 1,
+		Pattern: `(?m)^()#\[cfg\(test\)\]\nmod tests \{$`,
+		InsertBefore: "#[cfg(test)]\n#[path = \"captcha_window_tests.rs\"]\nmod window_tests;\n",
+	},
 }
 
 // ================================================================================

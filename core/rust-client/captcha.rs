@@ -157,6 +157,9 @@ impl fmt::Display for ShowTypeMismatch {
 
 impl std::error::Error for ShowTypeMismatch {}
 
+/// Правка П5 csqtt-cli: ручное окно капчи. У апстрима — 60 секунд.
+const MANUAL_WEBVIEW_TIMEOUT: Duration = Duration::from_secs(180);
+
 pub struct CaptchaSolver {
     mode: Arc<str>,
     result_tx: mpsc::Sender<String>,
@@ -289,7 +292,7 @@ impl CaptchaSolver {
         crate::log_error!(
             "[STREAM {stream_id}] [КАПЧА] AUTO: автоцепочка не прошла, открыт ручной WebView"
         );
-        self.webview(stream_id, captcha, "manual", Duration::from_secs(60))
+        self.webview(stream_id, captcha, "manual", MANUAL_WEBVIEW_TIMEOUT)
             .await
             .with_context(|| {
                 format!("automatic captcha chain failed: {last_error}; manual fallback failed")
@@ -1052,6 +1055,10 @@ pub(crate) async fn slider_check<'a>(
 pub(crate) fn slider_saved_profile<'a>(session: &CaptchaSession<'a>) -> Option<&'a SavedProfile> {
     session.saved_profile
 }
+
+#[cfg(test)]
+#[path = "captcha_window_tests.rs"]
+mod window_tests;
 
 #[cfg(test)]
 mod tests {
