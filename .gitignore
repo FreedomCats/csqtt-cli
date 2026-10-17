@@ -1,0 +1,25 @@
+# Сборка
+/build/out/
+/dist/
+*.exe
+# go build ./cmd/csqtt-cli без -o кладёт бинарь в корень.
+/csqtt-cli
+*.zip
+# Сборка ядра на Rust.
+target/
+
+# Конфигурация и секреты — никогда не в репозиторий.
+profiles.toml
+secrets.json
+
+# Локальное окружение
+.idea/
+.vscode/
+*.log
+
+# Выгрузки сессий Claude Code: рабочие записи, а не код проекта.
+/claude-sessions/
+
+# Журналы этапов, рабочие записки, скрипты и логи прогонов — локально (AGENTS.md).
+/doc/local/
+/doc/runs/
