@@ -222,9 +222,12 @@ csqtt-cli/
 │   ├── coreproc/              // НОВОЕ · запуск ядра, аргументы, секреты в stdin,
 │   │                          //   разбор событий, команды, Job Object / Pdeathsig
 │   ├── datapath/
-│   │   ├── datapath.go        // интерфейс · Requirements · Persistent · Reserver
+│   │   ├── datapath.go        // интерфейс · TunConf · Requirements · Persistent · Reserver
 │   │   ├── link.go            // НОВОЕ · канал пакетов с ядром: loopback · дескриптор TUN
-│   │   ├── socks.go           // НОВОЕ · gVisor netstack поверх сырых IP + SOCKS5
+│   │   ├── socks.go           // НОВОЕ · datapath socks: Link + netstack + SOCKS5
+│   │   ├── netstack.go        //   НОВОЕ · gVisor netstack поверх сырых IP
+│   │   ├── socks5.go          //   НОВОЕ · SOCKS5 (RFC 1928): CONNECT без пароля
+│   │   ├── resolver.go        //   НОВОЕ · имена через DNS туннеля
 │   │   ├── tun.go             // адаптер · маршруты · DNS · Suspend
 │   │   ├── tun_windows.go     //   Wintun ↔ loopback
 │   │   └── tun_linux.go       //   /dev/net/tun → дескриптор ядру
@@ -338,9 +341,17 @@ type Datapath interface {
 `external` из qwdtt-cli нет: WireGuard в протоколе не участвует.
 
 **`socks`.** В qwdtt-cli netstack стоял за wireguard-go, здесь он сам — конец туннеля:
-адрес — из `TUNCONF`, MTU — 1300, как у ядра. SOCKS5 — свой: `CONNECT` в Э1, `UDP ASSOCIATE`
-позже. Имена из запросов `CONNECT` резолвятся DNS туннеля через тот же netstack, так что
-DNS приложения не идёт мимо туннеля.
+адрес /32 — из `TUNCONF`, MTU — 1300, как у адаптера Android-клиента. SOCKS5 — свой:
+`CONNECT` в Э1, `UDP ASSOCIATE` позже. Пароля у него нет, поэтому слушает он только
+loopback: иначе туннель был бы открыт всей сети. Имена из запросов `CONNECT` резолвятся
+DNS туннеля через тот же netstack — свой резолвер, без hosts и доменов поиска системы, —
+так что DNS приложения не идёт мимо туннеля. Запрос, который туннель не выполнит (IPv6,
+`BIND`, туннель ещё не поднят), получает отказ сразу, а не по таймауту.
+
+`Socks` живёт весь сеанс и владеет `Link`. Слушатель SOCKS5 открывается до запуска ядра,
+чтобы занятый порт выяснился до входа в VK. `Start` вызывается на каждую попытку: при том
+же адресе соединения переживают перезапуск ядра, потому что TCP повторит пакеты, сброшенные
+между попытками. При другом адресе соединения рвутся: ответы на прежний не придут.
 
 **`tun`, общее.** Маршруты — как в qwdtt-cli: `0.0.0.0/1` и `128.0.0.0/1` на адаптер,
 исходный шлюз не трогается. Сервер выдаёт только IPv4, но `::/1` и `8000::/1` тоже уходят

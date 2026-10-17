@@ -22,19 +22,28 @@ go 1.26.2
 // и в бинарь не попадает.
 // godbus/dbus (BSD-2) — DNS туннеля через systemd-resolved на Linux и
 // секреты в связке ключей (Secret Service). Только из *_linux.go.
+// gvisor.dev/gvisor (Apache-2.0) — netstack datapath socks; тянет google/btree
+// (Apache-2.0) и x/time (BSD-3). Версия — та, на которой стоял netstack
+// wireguard-go в qwdtt-cli: проверена с этим Go. Модуль огромный, но в бинарь
+// попадают только пакеты pkg/tcpip и их опоры.
+// golang.org/x/net (BSD-3) — dnsmessage: резолвер имён SOCKS5 через туннель;
+// proxy — только тестам, сторонний клиент SOCKS5.
 require (
 	github.com/godbus/dbus/v5 v5.1.0
 	github.com/google/nftables v0.3.1-0.20260430172505-f9b52ed2ba65
 	github.com/tailscale/wf v0.0.0-20240214030419-6fbb0a674ee6
 	github.com/vishvananda/netlink v1.3.1
 	golang.org/x/crypto v0.54.0
+	golang.org/x/net v0.57.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
 	golang.zx2c4.com/wireguard/windows v1.1.1
+	gvisor.dev/gvisor v0.0.0-20250503011706-39ed1f5ac29c
 )
 
 require (
 	github.com/BurntSushi/toml v1.6.0 // indirect
+	github.com/google/btree v1.1.2 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/mdlayher/netlink v1.8.1-0.20251028132421-dcc6cab9a6eb // indirect
 	github.com/mdlayher/socket v0.5.1 // indirect
@@ -42,8 +51,8 @@ require (
 	go4.org/netipx v0.0.0-20220725152314-7e7bdc8411bf // indirect
 	golang.org/x/exp/typeparams v0.0.0-20231108232855-2478ac86f678 // indirect
 	golang.org/x/mod v0.37.0 // indirect
-	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/time v0.7.0 // indirect
 	golang.org/x/tools v0.47.0 // indirect
 	golang.org/x/tools/go/expect v0.1.1-deprecated // indirect
 	honnef.co/go/tools v0.5.1 // indirect
