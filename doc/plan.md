@@ -89,12 +89,20 @@ resolvconf, префикс секретов.
 | `netguard` | всё: привязка своих сокетов, выбор интерфейса, `watch.go` | — |
 | `winsys`, `linuxsys` | всё | — |
 | `sudo`, `secretservice` | всё | — |
-| `config` | `load`, `save`, `owner`, `secret*` | `profile`, `validate`, `sharelink` — пишутся заново в C7 |
-| `captcha` | окна: `webview2_windows`, `browser_linux`, `cdp`, `manual`, `open*`, `profile`, `proxy` | `token.go`, `solver.go` — из Android-клиента qWDTT, пишутся заново в C9 |
-| `cli` | `prompt`, `pause*`, `elevate*`, `elevated*` | остальное — в C10 и I1 |
-| `scripts` | `internal/script`, `internal/wintun`, `wintun`, `checktunnel`, `ctrlbreak`, `distcheck`, `sha256sums` | `release`, `notices` — в I3 |
+| `app` | имя программы — от него все имена в системе | — |
+| `config` | каталог настроек (`dir.go`), `owner`, `secret*` | `load`, `save` — в C7: завязаны на схему профиля; `profile`, `validate`, `sharelink` — пишутся заново в C7 |
+| `captcha` | `open*`, `profile`, `proxy` | окна (`webview2_windows`, `browser_linux`, `cdp`, `manual`) — в C9: стоят на `Request` и перехвате токена из `solver.go` и `token.go`, а те из Android-клиента qWDTT и пишутся заново |
+| `cli` | — | `prompt`, `pause*`, `elevate*`, `elevated*` — в C10 вместе с `root.go`: это методы его `env` |
+| `scripts` | `internal/script`, `internal/wintun`, `wintun`, `checktunnel` (без раздела `external`), `ctrlbreak`, `distcheck`, `sha256sums` | `release`, `notices` — в I3 |
 
-Форки зависимостей (`tailscale-wf`, `go-webview2`) — теми же `replace`.
+Форк `tailscale-wf` — тем же `replace`; `go-webview2` придёт с окном капчи в C9.
+
+Постоянные значения, по которым программа узнаёт свои следы в системе, — свои, не
+унаследованные: GUID адаптера (`winsys.AdapterGUID`), GUID провайдера и подслоя WFP, метка
+сокетов `SO_MARK` (`0x1075`). Обе программы могут стоять на одной машине, и одна не должна
+принимать чужие фильтры и адаптер за свои. Имена (адаптер, мьютекс и абстрактный сокет
+блокировки, таблица nftables, каталог настроек, записи resolvconf, метки секретов) идут от
+`app.Name`.
 
 **Готово, когда** `go test ./...` проходит на Windows и Linux, `-race` — тоже, а
 `git grep -i qwdtt` находит только упоминания проекта-основы в документации.
@@ -193,6 +201,9 @@ cargo напрямую; сам `buildcore` под Linux впервые запу�
 - `device_id` создаётся при первой записи профиля и потом не меняется.
 - Ссылки `csqtt://connect?v=2…` и `csqtt://<пароль>@<хост>:<порт>` — свой разбор по
   формату; тесты на `%2B`, IPv6, пустые поля, повторы, больше шести хешей.
+- `Load`, `Parse`, `Save` — из qwdtt-cli (`load.go`, `save.go`, их тесты), под новую схему.
+  Тесты `owner_test.go` в F4 переписаны на запись хранилища секретов; запись профиля
+  добавит к ним свои.
 
 **Готово, когда** тесты проходят; ссылки для тестов — выдуманные, с документационными
 адресами.
@@ -217,6 +228,9 @@ cargo напрямую; сам `buildcore` под Linux впервые запу�
 - Перехват токена — заново, по наблюдаемому поведению страницы VK: какой ответ несёт
   токен и как отличить слайдер от чекбокса. Сначала — живая запись поведения страницы
   (в журнал этапа), затем код и стенд-страница для тестов.
+- Окна из qwdtt-cli — `webview2_windows`, `browser_linux`, `cdp`, `manual` с тестами —
+  переносятся здесь, поверх нового `Request` и перехвата; с ними — форк `go-webview2`
+  тем же `replace`.
 
 **Готово, когда** тесты на стенде проходят, а живая капча решается в окне и туннель после
 неё поднимается.
@@ -226,7 +240,8 @@ cargo напрямую; сам `buildcore` под Linux впервые запу�
 - `connect` (`-datapath socks`, `-v`), строка состояния: воркеры, трафик, скорость, аптайм.
 - `profile add | set | show | rm | list` — секреты только скрытым вводом.
 - `hashes check` — через `--validate-vk-hashes`: живые, мёртвые, недоступные.
-- Перенести из qwdtt-cli `root.go` и `output.go`, сократив до этих команд.
+- Перенести из qwdtt-cli `root.go` и `output.go`, сократив до этих команд, а с ними
+  `prompt`, `pause*` (методы `env`). `elevate*` и `elevated*` — в I1.
 
 **Готово, когда** тесты CLI проходят.
 
@@ -374,8 +389,8 @@ DNS, kill-switch, переживает смену сети.
 ### I1. Меню и мастер
 
 `menu.go`, `wizard.go`, `menu_edit.go` из qwdtt-cli: вставка ссылки `csqtt://`, вопросы
-вместо ссылки, выбор `tun` или `socks`, повышение прав (UAC, `sudo`), новые ссылки на
-звонки, когда старые закрылись.
+вместо ссылки, выбор `tun` или `socks`, повышение прав (UAC, `sudo`; `elevate*`,
+`elevated*` из qwdtt-cli), новые ссылки на звонки, когда старые закрылись.
 
 **Готово, когда** тесты меню проходят, а запуск двойным щелчком на Windows доводит до
 работающего туннеля без командной строки.
@@ -395,6 +410,8 @@ README — естественным русским языком, по образ
   архивы, как в qwdtt-cli.
 - `scripts/notices`: лицензии модулей Go и crates ядра (по `cargo metadata` и файлам
   лицензий из исходников crates).
+- `distcheck` (перенесён в F4) знает только `csqtt-cli`: добавить `csqtt-core` в оба
+  списка и право на исполнение — обоим бинарям в `tar.gz`.
 - `release.yml` по лёгкому тегу `v*`.
 
 **Готово, когда** `distcheck` принимает архивы, а из архива на чистой машине Windows и
