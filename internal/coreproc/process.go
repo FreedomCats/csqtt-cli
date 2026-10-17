@@ -44,7 +44,8 @@ type Process struct {
 	err  error
 }
 
-// Start запускает ядро path с аргументами cfg.Args().
+// Start запускает ядро path с аргументами cfg.Args() и первой строкой stdin
+// пишет ему cfg.SecretsLine().
 //
 // Ядро не видит консоли оболочки, и Ctrl+C до него не доходит: остановить
 // его — дело оболочки (Stop). Если оболочка умрёт, ядро умрёт вместе с ней:
@@ -54,7 +55,19 @@ type Process struct {
 // Messages нужно читать до закрытия канала: пока его не читают, ядро стоит
 // на записи в stdout.
 func Start(path string, cfg Config) (*Process, error) {
-	return start(path, cfg.Args(), nil)
+	return startConfig(path, cfg, nil)
+}
+
+// startConfig — Start с добавочным окружением (для тестов).
+func startConfig(path string, cfg Config, env []string) (*Process, error) {
+	p, err := start(path, cfg.Args(), env)
+	if err != nil {
+		return nil, err
+	}
+	// Ошибку записи не возвращаем: она бывает, только если ядро уже вышло,
+	// и тогда причину скажут его журнал в Messages и код выхода в Wait.
+	_ = p.Send(cfg.SecretsLine())
+	return p, nil
 }
 
 // start — Start с готовыми аргументами и добавочным окружением (для тестов).

@@ -1,8 +1,12 @@
 package coreproc
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"math"
+	"reflect"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -19,9 +23,8 @@ func TestArgs(t *testing.T) {
 		Listen:        "127.0.0.1:0",
 	}
 	want := []string{
+		"--secrets-stdin",
 		"--peer=203.0.113.10:46000",
-		"--password=секрет",
-		"--vk=-Wabc,def",
 		"--workers=45",
 		"--obfs=video",
 		"--turn-transport=tcp_tls",
@@ -31,6 +34,27 @@ func TestArgs(t *testing.T) {
 	}
 	if got := cfg.Args(); !slices.Equal(got, want) {
 		t.Errorf("Args() = %q, want %q", got, want)
+	}
+}
+
+// Формат — тот, что разбирает secrets_stdin.rs ядра: ровно два поля строками.
+func TestSecretsLine(t *testing.T) {
+	cfg := Config{Password: `се"крет<`, Hashes: []string{"-Wabc", "def"}}
+	line := cfg.SecretsLine()
+	encoded, ok := strings.CutPrefix(line, "SECRETS:")
+	if !ok || strings.ContainsAny(line, "\r\n") {
+		t.Fatalf("SecretsLine() = %q", line)
+	}
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if want := map[string]any{"password": `се"крет<`, "vk": "-Wabc,def"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("json = %v, want %v", got, want)
 	}
 }
 

@@ -39,13 +39,25 @@ var sampleLog = []string{
 
 func fakeCore(mode string) int {
 	switch mode {
-	// replay печатает образцы вывода, отвечает на команды в журнал и
-	// выходит по STOP или закрытому stdin, как ядро.
+	// replay ждёт секреты первой строкой stdin, печатает образцы вывода,
+	// отвечает на команды в журнал и выходит по STOP или закрытому stdin,
+	// как ядро.
 	case "replay":
 		if os.Getenv("CSQTT_EVENTS") != "1" || !slices.ContainsFunc(os.Args, func(a string) bool {
 			return strings.HasPrefix(a, "--peer=")
 		}) {
 			fmt.Fprintln(os.Stderr, "[ФАТАЛ] нет CSQTT_EVENTS=1 или --peer")
+			return 3
+		}
+		if !slices.Contains(os.Args, "--secrets-stdin") || slices.ContainsFunc(os.Args, func(a string) bool {
+			return strings.HasPrefix(a, "--password") || strings.HasPrefix(a, "--vk=")
+		}) {
+			fmt.Fprintln(os.Stderr, "[ФАТАЛ] секреты в аргументах или нет --secrets-stdin")
+			return 3
+		}
+		in := bufio.NewScanner(os.Stdin)
+		if !in.Scan() || in.Text() != fakeConfig.SecretsLine() {
+			fmt.Fprintln(os.Stderr, "[ФАТАЛ] первая строка stdin — не секреты")
 			return 3
 		}
 		for _, s := range sampleOutput {
@@ -56,7 +68,6 @@ func fakeCore(mode string) int {
 		for _, l := range sampleLog {
 			fmt.Fprintln(os.Stderr, l)
 		}
-		in := bufio.NewScanner(os.Stdin)
 		for in.Scan() {
 			fmt.Fprintln(os.Stderr, "[STDIN] "+in.Text())
 			if in.Text() == CmdStop {
@@ -98,10 +109,13 @@ func fakeCore(mode string) int {
 	return 2
 }
 
+// fakeConfig — с чем startFake запускает поддельное ядро; replay сверяет с
+// ним строку секретов.
+var fakeConfig = Config{Peer: "203.0.113.10:46000", Password: "p", Hashes: []string{"fake-hash"}}
+
 func startFake(t *testing.T, mode string) *Process {
 	t.Helper()
-	cfg := Config{Peer: "203.0.113.10:46000", Password: "p", Hashes: []string{"fake-hash"}}
-	p, err := start(os.Args[0], cfg.Args(), []string{fakeCoreEnv + "=" + mode})
+	p, err := startConfig(os.Args[0], fakeConfig, []string{fakeCoreEnv + "=" + mode})
 	if err != nil {
 		t.Fatal(err)
 	}

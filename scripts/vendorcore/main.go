@@ -13,10 +13,12 @@
 //  1. Копирует rust-client/ и shared/ апстрима в core/ целиком, кроме файлов
 //     из excludedFiles, и лицензию ядра — в core/LICENSE.
 //  2. Применяет правила из rules.go.
-//  3. Записывает core/CORE_VERSION: коммит апстрима, версию ядра из
+//  3. Добавляет наши файлы из scripts/vendorcore/files (addedDir).
+//  4. Записывает core/CORE_VERSION: коммит апстрима, версию ядра из
 //     Cargo.toml и ревизию протокола.
-//  4. Удаляет из core/ всё, чего нет в апстриме: core/ целиком принадлежит
-//     команде, своих файлов там нет. Не трогает только выход сборки cargo.
+//  5. Удаляет из core/ всё, чего нет в апстриме и в addedDir: core/ целиком
+//     принадлежит команде, руками туда ничего не кладут. Не трогает только
+//     выход сборки cargo.
 //
 // Текстовые файлы пишутся в UTF-8 с LF, как они лежат в git апстрима: клон
 // на Windows может отдать их с CRLF. -check концы строк тоже не различает.
@@ -265,6 +267,22 @@ func run(root, upstream string, check bool) (int, error) {
 		plan[name] = []byte(text)
 	}
 
+	addedRoot := filepath.Join(root, filepath.FromSlash(addedDir))
+	added, err := listFiles(addedRoot, ".")
+	if err != nil {
+		return 0, err
+	}
+	for _, rel := range added {
+		if _, ok := plan[rel]; ok {
+			return 0, fmt.Errorf("%s есть и в апстриме, и в %s — апстрим завёл свой файл с тем же путём", rel, addedDir)
+		}
+		raw, err := os.ReadFile(filepath.Join(addedRoot, filepath.FromSlash(rel)))
+		if err != nil {
+			return 0, err
+		}
+		plan[rel] = normalize(raw)
+	}
+
 	coreVersion, err := field(plan, "rust-client/Cargo.toml", cargoVersion)
 	if err != nil {
 		return 0, err
@@ -284,6 +302,7 @@ func run(root, upstream string, check bool) (int, error) {
 		"protocol = " + protocol,
 		fmt.Sprintf("files    = %d", len(plan)),
 		fmt.Sprintf("rules    = %d", len(rules)),
+		fmt.Sprintf("added    = %d", len(added)),
 	}
 	if version.Dirty {
 		header = append(header, "dirty    = true  # в апстриме есть незакоммиченные правки")
@@ -367,8 +386,8 @@ func run(root, upstream string, check bool) (int, error) {
 		}
 	}
 
-	script.Color(script.Green, fmt.Sprintf("Ядро CSQTT %s (%s) перенесено в core/: файлов %d, правил %d.",
-		coreVersion, protocol, len(plan)-1, len(rules)))
+	script.Color(script.Green, fmt.Sprintf("Ядро CSQTT %s (%s) перенесено в core/: файлов %d, правил %d, своих файлов %d.",
+		coreVersion, protocol, len(plan)-1, len(rules), len(added)))
 	script.Sayf("Исключено: %d", len(excludedFiles))
 	script.Sayf("Апстрим: %s от %s", version.Commit, version.Date)
 	if version.Dirty {

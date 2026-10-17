@@ -7,6 +7,8 @@
 package coreproc
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"strconv"
 	"strings"
 )
@@ -17,8 +19,8 @@ type Config struct {
 	// Peer — сервер CSQTT, хост:порт.
 	Peer string
 	// Password — пароль подключения, из него ядро выводит WRAP-ключ.
-	// Hashes — хеши звонков VK. Пока ядро принимает их только аргументами;
-	// правка П1 (C2) переносит оба в stdin.
+	// Hashes — хеши звонков VK. Оба идут не аргументами, а первой строкой
+	// stdin (SecretsLine, правка П1).
 	Password string
 	Hashes   []string
 	// Workers — число воркеров; в аргумент идёт NormalizeWorkers.
@@ -43,18 +45,17 @@ type Config struct {
 	TunUDS string
 }
 
-// Args — аргументы командной строки ядра. Флаги — в виде --имя=значение:
-// хеш VK может начинаться с дефиса, и отдельным словом его прочли бы как флаг.
+// Args — аргументы командной строки ядра. Флаги — в виде --имя=значение.
+// Пароля и хешей среди них нет: командную строку процесса видит любой
+// пользователь машины. Вместо них — --secrets-stdin, и ядро ждёт SecretsLine.
 func (c Config) Args() []string {
-	var args []string
+	args := []string{"--secrets-stdin"}
 	add := func(name, value string) {
 		if value != "" {
 			args = append(args, "--"+name+"="+value)
 		}
 	}
 	add("peer", c.Peer)
-	add("password", c.Password)
-	add("vk", strings.Join(c.Hashes, ","))
 	add("workers", strconv.Itoa(NormalizeWorkers(c.Workers, len(c.Hashes))))
 	add("obfs", c.Obfs)
 	add("turn-transport", c.TurnTransport)
@@ -68,6 +69,20 @@ func (c Config) Args() []string {
 	add("listen", c.Listen)
 	add("tun-uds", c.TunUDS)
 	return args
+}
+
+// SecretsLine — первая строка stdin ядра, без перевода строки:
+// SECRETS:<base64 json> с паролем и хешами. vk — то же, что значение -vk
+// ядра: хеши через запятую.
+func (c Config) SecretsLine() string {
+	b, err := json.Marshal(struct {
+		Password string `json:"password"`
+		VK       string `json:"vk"`
+	}{c.Password, strings.Join(c.Hashes, ",")})
+	if err != nil {
+		panic(err) // две строки маршалятся всегда
+	}
+	return "SECRETS:" + base64.StdEncoding.EncodeToString(b)
 }
 
 // Постоянные распределения воркеров — из ядра (main.rs, worker.rs).

@@ -194,6 +194,40 @@ func TestRunCheckFails(t *testing.T) {
 	}
 }
 
+// Свои файлы из addedDir ложатся в core/ с LF, -check их сверяет, а файл с
+// тем же путём в апстриме — ошибка до записи.
+func TestRunAddedFiles(t *testing.T) {
+	withRules(t)
+	root, up := t.TempDir(), fakeUpstream(t)
+	core := filepath.Join(root, "core")
+	own := filepath.Join(root, filepath.FromSlash(addedDir), "rust-client", "own.rs")
+	write(t, own, "// своё\r\n")
+
+	mustRun(t, root, up, false)
+	if got := read(t, filepath.Join(core, "rust-client", "own.rs")); got != "// своё\n" {
+		t.Errorf("own.rs: %q", got)
+	}
+	if version := read(t, filepath.Join(core, "CORE_VERSION")); !strings.Contains(version, "files    = 6\n") || !strings.Contains(version, "added    = 1\n") {
+		t.Errorf("CORE_VERSION:\n%s", version)
+	}
+	if code := mustRun(t, root, up, true); code != 0 {
+		t.Errorf("-check после переноса: код %d", code)
+	}
+	write(t, filepath.Join(core, "rust-client", "own.rs"), "// изменено\n")
+	if code := mustRun(t, root, up, true); code != 1 {
+		t.Errorf("-check после правки своего файла в core/: код %d, ожидался 1", code)
+	}
+
+	root = t.TempDir()
+	write(t, filepath.Join(root, filepath.FromSlash(addedDir), "rust-client", "main.rs"), "\n")
+	if _, err := run(root, up, false); err == nil || !strings.Contains(err.Error(), "есть и в апстриме") {
+		t.Errorf("ошибка %v, ожидалась о совпадении с апстримом", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "core")); !os.IsNotExist(err) {
+		t.Errorf("core/ создан: %v", err)
+	}
+}
+
 // Лишние файлы перенос удаляет вместе с опустевшими каталогами.
 func TestRunRemovesExtra(t *testing.T) {
 	withRules(t)

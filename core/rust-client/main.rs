@@ -20,6 +20,7 @@ mod packet;
 mod profiles;
 mod protocol;
 mod repair;
+mod secrets_stdin;
 #[path = "../shared/selective_fec.rs"]
 mod selective_fec;
 mod session;
@@ -118,6 +119,8 @@ struct Arguments {
     tun_uds: String,
     #[arg(long, default_value_t = false)]
     validate_vk_hashes: bool,
+    #[arg(long, default_value_t = false)]
+    secrets_stdin: bool,
 }
 
 fn main() {
@@ -129,6 +132,7 @@ fn main() {
         }
     }));
     let arguments = Arguments::parse_from(normalized_arguments());
+    let arguments = secrets_stdin::apply_or_exit(arguments);
     let runtime = match build_runtime(runtime_worker_threads(arguments.workers)) {
         Ok(runtime) => runtime,
         Err(error) => {
@@ -478,6 +482,7 @@ fn normalize_cli_argument(argument: String) -> String {
         "tun-uds",
         "allow-hash-redistribution",
         "validate-vk-hashes",
+        "secrets-stdin",
     ];
     if let Some(value) = argument.strip_prefix('-') {
         let name = value.split('=').next().unwrap_or(value);
