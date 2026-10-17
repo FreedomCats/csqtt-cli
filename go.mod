@@ -11,8 +11,8 @@ go 1.26.2
 // в сборки под другие системы не попадает. Сам WireGuard не используется.
 // tailscale/wf (BSD-3) — фильтры WFP защиты от утечки DNS и kill-switch;
 // тянет go4.org/netipx (BSD-3). Тоже только из *_windows.go. Прочие его
-// косвенные (x/tools, honnef.co/go/tools, x/exp/typeparams, BurntSushi/toml)
-// нужны лишь его генераторам и в бинарь не попадают.
+// косвенные (x/tools, honnef.co/go/tools, x/exp/typeparams) нужны лишь его
+// генераторам и в бинарь не попадают.
 // vishvananda/netlink (Apache-2.0) — выбор интерфейса и подписка на смену
 // сети на Linux; тянет vishvananda/netns (Apache-2.0). Только из *_linux.go.
 // google/nftables (Apache-2.0) — защита от утечки DNS на Linux; тянет
@@ -28,7 +28,9 @@ go 1.26.2
 // попадают только пакеты pkg/tcpip и их опоры.
 // golang.org/x/net (BSD-3) — dnsmessage: резолвер имён SOCKS5 через туннель;
 // proxy — только тестам, сторонний клиент SOCKS5.
+// BurntSushi/toml (MIT) — разбор profiles.toml.
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/godbus/dbus/v5 v5.1.0
 	github.com/google/nftables v0.3.1-0.20260430172505-f9b52ed2ba65
 	github.com/tailscale/wf v0.0.0-20240214030419-6fbb0a674ee6
@@ -42,7 +44,6 @@ require (
 )
 
 require (
-	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/google/btree v1.1.2 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/mdlayher/netlink v1.8.1-0.20251028132421-dcc6cab9a6eb // indirect

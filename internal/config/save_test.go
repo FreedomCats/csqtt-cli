@@ -1,0 +1,203 @@
+package config
+
+import (
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+)
+
+func sampleFile() *File {
+	return &File{
+		DefaultProfile: "home",
+		Profiles: map[string]*Profile{
+			"home": {
+				Name:          "home",
+				Peer:          "203.0.113.10:46000",
+				PasswordRef:   "dpapi:8f2a1c",
+				VkHashesRef:   "dpapi:1c9bd4",
+				DeviceID:      "3f9c2a71d04be658",
+				Workers:       27,
+				Obfs:          "video",
+				TurnTransport: "tcp_tls",
+				Datapath:      DatapathSocks,
+				Socks:         SocksSection{Listen: "127.0.0.1:1081"},
+			},
+			"work": {
+				Name:        "work",
+				Peer:        "198.51.100.7",
+				PasswordRef: "file:5d0e77",
+				VkHashesRef: "file:aa31b9",
+				DeviceID:    "0c1d2e3f40516273",
+			},
+		},
+	}
+}
+
+// Записанный файл читается обратно тем же разбором и даёт то же самое.
+// Это и есть главное требование к Save: писать можно только то, что мы
+// сами согласны прочитать.
+func TestSaveRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	if err := Save(path, sampleFile()); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.DefaultProfile != "home" {
+		t.Errorf("default_profile = %q", got.DefaultProfile)
+	}
+	want := sampleFile()
+	if len(got.Profiles) != len(want.Profiles) {
+		t.Fatalf("профилей %d, ожидалось %d: %v", len(got.Profiles), len(want.Profiles), got.Names())
+	}
+	for name, p := range want.Profiles {
+		if *got.Profiles[name] != *p {
+			t.Errorf("%s после записи и чтения = %+v,\nожидалось %+v", name, *got.Profiles[name], *p)
+		}
+	}
+}
+
+// Пустые поля не записываются: пропуск означает «как по умолчанию», и вписать
+// вместо него нынешнее умолчание значило бы заморозить его в чужом файле.
+func TestSaveOmitsEmptyFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	f := &File{Profiles: map[string]*Profile{
+		"bare": {
+			Name:        "bare",
+			Peer:        "203.0.113.10:46000",
+			PasswordRef: "dpapi:8f2a1c",
+			VkHashesRef: "dpapi:1c9bd4",
+		},
+	}}
+	if err := Save(path, f); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	for _, key := range []string{"workers", "obfs", "turn_transport", "datapath", "socks"} {
+		if strings.Contains(text, key+" =") || strings.Contains(text, "."+key+"]") {
+			t.Errorf("в файле есть незаданный ключ %q:\n%s", key, text)
+		}
+	}
+	if strings.Contains(text, "default_profile") {
+		t.Errorf("записан пустой default_profile:\n%s", text)
+	}
+}
+
+// device_id заводится при первой записи профиля и дальше не меняется: ни
+// при повторной записи, ни после чтения файла.
+func TestSaveCreatesDeviceIDOnce(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	f := &File{Profiles: map[string]*Profile{
+		"home": {Name: "home", Peer: "203.0.113.10", PasswordRef: "dpapi:1", VkHashesRef: "dpapi:2"},
+		"work": {Name: "work", Peer: "198.51.100.7", PasswordRef: "dpapi:3", VkHashesRef: "dpapi:4"},
+	}}
+	if err := Save(path, f); err != nil {
+		t.Fatal(err)
+	}
+	id := f.Profiles["home"].DeviceID
+	if len(id) != 16 || deviceIDProblem(id) != "" {
+		t.Fatalf("device_id = %q, ожидались 16 шестнадцатеричных знаков", id)
+	}
+	if f.Profiles["work"].DeviceID == id {
+		t.Error("у двух профилей один device_id")
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded.Profiles["home"].DeviceID; got != id {
+		t.Fatalf("device_id в файле = %q, в памяти %q", got, id)
+	}
+	loaded.Profiles["home"].Workers = 36
+	if err := Save(path, loaded); err != nil {
+		t.Fatal(err)
+	}
+	again, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := again.Profiles["home"].DeviceID; got != id {
+		t.Errorf("device_id сменился при повторной записи: %q → %q", id, got)
+	}
+}
+
+// Запись повторяема: тот же файл даёт те же байты. Иначе `csqtt-cli profile set`
+// перетасовывал бы профили при каждом запуске.
+func TestSaveIsStable(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first.toml")
+	second := filepath.Join(dir, "second.toml")
+
+	if err := Save(first, sampleFile()); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(second, loaded); err != nil {
+		t.Fatal(err)
+	}
+
+	a, err := os.ReadFile(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(a) != string(b) {
+		t.Errorf("повторная запись дала другой файл:\n--- первый ---\n%s\n--- второй ---\n%s", a, b)
+	}
+}
+
+// Негодные настройки не попадают в файл: писать то, что сами откажемся
+// прочитать, нельзя.
+func TestSaveRejectsInvalid(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	f := &File{Profiles: map[string]*Profile{
+		"home": {Name: "home", Peer: "не адрес", PasswordRef: "dpapi:1", VkHashesRef: "dpapi:2"},
+	}}
+
+	if err := Save(path, f); err == nil {
+		t.Fatal("негодные настройки записаны")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("файл всё-таки создан: %v", err)
+	}
+	if f.Profiles["home"].DeviceID != "" {
+		t.Error("негодному профилю заведён device_id")
+	}
+}
+
+// Права 0600: в файле нет секретов, но есть адреса серверов, и лежит он рядом
+// с хранилищем секретов. На Windows биты режима роли не играют.
+func TestSaveFileMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("на Windows права файла проверяются не битами режима")
+	}
+
+	path := filepath.Join(t.TempDir(), FileName)
+	if err := Save(path, sampleFile()); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o600 {
+		t.Errorf("права %v, ожидались 0600", mode)
+	}
+}

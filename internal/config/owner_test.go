@@ -87,3 +87,36 @@ func TestWriteUnderSudoChownFails(t *testing.T) {
 		t.Errorf("после ошибки в каталоге остались файлы: %v", entries)
 	}
 }
+
+// Запись профиля под sudo — так же: каталоги и временный файл до
+// переименования.
+func TestSaveUnderSudoGivesFilesAway(t *testing.T) {
+	calls := fakeSudo(t, sudoUser, nil)
+	root := t.TempDir()
+	dir := filepath.Join(root, "a", AppDir)
+	path := filepath.Join(dir, FileName)
+
+	if err := Save(path, sampleFile()); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{filepath.Join(root, "a"), dir, path + ".tmp"}
+	if !slices.Equal(*calls, want) {
+		t.Errorf("chown: %q, ожидалось %q", *calls, want)
+	}
+}
+
+func TestSaveUnderSudoChownFails(t *testing.T) {
+	fakeSudo(t, sudoUser, errors.New("нельзя"))
+	dir := t.TempDir()
+
+	if err := Save(filepath.Join(dir, FileName), sampleFile()); err == nil {
+		t.Fatal("ошибка chown проглочена")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("после ошибки в каталоге остались файлы: %v", entries)
+	}
+}
