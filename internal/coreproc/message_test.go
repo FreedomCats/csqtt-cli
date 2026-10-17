@@ -14,6 +14,7 @@ var sampleOutput = []struct {
 	want Message
 }{
 	{`__CSQTT_EVENT__|PROCESS|{"pid":4242}`, PIDEvent{PID: 4242}},
+	{`__CSQTT_EVENT__|LISTEN|{"port":40123}`, ListenEvent{Port: 40123}},
 	{`__CSQTT_EVENT__|CONFIG|{"config":"TUNCONF:10.66.66.2:198.51.100.53,198.51.100.54"}`, ConfigEvent{
 		Raw:     "TUNCONF:10.66.66.2:198.51.100.53,198.51.100.54",
 		Address: netip.MustParseAddr("10.66.66.2"),
@@ -51,6 +52,8 @@ func TestParseLineFallsBackToLog(t *testing.T) {
 		`__CSQTT_EVENT__|NEW_KIND|{"x":1}`,
 		`__CSQTT_EVENT__|READY|{"worker":`,
 		`__CSQTT_EVENT__|READY`,
+		`__CSQTT_EVENT__|LISTEN|{"port":0}`,
+		`__CSQTT_EVENT__|LISTEN|{"port":70000}`,
 		`__CSQTT_EVENT__|CONFIG|{"config":"NOCONF"}`,
 		`__CSQTT_EVENT__|CONFIG|{"config":"TUNCONF:fd00::2:198.51.100.53"}`,
 		`CAPTCHA_SOLVE|auto|https://id.vk.com/x`,

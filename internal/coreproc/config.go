@@ -40,9 +40,13 @@ type Config struct {
 	// первым устройством (§10).
 	DeviceID string
 	// Listen — адрес UDP, где ядро ждёт пакеты оболочки (datapath socks);
-	// TunUDS — имя абстрактного unix-сокета для дескриптора TUN (Linux).
-	Listen string
-	TunUDS string
+	// ListenPeer — адрес сокета оболочки: ядро принимает датаграмы только
+	// с него и отвечает только ему (правка П2), свой порт сообщает
+	// ListenEvent. TunUDS — имя абстрактного unix-сокета для дескриптора TUN
+	// (Linux), с ListenPeer несовместимо.
+	Listen     string
+	ListenPeer string
+	TunUDS     string
 }
 
 // Args — аргументы командной строки ядра. Флаги — в виде --имя=значение.
@@ -67,6 +71,7 @@ func (c Config) Args() []string {
 	add("captcha-mode", c.CaptchaMode)
 	add("device-id", c.DeviceID)
 	add("listen", c.Listen)
+	add("listen-peer", c.ListenPeer)
 	add("tun-uds", c.TunUDS)
 	return args
 }

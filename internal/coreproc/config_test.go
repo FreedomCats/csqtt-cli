@@ -21,6 +21,7 @@ func TestArgs(t *testing.T) {
 		ClientIDs:     []string{"1", "2"},
 		DeviceID:      "dev",
 		Listen:        "127.0.0.1:0",
+		ListenPeer:    "127.0.0.1:40000",
 	}
 	want := []string{
 		"--secrets-stdin",
@@ -31,6 +32,7 @@ func TestArgs(t *testing.T) {
 		"--client-ids=1,2",
 		"--device-id=dev",
 		"--listen=127.0.0.1:0",
+		"--listen-peer=127.0.0.1:40000",
 	}
 	if got := cfg.Args(); !slices.Equal(got, want) {
 		t.Errorf("Args() = %q, want %q", got, want)

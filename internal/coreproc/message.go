@@ -16,6 +16,10 @@ type (
 	PIDEvent struct {
 		PID int `json:"pid"`
 	}
+	// ListenEvent — порт UDP-сокета ядра в режиме -listen (правка П2).
+	ListenEvent struct {
+		Port int `json:"port"`
+	}
 	// ConfigEvent — сервер выдал адрес туннеля и DNS (TUNCONF). Повторное
 	// событие — смена DNS на ходу.
 	ConfigEvent struct {
@@ -82,6 +86,7 @@ type Log struct {
 }
 
 func (PIDEvent) message()             {}
+func (ListenEvent) message()          {}
 func (ConfigEvent) message()          {}
 func (ProgressEvent) message()        {}
 func (ReadyEvent) message()           {}
@@ -136,6 +141,11 @@ func parseEvent(kind, payload string) Message {
 	case "PROCESS":
 		var e PIDEvent
 		if decode(&e) {
+			return e
+		}
+	case "LISTEN":
+		var e ListenEvent
+		if decode(&e) && e.Port > 0 && e.Port <= 65535 {
 			return e
 		}
 	case "CONFIG":

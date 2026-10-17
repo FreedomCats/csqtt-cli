@@ -92,6 +92,77 @@ var rules = []rule{
 		Pattern:     `(?m)^( +)let arguments = Arguments::parse_from\(normalized_arguments\(\)\);$`,
 		InsertAfter: "let arguments = secrets_stdin::apply_or_exit(arguments);",
 	},
+
+	// П2: флаг -listen-peer — на loopback принимать датаграмы только с этого
+	// адреса и отвечать только ему; порт ядра — событием LISTEN. Сама логика —
+	// в files/rust-client/listen_peer.rs; здесь — подключение к main.rs и
+	// диспетчеру.
+	{
+		File: "rust-client/main.rs", Count: 1,
+		Pattern:      `(?m)^()mod logging;$`,
+		InsertBefore: "mod listen_peer;",
+	},
+	{
+		File: "rust-client/main.rs", Count: 1,
+		Pattern:     `(?m)^( +)tun_uds: String,$`,
+		InsertAfter: "#[arg(long, default_value = \"\")]\n${1}listen_peer: String,",
+	},
+	{
+		File: "rust-client/main.rs", Count: 1,
+		Pattern:     `(?m)^( +)"listen",$`,
+		InsertAfter: `"listen-peer",`,
+	},
+	{
+		// До рантайма туннеля: ошибка в флаге — отказ стартовать, а не
+		// молча незакреплённый сокет.
+		File: "rust-client/main.rs", Count: 1,
+		Pattern:     `(?m)^( +)let turn_transport = TurnTransportMode::parse\(&arguments\.turn_transport\)\?;$`,
+		InsertAfter: "let listen_peer = listen_peer::parse(&arguments.listen_peer, !arguments.tun_uds.is_empty())?;",
+	},
+	{
+		File: "rust-client/main.rs", Count: 1,
+		Pattern: `(?m)^( +)let dispatcher_result = Dispatcher::start\(\n( +)&arguments\.listen,$`,
+		Replace: to("${1}let dispatcher_result = Dispatcher::start_with_peer(\n${2}&arguments.listen,\n${2}listen_peer,"),
+	},
+	{
+		File: "rust-client/main.rs", Count: 1,
+		Pattern:     `(?m)^( +)let local_port: Arc<str> = Arc::from\(local_port\);$`,
+		InsertAfter: "listen_peer::report_port(&events, &local_port);",
+	},
+	{
+		// start остаётся для тестов апстрима — без закрепления; в сборке его
+		// больше никто не зовёт.
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern: `(?m)^( +)pub async fn start\(\n( +)listen: &str,\n( +tun_uds: Option<String>,\n +pool: Arc<PacketPool>,\n +stats: Arc<Stats>,\n +cancel: CancellationToken,\n +\) -> Result<\(Arc<Self>, String\)> \{)$`,
+		Replace: to("${1}#[cfg(test)]\n${1}pub async fn start(\n${2}listen: &str,\n${3}\n" +
+			"${2}Self::start_with_peer(listen, None, tun_uds, pool, stats, cancel).await\n" +
+			"${1}}\n\n" +
+			"${1}pub async fn start_with_peer(\n${2}listen: &str,\n${2}listen_peer: Option<SocketAddr>,\n${3}"),
+	},
+	{
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern: `(?m)^( +)let client = Arc::new\(ArcSwapOption::<SocketAddr>::from_pointee\(None\)\);$`,
+		Replace: to("${1}let gate = crate::listen_peer::PeerGate::new(listen_peer);\n" +
+			"${1}let client = Arc::new(ArcSwapOption::<SocketAddr>::from_pointee(gate.initial_client()));"),
+	},
+	{
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern: `(?m)^( +)\.read_udp\(read_socket, read_client, read_pool, read_stats\)$`,
+		Replace: to("${1}.read_udp(read_socket, read_client, gate, read_pool, read_stats)"),
+	},
+	{
+		// Сигнатура read_udp; у write_udp за client идёт другой параметр.
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern: `(?m)^( +)client: Arc<ArcSwapOption<SocketAddr>>,\n( +pool: Arc<PacketPool>,)$`,
+		Replace: to("${1}client: Arc<ArcSwapOption<SocketAddr>>,\n${1}mut gate: crate::listen_peer::PeerGate,\n${2}"),
+	},
+	{
+		// Апстрим здесь запоминает отправителя адресатом ответов; без
+		// -listen-peer PeerGate::admit делает то же.
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern: `(?m)^( +)let previous = client\.load\(\);\n +if previous\.as_deref\(\) != Some\(&address\) \{\n +client\.store\(Some\(Arc::new\(address\)\)\);\n +\}$`,
+		Replace: to("${1}if !gate.admit(address, &client) {\n${1}    continue;\n${1}}"),
+	},
 }
 
 // ================================================================================

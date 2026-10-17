@@ -2,6 +2,7 @@ package coreproc
 
 import (
 	"io"
+	"net"
 	"os"
 	"strings"
 	"testing"
@@ -12,11 +13,12 @@ import (
 // документационный адрес, хеш выдуман. Пароль и хеш — заметные строки, чтобы
 // искать их в командной строке.
 var realCoreConfig = Config{
-	Peer:     "192.0.2.1:46000",
-	Password: "real-core-password",
-	Hashes:   []string{"real-core-hash"},
-	DeviceID: "test",
-	Listen:   "127.0.0.1:0",
+	Peer:       "192.0.2.1:46000",
+	Password:   "real-core-password",
+	Hashes:     []string{"real-core-hash"},
+	DeviceID:   "test",
+	Listen:     "127.0.0.1:0",
+	ListenPeer: "127.0.0.1:9",
 }
 
 func realCorePath(t *testing.T) string {
@@ -29,19 +31,29 @@ func realCorePath(t *testing.T) string {
 
 // TestRealCore — то же на настоящем ядре: CSQTT_TEST_CORE — абсолютный путь
 // к csqtt-core (go run ./scripts/buildcore). Сервер не нужен. Ядро берёт
-// секреты из stdin, поднимается, пробует VK и по STOP выходит само; пароля и
-// хеша в его командной строке нет.
+// секреты из stdin, поднимается, сообщает порт своего сокета, пробует VK и по
+// STOP выходит само; пароля и хеша в его командной строке нет.
 func TestRealCore(t *testing.T) {
 	p, err := Start(realCorePath(t), realCoreConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = p.stop(0) })
-	msgs, seen, drained := collect(p, func(m Message) bool { _, ok := m.(PIDEvent); return ok })
-	waitFor(t, seen, "PROCESS")
+	msgs, seen, drained := collect(p, func(m Message) bool { _, ok := m.(ListenEvent); return ok })
+	waitFor(t, seen, "LISTEN")
+	for _, m := range msgs() {
+		if e, ok := m.(ListenEvent); ok {
+			// Порт из события занят сокетом ядра.
+			addr := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: e.Port}
+			if c, err := net.ListenUDP("udp", addr); err == nil {
+				c.Close()
+				t.Errorf("порт %d из LISTEN свободен", e.Port)
+			}
+		}
+	}
 
 	cmdline := commandLine(t, p.PID())
-	if !strings.Contains(cmdline, "--secrets-stdin") ||
+	if !strings.Contains(cmdline, "--secrets-stdin") || !strings.Contains(cmdline, "--listen-peer=127.0.0.1:9") ||
 		strings.Contains(cmdline, realCoreConfig.Password) || strings.Contains(cmdline, realCoreConfig.Hashes[0]) {
 		t.Errorf("командная строка ядра: %s", cmdline)
 	}

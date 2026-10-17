@@ -13,6 +13,7 @@ mod dns;
 mod events;
 #[path = "../shared/flow_frame.rs"]
 mod flow_frame;
+mod listen_peer;
 mod logging;
 mod namegen;
 mod obfs;
@@ -117,6 +118,8 @@ struct Arguments {
     salt: String,
     #[arg(long, default_value = "")]
     tun_uds: String,
+    #[arg(long, default_value = "")]
+    listen_peer: String,
     #[arg(long, default_value_t = false)]
     validate_vk_hashes: bool,
     #[arg(long, default_value_t = false)]
@@ -187,6 +190,7 @@ async fn run(arguments: Arguments) -> Result<()> {
     let peer = resolve_peer(&arguments.peer).await?;
     let mode = ObfsMode::parse(&arguments.obfs)?;
     let turn_transport = TurnTransportMode::parse(&arguments.turn_transport)?;
+    let listen_peer = listen_peer::parse(&arguments.listen_peer, !arguments.tun_uds.is_empty())?;
     let wrap_key = derive_wrap_key(&arguments.password)?;
     let session_profile = profiles::random_profile(&arguments.fingerprint);
     let mut js_calls = None;
@@ -251,8 +255,9 @@ async fn run(arguments: Arguments) -> Result<()> {
     events.process(std::process::id());
     let pool = PacketPool::new(packet_pool_size(workers));
     let tun_uds = (!arguments.tun_uds.is_empty()).then_some(arguments.tun_uds.clone());
-    let dispatcher_result = Dispatcher::start(
+    let dispatcher_result = Dispatcher::start_with_peer(
         &arguments.listen,
+        listen_peer,
         tun_uds,
         pool.clone(),
         stats.clone(),
@@ -269,6 +274,7 @@ async fn run(arguments: Arguments) -> Result<()> {
         }
     };
     let local_port: Arc<str> = Arc::from(local_port);
+    listen_peer::report_port(&events, &local_port);
     let params = Arc::new(RuntimeParams {
         peer,
         turn_host: (!arguments.turn.is_empty()).then(|| Arc::from(arguments.turn.as_str())),
@@ -466,6 +472,7 @@ fn normalize_cli_argument(argument: String) -> String {
         "turn",
         "port",
         "listen",
+        "listen-peer",
         "vk",
         "vk-hash-mode",
         "peer",

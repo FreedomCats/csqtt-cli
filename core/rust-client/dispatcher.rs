@@ -447,8 +447,20 @@ impl Dispatcher {
         dispatcher
     }
 
+    #[cfg(test)]
     pub async fn start(
         listen: &str,
+        tun_uds: Option<String>,
+        pool: Arc<PacketPool>,
+        stats: Arc<Stats>,
+        cancel: CancellationToken,
+    ) -> Result<(Arc<Self>, String)> {
+        Self::start_with_peer(listen, None, tun_uds, pool, stats, cancel).await
+    }
+
+    pub async fn start_with_peer(
+        listen: &str,
+        listen_peer: Option<SocketAddr>,
         tun_uds: Option<String>,
         pool: Arc<PacketPool>,
         stats: Arc<Stats>,
@@ -526,7 +538,8 @@ impl Dispatcher {
             let socket = bind_udp(listen).await?;
             let local_port = socket.local_addr()?.port().to_string();
             let socket = Arc::new(socket);
-            let client = Arc::new(ArcSwapOption::<SocketAddr>::from_pointee(None));
+            let gate = crate::listen_peer::PeerGate::new(listen_peer);
+            let client = Arc::new(ArcSwapOption::<SocketAddr>::from_pointee(gate.initial_client()));
             let read_dispatcher = dispatcher.clone();
             let read_socket = socket.clone();
             let read_client = client.clone();
@@ -535,7 +548,7 @@ impl Dispatcher {
             let read_cancel = dispatcher.cancel.clone();
             let read_task = spawn_critical("UDP reader", read_cancel, async move {
                 read_dispatcher
-                    .read_udp(read_socket, read_client, read_pool, read_stats)
+                    .read_udp(read_socket, read_client, gate, read_pool, read_stats)
                     .await;
             });
             let write_dispatcher = dispatcher.clone();
@@ -752,6 +765,7 @@ impl Dispatcher {
         self: Arc<Self>,
         socket: Arc<UdpSocket>,
         client: Arc<ArcSwapOption<SocketAddr>>,
+        mut gate: crate::listen_peer::PeerGate,
         pool: Arc<PacketPool>,
         stats: Arc<Stats>,
     ) {
@@ -799,9 +813,8 @@ impl Dispatcher {
                 Ok(received) => {
                     for (index, packet) in receive_batch.drain(..received).enumerate() {
                         let address = sources[index];
-                        let previous = client.load();
-                        if previous.as_deref() != Some(&address) {
-                            client.store(Some(Arc::new(address)));
+                        if !gate.admit(address, &client) {
+                            continue;
                         }
                         client_perf::observe(PerfStage::UdpRx);
                         let mut packet = packet;
