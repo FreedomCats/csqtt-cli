@@ -116,6 +116,15 @@ cargo напрямую; сам `buildcore` под Linux впервые запу�
 
 **Готово, когда** оба workflow зелёные на ветке `main`.
 
+Итог: `.github/workflows/windows.yml` и `linux.yml`. В каждом задание `test` (Go) и
+`core`: апстрим скачивается на коммите из `core/CORE_VERSION`, затем `vendorcore -check`,
+`rustup update stable` (образ раннера может отставать от `rust-version` ядра), кэш cargo
+(реестр и `build/cargo`), `buildcore`, `buildcore -test`. На Linux `go test -race` идёт с
+`CSQTT_TEST_DBUS=1`; тесты `linuxsys`, меняющие сеть, — заданием `netns` в контейнере
+(`CSQTT_TEST_NETNS=1`, пропуск — провал). `core` на `ubuntu-22.04` проверяет потолок glibc 2.35.
+Если апстрим перепишет историю и коммита не станет, `core` упадёт на первом шаге: пора
+обновлять ядро. Репозиторий на GitHub пока приватный, публичным станет в I5.
+
 ---
 
 ## Э1. Подключение без прав — `socks` — 6–8 дней

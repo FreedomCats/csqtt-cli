@@ -1,0 +1,154 @@
+# Сборка и тесты на Linux. Тесты идут от обычного пользователя: так их
+# запускает разработчик, и тест, который полез бы за правами (sudo), здесь
+# упадёт, а не пройдёт незаметно, как на раннере Windows с правами.
+# Тесты, которые меняют сеть (CSQTT_TEST_NETNS), — отдельным заданием в
+# контейнере: на самом раннере они перекладывали бы его маршрут по умолчанию.
+name: linux
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  # Перед сборкой релиза тесты зовёт release.yml.
+  workflow_call:
+
+permissions:
+  contents: read
+
+# github.workflow в вызове из release.yml — имя вызывающего («release»):
+# без своего имени в группе windows.yml и linux.yml попали бы в одну группу,
+# и второй отменил бы первый.
+concurrency:
+  group: ${{ github.workflow }}-linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # Действия закреплены по хешу коммита: тег можно перевесить.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: go build
+        run: CGO_ENABLED=0 go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      # Тесты связки ключей поднимают свой dbus-daemon; без него они бы
+      # пропустились, а CSQTT_TEST_DBUS делает пропуск провалом.
+      - name: dbus-daemon
+        run: command -v dbus-daemon || { sudo apt-get update && sudo apt-get install -y dbus-daemon; }
+
+      # -race нужен cgo, поэтому CGO_ENABLED здесь не выключен.
+      - name: go test -race
+        env:
+          CSQTT_TEST_DBUS: '1'
+        run: go test -race -count=1 ./...
+
+  # Маршрут по умолчанию, nftables, TUN — в своём сетевом пространстве
+  # контейнера.
+  netns:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CGO_ENABLED: '0'
+      # ubuntu:latest, закреплённый по хешу.
+      IMAGE: ubuntu@sha256:d1e2e92c075e5ca139d51a140fff46f84315c0fdce203eab2807c7e495eff4f9
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Сборка тестов
+        run: |
+          mkdir -p build/out
+          go test -c -o build/out/linuxsys.test ./internal/linuxsys
+
+      # Пропуск здесь — тоже провал: значит, проверки сети не шли вовсе.
+      - name: Тесты в контейнере
+        run: |
+          set -o pipefail
+          for pkg in linuxsys; do
+            docker run --rm --cap-add NET_ADMIN --device /dev/net/tun \
+              -e CSQTT_TEST_NETNS=1 -v "$PWD/build/out":/csqtt-cli:ro "$IMAGE" \
+              "/csqtt-cli/$pkg.test" -test.count=1 -test.v | tee "build/out/$pkg.log"
+            if grep -- '--- SKIP' "build/out/$pkg.log"; then
+              echo "::error::$pkg: тесты пропущены"
+              exit 1
+            fi
+          done
+
+  # Ядро CSQTT: сверка core/ с апстримом, сборка и cargo test. Раннер — с
+  # glibc 2.35: C-код aws-lc, собранный с заголовками glibc 2.38 и новее,
+  # тянет __isoc23_* и не запустится на системах старше (§09б архитектуры).
+  core:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    env:
+      CGO_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # Апстрим публикует версии снимками и переписывает историю: если коммита
+      # из CORE_VERSION там больше нет, этот шаг упадёт — пора обновлять ядро.
+      - name: Апстрим ядра
+        run: |
+          commit=$(awk '$1 == "commit" { print $3 }' core/CORE_VERSION)
+          git init -q "$RUNNER_TEMP/csqtt"
+          git -C "$RUNNER_TEMP/csqtt" fetch -q --depth 1 https://github.com/amurcanov/csqtt "$commit"
+          git -C "$RUNNER_TEMP/csqtt" -c advice.detachedHead=false checkout -q FETCH_HEAD
+
+      - name: vendorcore -check
+        run: go run ./scripts/vendorcore -check -upstream "$RUNNER_TEMP/csqtt"
+
+      # Rust на образе раннера может отставать от rust-version ядра.
+      - name: Rust
+        id: rust
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustc -V
+          echo "version=$(rustc -V | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            build/cargo
+          key: core-${{ runner.os }}-rust-${{ steps.rust.outputs.version }}-${{ hashFiles('core/rust-client/Cargo.lock') }}
+          restore-keys: core-${{ runner.os }}-rust-${{ steps.rust.outputs.version }}-
+
+      - name: buildcore
+        run: go run ./scripts/buildcore
+
+      - name: buildcore -test
+        run: go run ./scripts/buildcore -test
+
+      # Ни одного символа glibc новее 2.35 — иначе бинарь не запустится на
+      # системах, которые мы обещаем.
+      - name: glibc
+        run: |
+          max=$(objdump -T build/out/csqtt-core | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+          echo "старший символ: $max"
+          [ "$(printf '%s\n' "$max" GLIBC_2.35 | sort -V | tail -1)" = GLIBC_2.35 ]

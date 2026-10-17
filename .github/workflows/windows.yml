@@ -1,0 +1,102 @@
+# Сборка и тесты на Windows. Раннер GitHub одноразовый и работает с правами
+# администратора, поэтому здесь идут и тесты, которые без прав пропускаются:
+# сессии WFP (winsys).
+name: windows
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  # Перед сборкой релиза тесты зовёт release.yml.
+  workflow_call:
+
+permissions:
+  contents: read
+
+# github.workflow в вызове из release.yml — имя вызывающего («release»):
+# без своего имени в группе windows.yml и linux.yml попали бы в одну группу,
+# и второй отменил бы первый.
+concurrency:
+  group: ${{ github.workflow }}-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      CGO_ENABLED: '0'
+    steps:
+      # Действия закреплены по хешу коммита: тег можно перевесить.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: go build
+        run: go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test -count=1 ./...
+
+  # Ядро CSQTT: сверка core/ с апстримом, сборка и cargo test.
+  core:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      CGO_ENABLED: '0'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # Апстрим публикует версии снимками и переписывает историю: если коммита
+      # из CORE_VERSION там больше нет, этот шаг упадёт — пора обновлять ядро.
+      - name: Апстрим ядра
+        run: |
+          commit=$(awk '$1 == "commit" { print $3 }' core/CORE_VERSION)
+          git init -q "$RUNNER_TEMP/csqtt"
+          git -C "$RUNNER_TEMP/csqtt" fetch -q --depth 1 https://github.com/amurcanov/csqtt "$commit"
+          git -C "$RUNNER_TEMP/csqtt" -c advice.detachedHead=false checkout -q FETCH_HEAD
+
+      - name: vendorcore -check
+        run: go run ./scripts/vendorcore -check -upstream "$RUNNER_TEMP/csqtt"
+
+      # Rust на образе раннера может отставать от rust-version ядра.
+      - name: Rust
+        id: rust
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustc -V
+          echo "version=$(rustc -V | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            build/cargo
+          key: core-${{ runner.os }}-rust-${{ steps.rust.outputs.version }}-${{ hashFiles('core/rust-client/Cargo.lock') }}
+          restore-keys: core-${{ runner.os }}-rust-${{ steps.rust.outputs.version }}-
+
+      - name: buildcore
+        run: go run ./scripts/buildcore
+
+      - name: buildcore -test
+        run: go run ./scripts/buildcore -test
