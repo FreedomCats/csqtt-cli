@@ -102,7 +102,9 @@ resolvconf, префикс секретов.
 ### F5. CI
 
 Два workflow, как в qwdtt-cli: Windows и Linux. В каждом — `go vet`, `go test`,
-`vendorcore -check`, `buildcore`, `cargo test` ядра без сетевых тестов. Кэш cargo.
+`vendorcore -check`, `buildcore`, `buildcore -test`. Кэш cargo. Linux — на раннере с glibc
+старше 2.38 (`ubuntu-22.04`, §09б архитектуры). Ядро под Linux в F3 собрано и проверено
+cargo напрямую; сам `buildcore` под Linux впервые запускается здесь.
 
 **Готово, когда** оба workflow зелёные на ветке `main`.
 
