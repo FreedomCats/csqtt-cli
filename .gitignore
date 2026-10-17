@@ -1,5 +1,5 @@
 # Сборка
-/build/out/
+/build/
 /dist/
 *.exe
 # go build ./cmd/csqtt-cli без -o кладёт бинарь в корень.
