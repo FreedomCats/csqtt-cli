@@ -63,6 +63,12 @@ type Datapath interface {
 
 // CaptchaFunc решает капчу по запросу ядра и возвращает токен. Ждать она
 // обязана не дольше ctx: он отменяется с концом попытки.
+//
+// Отказ уходит ядру как CAPTCHA_RESULT|error:<причина>: причина —
+// Reason у *coreproc.CaptchaError, иначе текст ошибки. На
+// coreproc.ErrCaptchaNoReply ядру не отвечают вовсе. Зовут её из отдельной
+// горутины на каждый запрос, и следующий запрос может прийти, пока прежний
+// вызов не вернулся.
 type CaptchaFunc func(ctx context.Context, req coreproc.CaptchaRequest) (token string, err error)
 
 // Options — из чего собирается цикл подключения.
@@ -489,13 +495,17 @@ func (a *attempt) captcha(req coreproc.CaptchaRequest) {
 	}
 	a.wg.Go(func() {
 		token, err := solve(a.ctx, req)
-		if a.ctx.Err() != nil {
-			return // попытка кончилась, отвечать некому
+		if a.ctx.Err() != nil || errors.Is(err, coreproc.ErrCaptchaNoReply) {
+			return // попытка кончилась или ядро этого ответа уже не ждёт
 		}
 		line := coreproc.CaptchaResult(token)
 		if err != nil || token == "" || strings.ContainsAny(token, "\r\n") {
 			reason := "empty"
-			if err != nil {
+			var ce *coreproc.CaptchaError
+			switch {
+			case errors.As(err, &ce) && ce.Reason != "":
+				reason = ce.Reason
+			case err != nil:
 				reason = strings.Join(strings.Fields(err.Error()), " ")
 			}
 			line = coreproc.CaptchaFailed(reason)

@@ -49,6 +49,10 @@ func fakeCore(mode string) int {
 			fmt.Fprintln(os.Stderr, "[ФАТАЛ] нет CSQTT_EVENTS=1 или --peer")
 			return 3
 		}
+		if os.Getenv(CoreSolverOffEnv) == "" {
+			fmt.Fprintln(os.Stderr, "[ФАТАЛ] решатель капчи ядра не выключен")
+			return 3
+		}
 		if !slices.Contains(os.Args, "--secrets-stdin") || slices.ContainsFunc(os.Args, func(a string) bool {
 			return strings.HasPrefix(a, "--password") || strings.HasPrefix(a, "--vk=")
 		}) {
@@ -113,6 +117,9 @@ func fakeCore(mode string) int {
 // ним строку секретов.
 var fakeConfig = Config{Peer: "203.0.113.10:46000", Password: "p", Hashes: []string{"fake-hash"}}
 
+// fakeCaptchaToken — выдуманный токен капчи, 24 знака.
+const fakeCaptchaToken = "fake-captcha-token-12345"
+
 func startFake(t *testing.T, mode string) *Process {
 	t.Helper()
 	p, err := startConfig(os.Args[0], fakeConfig, []string{fakeCoreEnv + "=" + mode})
@@ -160,8 +167,11 @@ func waitFor(t *testing.T, ch <-chan struct{}, what string) {
 func TestProcessReplay(t *testing.T) {
 	p := startFake(t, "replay")
 	msgs, seen, drained := collect(p, func(m Message) bool { return m == Log{Text: "[STDIN] PAUSE"} })
-	if err := p.Send(CmdPause); err != nil {
-		t.Fatal(err)
+	// Ядро повторяет команды в журнал — токен капчи в нём должен быть скрыт.
+	for _, cmd := range []string{CaptchaResult(fakeCaptchaToken), CaptchaFailed("closed"), CmdPause} {
+		if err := p.Send(cmd); err != nil {
+			t.Fatal(err)
+		}
 	}
 	waitFor(t, seen, "PAUSE в журнале ядра")
 
@@ -191,7 +201,8 @@ func TestProcessReplay(t *testing.T) {
 		t.Errorf("события:\n%#v\nwant\n%#v", events, want)
 	}
 	slices.Sort(logs)
-	wantLogs := append(slices.Clone(sampleLog), "[STDIN] PAUSE", "[STDIN] STOP")
+	wantLogs := append(slices.Clone(sampleLog), "[STDIN] PAUSE", "[STDIN] STOP",
+		"[STDIN] CAPTCHA_RESULT|<токен скрыт, 24 зн.>", "[STDIN] CAPTCHA_RESULT|error:closed")
 	slices.Sort(wantLogs)
 	if !slices.Equal(logs, wantLogs) {
 		t.Errorf("журнал = %q, want %q", logs, wantLogs)

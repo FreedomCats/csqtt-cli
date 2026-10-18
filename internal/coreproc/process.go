@@ -54,6 +54,9 @@ type Process struct {
 //
 // Messages нужно читать до закрытия канала: пока его не читают, ядро стоит
 // на записи в stdout.
+//
+// Решатель капчи ядра выключен (CoreSolverOffEnv): капчу решает человек в
+// окне оболочки. Токен капчи в журнале ядра Messages отдаёт скрытым.
 func Start(path string, cfg Config) (*Process, error) {
 	return startConfig(path, cfg, nil)
 }
@@ -73,7 +76,7 @@ func startConfig(path string, cfg Config, env []string) (*Process, error) {
 // start — Start с готовыми аргументами и добавочным окружением (для тестов).
 func start(path string, args, env []string) (*Process, error) {
 	cmd := exec.Command(path, args...)
-	cmd.Env = append(append(os.Environ(), "CSQTT_EVENTS=1"), env...)
+	cmd.Env = append(append(os.Environ(), "CSQTT_EVENTS=1", CoreSolverOffEnv+"=1"), env...)
 	cmd.SysProcAttr = sysProcAttr()
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -123,7 +126,7 @@ func (p *Process) run(stdout, stderr io.Reader, started chan<- error) {
 
 	var wg sync.WaitGroup
 	wg.Go(func() { p.read(stdout, ParseLine) })
-	wg.Go(func() { p.read(stderr, func(s string) Message { return Log{Text: s} }) })
+	wg.Go(func() { p.read(stderr, func(s string) Message { return Log{Text: maskLog(s)} }) })
 	wg.Wait()
 	p.err = p.cmd.Wait()
 	guard.Close()

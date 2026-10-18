@@ -72,6 +72,8 @@ func TestRealCore(t *testing.T) {
 
 // Секреты и STOP одной записью: строку секретов ядро читает так, что
 // следующая за ней остаётся в stdin, и STOP доходит до канала управления.
+// Перед STOP — ответ на капчу: ядро повторяет его в журнал, и токена там быть
+// не должно.
 func TestRealCoreSecretsThenStop(t *testing.T) {
 	p, err := start(realCorePath(t), realCoreConfig.Args(), nil)
 	if err != nil {
@@ -79,11 +81,21 @@ func TestRealCoreSecretsThenStop(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = p.stop(0) })
 	msgs, _, drained := collect(p, func(Message) bool { return false })
-	if _, err := io.WriteString(p.stdin, realCoreConfig.SecretsLine()+"\n"+CmdStop+"\n"); err != nil {
+	const token = "real-core-captcha-token"
+	if _, err := io.WriteString(p.stdin, realCoreConfig.SecretsLine()+"\n"+CaptchaResult(token)+"\n"+CmdStop+"\n"); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, drained, "выход ядра по STOP, пришедшему вместе с секретами")
 	checkRealCoreOutput(t, p, msgs())
+	echo := ""
+	for _, m := range msgs() {
+		if l, ok := m.(Log); ok && strings.Contains(l.Text, "[STDIN] CAPTCHA_RESULT|") {
+			echo = l.Text
+		}
+	}
+	if echo == "" || strings.Contains(echo, token) {
+		t.Errorf("эхо CAPTCHA_RESULT в журнале ядра: %q", echo)
+	}
 }
 
 // checkRealCoreOutput: PROCESS с pid ядра, STOPPED и ни одной фатальной

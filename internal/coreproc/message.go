@@ -131,7 +131,7 @@ func ParseLine(line string) Message {
 			return h
 		}
 	}
-	return Log{Text: line}
+	return Log{Text: maskLog(line)}
 }
 
 // parseEvent — событие по виду и JSON; nil, если разобрать нельзя.

@@ -3,6 +3,7 @@ package supervisor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"runtime"
 	"slices"
@@ -526,6 +527,9 @@ func TestCaptchaFailures(t *testing.T) {
 		{"пустой токен", func(context.Context, coreproc.CaptchaRequest) (string, error) {
 			return "", nil
 		}, "CAPTCHA_RESULT|error:empty"},
+		{"причина для ядра", func(context.Context, coreproc.CaptchaRequest) (string, error) {
+			return "", fmt.Errorf("окно: %w", &coreproc.CaptchaError{Reason: "closed", Err: errors.New("окно капчи закрыто")})
+		}, "CAPTCHA_RESULT|error:closed"},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -541,6 +545,23 @@ func TestCaptchaFailures(t *testing.T) {
 				t.Errorf("команды ядру: %q", cmds)
 			}
 		})
+	}
+}
+
+// Ядро этого ответа уже не ждёт — ему не отвечают ничем: ответ на прежний
+// запрос ядро приняло бы за ответ на текущий.
+func TestCaptchaNoReply(t *testing.T) {
+	h := newHarness(t, Options{Captcha: func(context.Context, coreproc.CaptchaRequest) (string, error) {
+		return "", fmt.Errorf("время вышло: %w", coreproc.ErrCaptchaNoReply)
+	}}, join(recStart, []string{
+		`CAPTCHA_SOLVE|manual|https://id.vk.example/challenge|session-token-1`,
+	}, recConfig, recReady))
+	done := h.run()
+	h.waitState(StateConnected)
+	h.cancel()
+	h.result(done)
+	if cmds := h.attempts()[0].commands(); len(cmds) != 0 {
+		t.Errorf("команды ядру: %q", cmds)
 	}
 }
 

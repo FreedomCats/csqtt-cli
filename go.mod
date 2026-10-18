@@ -29,10 +29,13 @@ go 1.26.2
 // golang.org/x/net (BSD-3) — dnsmessage: резолвер имён SOCKS5 через туннель;
 // proxy — только тестам, сторонний клиент SOCKS5.
 // BurntSushi/toml (MIT) — разбор profiles.toml.
+// jchv/go-webview2 (MIT) — окно капчи на Windows. Без cgo, WebView2Loader.dll
+// встроен; тянет jchv/go-winloader (MIT). Только из *_windows.go.
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/godbus/dbus/v5 v5.1.0
 	github.com/google/nftables v0.3.1-0.20260430172505-f9b52ed2ba65
+	github.com/jchv/go-webview2 v0.0.0-20260205173254-56598839c808
 	github.com/tailscale/wf v0.0.0-20240214030419-6fbb0a674ee6
 	github.com/vishvananda/netlink v1.3.1
 	golang.org/x/crypto v0.54.0
@@ -46,6 +49,7 @@ require (
 require (
 	github.com/google/btree v1.1.2 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
+	github.com/jchv/go-winloader v0.0.0-20250406163304-c1995be93bd1 // indirect
 	github.com/mdlayher/netlink v1.8.1-0.20251028132421-dcc6cab9a6eb // indirect
 	github.com/mdlayher/socket v0.5.1 // indirect
 	github.com/vishvananda/netns v0.0.5 // indirect
@@ -65,3 +69,11 @@ require (
 // malloc.go, с тестом; апстрим с 2024 года не развивается. Регрессия у нас —
 // TestDNSGuardUnderGC в internal/winsys.
 replace github.com/tailscale/wf => github.com/FreedomCats/tailscale-wf v0.0.0-20261016000000-b03557658b85
+
+// jchv/go-webview2 — из своего форка: библиотека не передаёт опций окружения
+// WebView2, а переменную WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS рантайм с её
+// встроенным загрузчиком не применяет — окно капчи шло бы мимо прокси
+// csqtt-cli. В форке одна правка: опция AdditionalBrowserArguments через
+// ICoreWebView2EnvironmentOptions, с тестом. Регрессия у нас — TestWebView2Proxy
+// в internal/captcha (CSQTT_WEBVIEW2=1).
+replace github.com/jchv/go-webview2 => github.com/FreedomCats/go-webview2 v0.0.0-20261014000000-08b745a2490c
