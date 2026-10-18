@@ -44,11 +44,18 @@ var ErrCaptchaNoReply = errors.New("ответ ядру не нужен")
 // captchaResultPrefix — начало команды с ответом на капчу.
 const captchaResultPrefix = "CAPTCHA_RESULT|"
 
-// maskLog прячет токен капчи в строке журнала ядра: каждую принятую команду
-// ядро повторяет в журнал строкой «[STDIN] CAPTCHA_RESULT|<токен>», а
-// журнал идёт на экран и в файл. Отказы (error:…) остаются как есть — в них
-// токена нет, а причина нужна.
+// maskLog прячет в строке журнала ядра то, что живёт минуты, но даёт доступ
+// к капче: токен решённой капчи и токен её сессии.
+//
+// Каждую принятую команду ядро повторяет в журнал строкой «[STDIN]
+// CAPTCHA_RESULT|<токен>», а адрес капчи со session_token печатает строкой
+// «[КАПЧА] solveOnce URL: …»; журнал идёт на экран и в файл. Отказы (error:…)
+// остаются как есть — в них токена нет, а причина нужна.
 func maskLog(line string) string {
+	return maskSessionToken(maskCaptchaResult(line))
+}
+
+func maskCaptchaResult(line string) string {
 	i := strings.Index(line, captchaResultPrefix)
 	if i < 0 {
 		return line
@@ -65,5 +72,27 @@ func maskLog(line string) string {
 	if end == 0 {
 		return line
 	}
-	return line[:start] + "<токен скрыт, " + strconv.Itoa(end) + " зн.>" + maskLog(rest[end:])
+	return line[:start] + "<токен скрыт, " + strconv.Itoa(end) + " зн.>" + maskCaptchaResult(rest[end:])
+}
+
+// sessionTokenParam — параметр адреса капчи VK с токеном её сессии.
+const sessionTokenParam = "session_token="
+
+// maskSessionToken прячет значение session_token в адресе капчи — до конца
+// параметра (&, #) или слова.
+func maskSessionToken(line string) string {
+	i := strings.Index(line, sessionTokenParam)
+	if i < 0 {
+		return line
+	}
+	start := i + len(sessionTokenParam)
+	rest := line[start:]
+	end := strings.IndexAny(rest, "&# \t")
+	if end < 0 {
+		end = len(rest)
+	}
+	if end == 0 {
+		return line[:start] + maskSessionToken(rest)
+	}
+	return line[:start] + "<скрыт, " + strconv.Itoa(end) + " зн.>" + maskSessionToken(rest[end:])
 }

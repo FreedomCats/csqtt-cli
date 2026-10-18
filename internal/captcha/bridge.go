@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/FreedomCats/csqtt-cli/internal/coreproc"
+	"github.com/FreedomCats/csqtt-cli/internal/lines"
 )
 
 // Window — окно, в котором человек решает капчу: WebView2, браузер под
@@ -46,8 +47,9 @@ type Options struct {
 	// время. nil — os.Stderr.
 	Out io.Writer
 
-	// In — откуда ручной режим читает ответ. nil — os.Stdin.
-	In io.Reader
+	// Lines — откуда ручной режим читает ответ: общий читатель строк
+	// процесса (ManualOptions.Lines). nil — свой читатель os.Stdin.
+	Lines *lines.Reader
 
 	// Open — открыть ссылку в браузере системы для ручного режима; nil —
 	// только напечатать её (ManualOptions.Open).
@@ -110,7 +112,7 @@ func NewBridge(opts Options) *Bridge {
 	}
 	b := &Bridge{
 		opts:   opts,
-		manual: NewManual(ManualOptions{In: opts.In, Out: opts.Out, Open: opts.Open}),
+		manual: NewManual(ManualOptions{Lines: opts.Lines, Out: opts.Out, Open: opts.Open}),
 	}
 	w, err := platformWindow(opts)
 	switch {

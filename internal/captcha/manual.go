@@ -11,7 +11,6 @@
 package captcha
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -19,8 +18,9 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"sync"
 	"time"
+
+	"github.com/FreedomCats/csqtt-cli/internal/lines"
 )
 
 // minTokenLen — короче этого success_token не бывает. Проверка нарочно грубая:
@@ -34,8 +34,13 @@ var ErrCancelled = errors.New("капча не решена: ответа нет
 
 // ManualOptions — настройки ручного режима.
 type ManualOptions struct {
-	// In — откуда читается ответ. nil — os.Stdin.
-	In io.Reader
+	// Lines — откуда читается ответ: общий читатель строк процесса. nil —
+	// свой читатель os.Stdin.
+	//
+	// Общий, а не свой: чтение со stdin не прервать, и брошенное чтение
+	// прежней капчи забрало бы строку, которую человек ввёл в ответ на вопрос
+	// CLI (lines.Reader).
+	Lines *lines.Reader
 
 	// Out — куда уходят приглашение и инструкция. nil — os.Stderr: stdout у
 	// CLI занят результатом команды, и `csqtt-cli connect > log.txt` не должен
@@ -53,37 +58,25 @@ type ManualOptions struct {
 // Manual — ручной режим.
 type Manual struct {
 	opts ManualOptions
-
-	// Строки ввода читает одна горутина на всё время жизни Manual: прервать
-	// чтение со stdin по ctx нельзя, и горутина, начатая для прежней капчи,
-	// так и висит на Read. Вторая такая же читала бы тот же поток
-	// одновременно с ней.
-	start  sync.Once
-	lines  chan lineRead
-	closed sync.Once
-}
-
-type lineRead struct {
-	line string
-	err  error
 }
 
 // NewManual собирает ручной режим. Ввод и вывод не трогаются до Solve.
 func NewManual(opts ManualOptions) *Manual {
-	if opts.In == nil {
-		opts.In = os.Stdin
+	if opts.Lines == nil {
+		opts.Lines = lines.New(os.Stdin)
 	}
 	if opts.Out == nil {
 		opts.Out = os.Stderr
 	}
-	return &Manual{opts: opts, lines: make(chan lineRead)}
+	return &Manual{opts: opts}
 }
 
 // Solve печатает инструкцию и ждёт ответа, пока его не дадут или не отменят
 // ctx. На негодный ответ объясняет, что не так, и ждёт следующего.
 func (m *Manual) Solve(ctx context.Context, req Request) (string, error) {
-	m.start.Do(func() { go m.read() })
-	m.dropStale()
+	// Строка, введённая, пока ответа никто не ждал, — ответ на прежнюю
+	// капчу, время которой вышло: ядру он уже не годится.
+	m.opts.Lines.DropStale()
 	m.prompt(req)
 	for {
 		answer, err := m.readLine(ctx)
@@ -127,59 +120,24 @@ func (m *Manual) prompt(req Request) {
 	fmt.Fprint(out, "  5. Вставьте сюда и нажмите Enter (пустая строка — отказаться): ")
 }
 
-// read читает строки ввода, пока он не кончится.
-func (m *Manual) read() {
-	br := bufio.NewReader(m.opts.In)
-	for {
-		line, err := br.ReadString('\n')
-		m.lines <- lineRead{line: line, err: err}
-		if err != nil {
-			return
-		}
-	}
-}
-
-// dropStale выбрасывает строку, введённую, пока ответа никто не ждал: это
-// ответ на прежнюю капчу, время которой вышло, и ядру он уже не годится.
-func (m *Manual) dropStale() {
-	select {
-	case got, ok := <-m.lines:
-		if ok && got.err != nil {
-			m.ended()
-		}
-	default:
-	}
-}
-
-// ended — ввод кончился: ответов больше не будет ни этому вызову, ни
-// следующим. Горутина read к этому времени вышла, и канал закрывать можно.
-func (m *Manual) ended() { m.closed.Do(func() { close(m.lines) }) }
-
-// readLine ждёт строку ввода или отмены ctx.
+// readLine ждёт строку ввода или отмены ctx. Пустая строка и конец ввода —
+// отказ.
 func (m *Manual) readLine(ctx context.Context) (string, error) {
-	select {
-	case <-ctx.Done():
+	line, err := m.opts.Lines.Read(ctx)
+	switch {
+	case err != nil && ctx.Err() != nil:
 		fmt.Fprintln(m.opts.Out)
 		return "", ctx.Err()
-	case got, ok := <-m.lines:
-		if !ok {
-			return "", ErrCancelled
-		}
-		if got.err != nil {
-			m.ended()
-			if !errors.Is(got.err, io.EOF) {
-				return "", fmt.Errorf("чтение ответа: %w", got.err)
-			}
-			if strings.TrimSpace(got.line) == "" {
-				return "", ErrCancelled
-			}
-		}
-		line := strings.TrimSpace(got.line)
-		if line == "" {
-			return "", ErrCancelled
-		}
-		return line, nil
+	case errors.Is(err, io.EOF):
+		return "", ErrCancelled
+	case err != nil:
+		return "", fmt.Errorf("чтение ответа: %w", err)
 	}
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return "", ErrCancelled
+	}
+	return line, nil
 }
 
 // parseAnswer разбирает то, что вставил человек.

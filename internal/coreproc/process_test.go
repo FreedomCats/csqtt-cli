@@ -91,6 +91,9 @@ func fakeCore(mode string) int {
 		for {
 			time.Sleep(time.Hour)
 		}
+	// hashcheck — режим --validate-vk-hashes (hashcheck_test.go).
+	case "hashcheck":
+		return fakeHashCheck()
 	// fail падает при запуске, как ядро без пароля.
 	case "fail":
 		fmt.Fprintln(os.Stderr, "[ФАТАЛ] [КЛИЕНТ] Нужен -password")

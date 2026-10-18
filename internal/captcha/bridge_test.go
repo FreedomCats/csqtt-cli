@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/FreedomCats/csqtt-cli/internal/coreproc"
+	"github.com/FreedomCats/csqtt-cli/internal/lines"
 )
 
 // fakeWindow — окно без окна: каждый Solve — открытие, исход задаёт тест.
@@ -106,8 +107,8 @@ func reason(err error) string {
 func testBridge(w Window, opts Options) (*Bridge, *bytes.Buffer) {
 	out := &bytes.Buffer{}
 	opts.Out = out
-	if opts.In == nil {
-		opts.In = strings.NewReader("")
+	if opts.Lines == nil {
+		opts.Lines = lines.New(strings.NewReader(""))
 	}
 	return newBridgeWith(opts, w), out
 }
@@ -163,7 +164,7 @@ func TestBridgeOutcomes(t *testing.T) {
 func TestBridgeFallsBackToManual(t *testing.T) {
 	w := newFakeWindow()
 	const token = "выдуманный-токен-0123456789"
-	b, out := testBridge(w, Options{In: strings.NewReader(token + "\n")})
+	b, out := testBridge(w, Options{Lines: lines.New(strings.NewReader(token + "\n"))})
 	done := solveAsync(b, context.Background(), manualReq("https://id.vk.com/a"))
 	w.next(t).result <- outcome{err: ErrBrowser}
 	if got := wait(t, done); got.err != nil || got.token != token {
@@ -280,7 +281,7 @@ func TestBridgeCancel(t *testing.T) {
 func TestBridgeManualOnly(t *testing.T) {
 	const token = "выдуманный-токен-0123456789"
 	out := &bytes.Buffer{}
-	b := NewBridge(Options{Out: out, In: strings.NewReader(token + "\n")})
+	b := NewBridge(Options{Out: out, Lines: lines.New(strings.NewReader(token + "\n"))})
 	b.window = nil
 	got, err := b.Solve(context.Background(), manualReq("https://id.vk.com/a"))
 	if err != nil || got != token {

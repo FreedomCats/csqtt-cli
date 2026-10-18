@@ -18,6 +18,11 @@ func TestMaskLog(t *testing.T) {
 		"CAPTCHA_RESULT|one CAPTCHA_RESULT|two-two": "CAPTCHA_RESULT|<токен скрыт, 3 зн.> CAPTCHA_RESULT|<токен скрыт, 7 зн.>",
 		"[КАПЧА] Результат от Kotlin записан в канал":      "[КАПЧА] Результат от Kotlin записан в канал",
 		"[STDIN] CAPTCHA_RESULT|tok.en_-with=signs\tхвост": "[STDIN] CAPTCHA_RESULT|<токен скрыт, 18 зн.>\tхвост",
+		// Адрес капчи с токеном сессии (captcha.rs, solveOnce).
+		"[КАПЧА] solveOnce URL: https://id.vk.ru/not_robot_captcha?domain=vk.com&session_token=abc.DEF-1&variant=popup": "[КАПЧА] solveOnce URL: https://id.vk.ru/not_robot_captcha?domain=vk.com&session_token=<скрыт, 9 зн.>&variant=popup",
+		"session_token=abc":                       "session_token=<скрыт, 3 зн.>",
+		"session_token=a#x session_token=bb (x2)": "session_token=<скрыт, 1 зн.>#x session_token=<скрыт, 2 зн.> (x2)",
+		"session_token=&next=1":                   "session_token=&next=1",
 	}
 	for in, want := range cases {
 		if got := maskLog(in); got != want {

@@ -1,6 +1,7 @@
 package coreproc
 
 import (
+	"context"
 	"io"
 	"net"
 	"os"
@@ -121,4 +122,26 @@ func checkRealCoreOutput(t *testing.T, p *Process, msgs []Message) {
 	if !pid || !stopped {
 		t.Errorf("PROCESS с pid ядра: %v, STOPPED: %v", pid, stopped)
 	}
+}
+
+// Проверка хешей на настоящем ядре: хеш выдуман, и VK ответит о нём ошибкой
+// (или не ответит — без сети). Итог один, на этот хеш; хеш до ядра дошёл через
+// stdin, а не аргументом.
+func TestRealCoreCheckHashes(t *testing.T) {
+	path := realCorePath(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	res, err := CheckHashes(ctx, path, Config{Hashes: realCoreConfig.Hashes}, func(l Log) {
+		if testing.Verbose() {
+			t.Logf("журнал: %s", l.Text)
+		}
+	})
+	if err != nil {
+		t.Fatalf("CheckHashes: %v", err)
+	}
+	if len(res) != 1 || res[0].Hash != realCoreConfig.Hashes[0] ||
+		(res[0].Status != HashInvalid && res[0].Status != HashUnavailable) {
+		t.Fatalf("итоги: %+v", res)
+	}
+	t.Logf("итог: %+v", res[0])
 }

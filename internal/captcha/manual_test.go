@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/FreedomCats/csqtt-cli/internal/lines"
 )
 
 const manualToken = "выдуманный.success-token_0123456789"
@@ -25,7 +27,7 @@ func manualRequest() Request {
 func solveWith(t *testing.T, input string) (string, string, error) {
 	t.Helper()
 	out := &bytes.Buffer{}
-	m := NewManual(ManualOptions{In: strings.NewReader(input), Out: out})
+	m := NewManual(ManualOptions{Lines: lines.New(strings.NewReader(input)), Out: out})
 	token, err := m.Solve(context.Background(), manualRequest())
 	return token, out.String(), err
 }
@@ -128,9 +130,9 @@ func TestManualBrowserFailureIsNotFatal(t *testing.T) {
 	out := &bytes.Buffer{}
 	var asked string
 	m := NewManual(ManualOptions{
-		In:   strings.NewReader(manualToken + "\n"),
-		Out:  out,
-		Open: func(u string) error { asked = u; return errors.New("браузера нет") },
+		Lines: lines.New(strings.NewReader(manualToken + "\n")),
+		Out:   out,
+		Open:  func(u string) error { asked = u; return errors.New("браузера нет") },
 	})
 	got, err := m.Solve(context.Background(), manualRequest())
 	if err != nil || got != manualToken {
@@ -149,7 +151,7 @@ func TestManualBrowserFailureIsNotFatal(t *testing.T) {
 func TestManualCancelThenNext(t *testing.T) {
 	r, w := io.Pipe()
 	defer w.Close()
-	m := NewManual(ManualOptions{In: r, Out: io.Discard})
+	m := NewManual(ManualOptions{Lines: lines.New(r), Out: io.Discard})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -192,7 +194,7 @@ func TestManualCancelThenNext(t *testing.T) {
 func TestManualDropsStaleLine(t *testing.T) {
 	r, w := io.Pipe()
 	defer w.Close()
-	m := NewManual(ManualOptions{In: r, Out: io.Discard})
+	m := NewManual(ManualOptions{Lines: lines.New(r), Out: io.Discard})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -225,7 +227,7 @@ func TestManualDropsStaleLine(t *testing.T) {
 
 // После конца ввода следующие Solve сразу отказывают, а не ждут вечно.
 func TestManualAfterEOF(t *testing.T) {
-	m := NewManual(ManualOptions{In: strings.NewReader(""), Out: io.Discard})
+	m := NewManual(ManualOptions{Lines: lines.New(strings.NewReader("")), Out: io.Discard})
 	for range 2 {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_, err := m.Solve(ctx, manualRequest())

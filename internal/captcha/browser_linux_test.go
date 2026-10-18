@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/FreedomCats/csqtt-cli/internal/coreproc"
+	"github.com/FreedomCats/csqtt-cli/internal/lines"
 )
 
 // Тесты на стенде (stand_test.go) с настоящим браузером идут в обычном
@@ -237,7 +238,7 @@ func TestBrowserThroughBridge(t *testing.T) {
 	b := newBrowserStand(t)
 	srv := newStand(t)
 	out := &bytes.Buffer{}
-	bridge := newBridgeWith(Options{Out: out, In: strings.NewReader(""), Logf: t.Logf}, b)
+	bridge := newBridgeWith(Options{Out: out, Lines: lines.New(strings.NewReader("")), Logf: t.Logf}, b)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
