@@ -69,6 +69,8 @@ func (e exitError) Error() string { return fmt.Sprintf("exit status %d", int(e))
 //
 //	строка вывода      — сообщение ядра;
 //	"wait <префикс>"   — ждать команду в stdin с этим префиксом;
+//	"on stop"          — ждать Stop; остаток записи ядро доигрывает уже
+//	                     остановленным, как настоящее, закрывающее сессии;
 //	"exit <код>"       — выйти самому, 0 — без ошибки.
 //
 // Кончилась запись — ядро живёт до Stop, как настоящее: тогда шлёт STOPPED и
@@ -103,7 +105,17 @@ func newFakeCore(cfg coreproc.Config, script []string) *fakeCore {
 func (c *fakeCore) play(script []string) {
 	defer close(c.done)
 	defer close(c.msgs)
+	stopped := false // прошли "on stop": Stop уже позвали
 	for _, step := range script {
+		if step == "on stop" {
+			<-c.stopReq
+			stopped = true
+			continue
+		}
+		if stopped {
+			c.msgs <- coreproc.ParseLine(step)
+			continue
+		}
 		if prefix, ok := strings.CutPrefix(step, "wait "); ok {
 			if !c.waitCommand(prefix) {
 				c.msgs <- coreproc.StoppedEvent{}
@@ -125,7 +137,9 @@ func (c *fakeCore) play(script []string) {
 			return
 		}
 	}
-	<-c.stopReq
+	if !stopped {
+		<-c.stopReq
+	}
 	c.msgs <- coreproc.StoppedEvent{}
 }
 

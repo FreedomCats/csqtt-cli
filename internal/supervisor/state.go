@@ -117,6 +117,7 @@ type Machine struct {
 	suspect    bool  // NETWORK_SUSPECT, и с тех пор ни нового воркера, ни трафика
 	bytesDown  int64 // принято из туннеля, по последнему STATS
 	suspectAt  int64 // bytesDown на момент NETWORK_SUSPECT
+	draining   bool  // ядру послан Stop: попытка доживает (Drain)
 }
 
 // New возвращает автомат в состоянии StateIdle.
@@ -151,7 +152,18 @@ func (m *Machine) BeginAttempt() (Transition, bool) {
 		return Transition{}, false
 	}
 	m.datapathUp, m.workers, m.suspect, m.bytesDown, m.suspectAt = false, 0, false, 0, 0
+	m.draining = false
 	return m.set(StateStarting, nil)
+}
+
+// Drain отмечает, что ядру послан Stop и попытка доживает: ядро закрывает
+// сессии, и воркеры уходят по нашей же просьбе. С этого момента события ядра
+// ещё уточняют счётчики, но состояния не меняют — иначе остановка выглядела бы
+// как «туннель без связи». Снимает отметку следующий BeginAttempt.
+func (m *Machine) Drain() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.draining = true
 }
 
 // Observe применяет сообщение ядра. Сообщения, которые на состояние не влияют
@@ -159,7 +171,7 @@ func (m *Machine) BeginAttempt() (Transition, bool) {
 //
 // Вне попытки — в StateIdle, StateReconnecting и StateStopping — сообщение
 // отбрасывается целиком: ядро прошлой попытки уже не должно перерисовывать
-// картину.
+// картину. После Drain сообщение учитывается, но перехода не даёт.
 func (m *Machine) Observe(msg coreproc.Message) (Transition, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -171,11 +183,13 @@ func (m *Machine) Observe(msg coreproc.Message) (Transition, bool) {
 
 	switch e := msg.(type) {
 	case coreproc.ProgressEvent:
-		if e.Kind == "credentials" {
+		if e.Kind == "credentials" && !m.draining {
 			return m.advance(StateCredentials)
 		}
 	case coreproc.ConfigEvent:
-		return m.advance(StateConfiguring)
+		if !m.draining {
+			return m.advance(StateConfiguring)
+		}
 	case coreproc.ReadyEvent:
 		// Новый воркер дошёл до сервера — значит, и сеть есть.
 		m.workers++
@@ -194,6 +208,9 @@ func (m *Machine) Observe(msg coreproc.Message) (Transition, bool) {
 	default:
 		return Transition{}, false
 	}
+	if m.draining {
+		return Transition{}, false
+	}
 	return m.health()
 }
 
@@ -208,6 +225,9 @@ func (m *Machine) DatapathUp() (Transition, bool) {
 		return Transition{}, false
 	}
 	m.datapathUp = true
+	if m.draining {
+		return Transition{}, false
+	}
 	return m.health()
 }
 

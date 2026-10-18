@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -257,21 +258,42 @@ func explainConnectError(err error, profile string, dead []int) error {
 			err, profile, which, app.Name, profile)
 
 	case errors.As(err, &server) && server.Rejected():
-		var hint string
-		switch {
-		case strings.Contains(server.Message, "FATAL_PROTOCOL"):
-			hint = "сервер CSQTT другой версии, чем ядро клиента: нужен сервер той же версии (деплой из неё)"
-		case strings.Contains(server.Message, "FATAL_AUTH"):
-			hint = fmt.Sprintf("проверьте пароль подключения: %s profile set %s -password", app.Name, profile)
-		default:
-			hint = fmt.Sprintf("неверный пароль (%s profile set %s -password) или сервер другой версии", app.Name, profile)
-		}
-		return fmt.Errorf("%w\n  %s", err, hint)
+		return fmt.Errorf("%w\n  %s", err, rejectHint(server.Message, profile))
 
 	case errors.As(err, &startup):
 		return fmt.Errorf("%w\n  ядро %s должно быть из той же сборки, что и %s", err, coreName, app.Name)
 	}
 	return err
+}
+
+// rejectHint — что делать, когда сервер отказал. Причину отказа сервера
+// (DENIED:<причина>) ядро передаёт только текстом сообщения: метка FATAL_* и
+// фраза по-русски (core/rust-client/protocol.rs). Поэтому различаем по тексту —
+// без учёта регистра и по коду причины тоже, на случай если ядро передаст его
+// как есть («доступ запрещён (<причина>)»).
+func rejectHint(message, profile string) string {
+	setPassword := fmt.Sprintf("%s profile set %s -password", app.Name, profile)
+	msg := strings.ReplaceAll(strings.ToLower(message), "ё", "е")
+	has := func(subs ...string) bool {
+		return slices.ContainsFunc(subs, func(s string) bool { return strings.Contains(msg, s) })
+	}
+	switch {
+	case has("fatal_protocol"):
+		return "сервер CSQTT другой версии, чем ядро клиента: нужен сервер той же версии (деплой из неё)"
+	case !has("fatal_auth"):
+		return fmt.Sprintf("неверный пароль (%s) или сервер другой версии", setPassword)
+	case has("другому устройству", "device_mismatch"):
+		// Сервер привязывает пароль к устройству, первым подключившемуся с
+		// ним: тот же пароль ещё раз не поможет.
+		return fmt.Sprintf("пароль занят другим устройством, повторный ввод не поможет: заведите для этого устройства "+
+			"отдельный пароль в панели сервера (%s) или снимите привязку пароля в панели", setPassword)
+	case has("истек", "expired"):
+		return fmt.Sprintf("нужен новый пароль из панели сервера: %s", setPassword)
+	case has("неверный пароль", "wrong_password"):
+		return fmt.Sprintf("проверьте пароль подключения: %s", setPassword)
+	default:
+		return fmt.Sprintf("проверьте пароль подключения и его состояние в панели сервера: %s", setPassword)
+	}
 }
 
 // hashNumbers — «№1, №3».

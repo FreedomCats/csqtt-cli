@@ -106,6 +106,40 @@ func TestObserveOutsideAttempt(t *testing.T) {
 	}
 }
 
+// После Drain события уточняют счётчики, но состояния не меняют; следующая
+// попытка отметку снимает.
+func TestDrain(t *testing.T) {
+	m := connected(t)
+	m.Drain()
+	for _, ev := range []coreproc.Message{coreproc.ActiveZeroEvent{}, coreproc.NetworkSuspectEvent{}, evReady} {
+		if tr, moved := m.Observe(ev); moved {
+			t.Errorf("%T после Drain сдвинул состояние: %+v", ev, tr)
+		}
+	}
+	if m.State() != StateConnected || m.Workers() != 1 {
+		t.Errorf("состояние %s, воркеров %d", m.State(), m.Workers())
+	}
+
+	// И до подъёма туннеля линия не идёт дальше.
+	m = New()
+	m.BeginAttempt()
+	m.Drain()
+	m.Observe(evCredentials)
+	m.Observe(evConfig)
+	if m.State() != StateStarting {
+		t.Errorf("состояние %s после Drain", m.State())
+	}
+
+	m.Reconnect(nil, 0)
+	m.BeginAttempt()
+	m.Observe(evConfig)
+	m.Observe(evReady)
+	m.DatapathUp()
+	if tr, moved := m.Observe(coreproc.ActiveZeroEvent{}); !moved || tr.To != StateDegraded {
+		t.Errorf("новая попытка не видит деградацию: %+v", tr)
+	}
+}
+
 func TestReconnect(t *testing.T) {
 	m := New()
 	if _, moved := m.Reconnect(nil, 0); moved {

@@ -517,11 +517,17 @@ func (a *attempt) captcha(req coreproc.CaptchaRequest) {
 // stop просит ядро выйти; первая причина побеждает: отказ datapath роняет
 // воркеров, и деградация после этого — следствие, а не причина. Stop ждёт
 // выхода ядра, поэтому — в горутине: вывод в это время читает run.
+//
+// Закрывая сессии, ядро отчитывается об уходе воркеров. Это не «туннель без
+// связи», а наша же остановка: автомат с этого момента состояния не меняет
+// (Drain), таймер деградации снимается.
 func (a *attempt) stop(res result) {
 	if a.stopping {
 		return
 	}
 	a.stopping, a.res = true, res
+	a.tunnel.machine.Drain()
+	a.stopDegradedTimer()
 	a.wg.Go(func() { _ = a.core.Stop() })
 }
 

@@ -153,6 +153,68 @@ func TestConnectServerRejected(t *testing.T) {
 	}
 }
 
+// Отказ по паролю: подсказка — по причине отказа сервера. Тексты — те, что
+// ядро пишет на DENIED:<причина> (core/rust-client/protocol.rs).
+func TestConnectServerRejectedAuth(t *testing.T) {
+	cases := []struct {
+		name, message string
+		want          []string
+		notWant       string
+	}{
+		{"wrong_password", "FATAL_AUTH: неверный пароль подключения",
+			[]string{"неверный пароль подключения", "проверьте пароль подключения: csqtt-cli profile set home -password"}, "панел"},
+		{"expired", "FATAL_AUTH: срок действия пароля истёк",
+			[]string{"срок действия пароля истёк", "новый пароль из панели сервера", "profile set home -password"}, "проверьте"},
+		{"device_mismatch", "FATAL_AUTH: пароль привязан к другому устройству",
+			[]string{"привязан к другому устройству", "повторный ввод не поможет", "отдельный пароль",
+				"profile set home -password", "снимите привязку"}, "проверьте"},
+		{"прочее", "FATAL_AUTH: доступ запрещён (deactivated)",
+			[]string{"доступ запрещён (deactivated)", "состояние в панели сервера", "profile set home -password"}, "устройств"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			te := newTestEnv(t)
+			socksHome(t, te)
+			te.core = "rejected:" + c.message
+			code, stdout, stderr := te.run("connect")
+			if code != exitError {
+				t.Fatalf("код %d:\n%s\n%s", code, stdout, stderr)
+			}
+			for _, want := range append([]string{"сервер CSQTT отказал"}, c.want...) {
+				if !strings.Contains(stderr, want) {
+					t.Errorf("нет %q:\n%s", want, stderr)
+				}
+			}
+			if strings.Contains(stderr, c.notWant) {
+				t.Errorf("лишнее %q:\n%s", c.notWant, stderr)
+			}
+			if strings.Contains(stdout, "переподключение") {
+				t.Errorf("отказ сервера повторяли:\n%s", stdout)
+			}
+		})
+	}
+}
+
+// Причина различается по тексту ядра — без учёта регистра и «ё», и по коду
+// причины, если ядро передаст его как есть.
+func TestRejectHint(t *testing.T) {
+	cases := map[string]string{
+		"FATAL_AUTH: Пароль привязан к другому устройству": "занят другим устройством",
+		"FATAL_AUTH: доступ запрещён (device_mismatch)":    "занят другим устройством",
+		"FATAL_AUTH: срок действия пароля истек":           "новый пароль",
+		"FATAL_AUTH: доступ запрещён (expired)":            "новый пароль",
+		"FATAL_AUTH: доступ запрещён (wrong_password)":     "проверьте пароль подключения: ",
+		"FATAL_AUTH: доступ запрещён (deactivated)":        "состояние в панели",
+		"FATAL_PROTOCOL: разные версии протокола":          "другой версии",
+		"что-то без метки":                                 "или сервер другой версии",
+	}
+	for msg, want := range cases {
+		if got := rejectHint(msg, "home"); !strings.Contains(got, want) {
+			t.Errorf("rejectHint(%q) = %q, ожидалось %q", msg, got, want)
+		}
+	}
+}
+
 // Все звонки недоступны — конец с номерами хешей и подсказкой; профиль не
 // меняется.
 func TestConnectHashesExhausted(t *testing.T) {

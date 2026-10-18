@@ -441,6 +441,82 @@ func TestDegradedTimerCancelledOnRecovery(t *testing.T) {
 	}
 }
 
+// Остановка — не деградация: закрывая сессии по Stop, ядро отчитывается об
+// уходе воркеров, но «без связи» туннель от этого не становится — ни при
+// остановке по ctx, ни при перезапуске ядра по SERVER_RESTART.
+func TestStopIsNotDegraded(t *testing.T) {
+	// Так ядро закрывает сессии: воркеры уходят по одному, потом — ноль.
+	closing := []string{
+		"on stop",
+		`__CSQTT_EVENT__|STATS|{"active":0,"bytes_down":500,"bytes_up":100}`,
+		`[КЛИЕНТ] Все сессии завершены`,
+		`__CSQTT_EVENT__|ACTIVE_ZERO|{}`,
+		`__CSQTT_EVENT__|READY|{"worker":2}`,
+	}
+
+	t.Run("ctx", func(t *testing.T) {
+		h := newHarness(t, Options{DegradedRestart: time.Millisecond}, join(recConnect, closing))
+		done := h.run()
+		h.waitState(StateConnected)
+		h.cancel()
+		if err := h.result(done); err != nil {
+			t.Fatalf("Run() = %v", err)
+		}
+		want := []State{StateIdle, StateStarting, StateCredentials, StateConfiguring, StateConnected, StateStopping}
+		if got := h.states(); !slices.Equal(got, want) {
+			t.Errorf("состояния %v, ожидались %v", got, want)
+		}
+		if n := len(h.attempts()); n != 1 {
+			t.Errorf("попыток %d", n)
+		}
+		// Счётчики события ядра по-прежнему уточняют.
+		if got := h.tunnel.Workers(); got != 1 {
+			t.Errorf("Workers() = %d", got)
+		}
+	})
+
+	t.Run("SERVER_RESTART", func(t *testing.T) {
+		h := newHarness(t, Options{DegradedRestart: time.Millisecond}, join(recConnect, []string{
+			`__CSQTT_EVENT__|SERVER_RESTART|{"source":"panel"}`,
+		}, closing))
+		if err := h.result(h.run()); err != nil {
+			t.Fatalf("Run() = %v", err)
+		}
+		if degr := h.transitionsTo(StateDegraded); len(degr) != 0 {
+			t.Errorf("«без связи» при остановке: %+v", degr)
+		}
+		recs := h.transitionsTo(StateReconnecting)
+		if len(recs) != 1 || recs[0].From != StateConnected || !errors.Is(recs[0].Cause, ErrServerRestart) {
+			t.Errorf("переподключение: %+v", recs)
+		}
+	})
+}
+
+// Новая попытка после остановленной снова видит деградацию: отметка Drain
+// живёт одну попытку.
+func TestDegradedAfterRestartedAttempt(t *testing.T) {
+	h := newHarness(t, Options{DegradedRestart: time.Hour},
+		join(recConnect, []string{
+			`__CSQTT_EVENT__|SERVER_RESTART|{"source":"panel"}`,
+			"on stop",
+			`__CSQTT_EVENT__|ACTIVE_ZERO|{}`,
+		}),
+		join(recConnect, []string{`__CSQTT_EVENT__|ACTIVE_ZERO|{}`, "wait never"}))
+	done := h.run()
+	h.waitState(StateReconnecting)
+	tr := h.waitState(StateDegraded)
+	h.cancel()
+	if err := h.result(done); err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	if tr.Cause != ErrNoWorkers {
+		t.Errorf("причина %v", tr.Cause)
+	}
+	if n := len(h.transitionsTo(StateDegraded)); n != 1 {
+		t.Errorf("переходов в «без связи» %d, ожидался 1", n)
+	}
+}
+
 // Отказ datapath — конец попытки.
 func TestDatapathStartFailure(t *testing.T) {
 	h := newHarness(t, Options{}, recConnect)

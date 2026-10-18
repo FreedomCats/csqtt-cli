@@ -73,6 +73,12 @@ func fakeCore(mode string) int {
 		return 0
 	}
 
+	// rejected:<сообщение> — отказ сервера с этим сообщением ядра.
+	rejectMsg := "FATAL_PROTOCOL: клиент и сервер используют разные версии протокола"
+	if msg, ok := strings.CutPrefix(mode, "rejected:"); ok {
+		mode, rejectMsg = "rejected", msg
+	}
+
 	switch mode {
 	// hashcheck — режим --validate-vk-hashes: alive… — живой, dead… — мёртвый,
 	// прочие недоступны; в сообщении недоступного — сам хеш, как в ошибке
@@ -94,10 +100,11 @@ func fakeCore(mode string) int {
 		}
 		return 0
 
-	// rejected — сервер отказал: другая версия протокола.
+	// rejected — сервер отказал: по умолчанию другая версия протокола.
 	case "rejected":
 		event("PROCESS", fmt.Sprintf(`{"pid":%d}`, os.Getpid()))
-		event("ERROR", `{"code":"handshake_rejected","message":"FATAL_PROTOCOL: клиент и сервер используют разные версии протокола","fatal":true}`)
+		payload, _ := json.Marshal(map[string]any{"code": "handshake_rejected", "message": rejectMsg, "fatal": true})
+		event("ERROR", string(payload))
 		return waitStop()
 
 	// dead — все звонки недоступны: ядро сообщает о каждом и выходит само.

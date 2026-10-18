@@ -22,6 +22,7 @@ func TestHashesCheck(t *testing.T) {
 	}
 	noSecrets(t, "вывод", stdout+stderr)
 	for _, want := range []string{
+		"Проверка звонков профиля home: хешей 3, по одному — обычно несколько секунд на каждый",
 		"  №1  живой\n",
 		"  №2  мёртвый — ошибка VK 954: Invalid join link\n",
 		"  №3  недоступен — request for link=<хеш №3> failed\n",
