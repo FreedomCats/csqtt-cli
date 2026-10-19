@@ -5,9 +5,15 @@ use anyhow::{Result, bail};
 use std::fs::File;
 use tokio_util::sync::CancellationToken;
 
+// Правка П4 csqtt-cli: проверка отправителя дескриптора TUN.
+#[cfg(unix)]
+#[path = "tun_peer.rs"]
+mod peer;
+
 #[cfg(unix)]
 pub struct FdReceiver {
     listener: tokio::io::unix::AsyncFd<std::os::fd::OwnedFd>,
+    peer_check: peer::PeerCheck,
 }
 
 #[cfg(unix)]
@@ -31,6 +37,7 @@ impl FdReceiver {
         listen(&listener, Backlog::new(4)?)?;
         Ok(Self {
             listener: tokio::io::unix::AsyncFd::new(listener)?,
+            peer_check: peer::PeerCheck::new(),
         })
     }
 
@@ -53,6 +60,10 @@ impl FdReceiver {
                     match accept(self.listener.get_ref().as_raw_fd()) {
                         Ok(descriptor) => {
                             let descriptor = unsafe { OwnedFd::from_raw_fd(descriptor) };
+                            // Правка П4 csqtt-cli: чужой uid — закрыть соединение и ждать следующего.
+                            if !self.peer_check.admit(&descriptor) {
+                                continue;
+                            }
                             configure_nonblocking(descriptor.as_raw_fd())?;
                             break descriptor;
                         }

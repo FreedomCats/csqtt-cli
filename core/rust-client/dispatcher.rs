@@ -52,7 +52,6 @@ enum TunWriteState {
     Backoff,
     Yield,
     Closed,
-    Failed,
 }
 
 struct ReturnReorder {
@@ -934,7 +933,7 @@ impl Dispatcher {
                     }
                 }
                 TunWriteState::Yield => tokio::task::yield_now().await,
-                TunWriteState::Closed | TunWriteState::Failed => return,
+                TunWriteState::Closed => return,
                 TunWriteState::Continue => unreachable!(),
             }
         }
@@ -969,8 +968,9 @@ impl Dispatcher {
         });
         match result {
             Ok(Ok(0)) => {
-                crate::log_error!("[ОШИБКА] Запись TUN вернула 0 байт");
-                TunWriteState::Failed
+                // Правка П6 csqtt-cli: пакет отброшен, дальше — следующий.
+                tun_drop::rejected(packet.len(), *written, None);
+                TunWriteState::Complete
             }
             Ok(Ok(length)) => {
                 *written += length;
@@ -998,8 +998,9 @@ impl Dispatcher {
                 TunWriteState::Closed
             }
             Ok(Err(error)) => {
-                crate::log_error!("[ОШИБКА] Запись TUN завершена: {error}");
-                TunWriteState::Failed
+                // Правка П6 csqtt-cli: пакет отброшен, дальше — следующий.
+                tun_drop::rejected(packet.len(), *written, Some(&error));
+                TunWriteState::Complete
             }
             Err(_) => TunWriteState::Wait,
         }
@@ -1195,6 +1196,11 @@ where
         }
     })
 }
+
+// Правка П6 csqtt-cli: отброс пакетов, которые ОС не приняла в TUN.
+#[cfg(unix)]
+#[path = "tun_drop.rs"]
+mod tun_drop;
 
 #[cfg(unix)]
 fn is_closed_tun_error(error: &std::io::Error) -> bool {

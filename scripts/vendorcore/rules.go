@@ -302,6 +302,71 @@ var rules = []rule{
 			"${1}crate::csqtt_bind::bind_socket(socket2::SockRef::from(&socket), addr.is_ipv6())\n" +
 			"${1}    .map_err(ConnectError::m(\"tcp bind interface index error\"))?;\n",
 	},
+
+	// П4: дескриптор TUN по -tun-uds — только от процесса с тем же uid, что у
+	// ядра (SO_PEERCRED). Чужое соединение закрывается, не читая, и приём
+	// ждёт следующего. Проверка и тесты — files/rust-client/tun_peer.rs,
+	// дочерний модуль tun.rs: тестам нужен слушатель изнутри.
+	{
+		File: "rust-client/tun.rs", Count: 1,
+		Pattern: `(?m)^()use tokio_util::sync::CancellationToken;$`,
+		InsertAfter: "\n// Правка П4 csqtt-cli: проверка отправителя дескриптора TUN.\n" +
+			"#[cfg(unix)]\n#[path = \"tun_peer.rs\"]\nmod peer;",
+	},
+	{
+		File: "rust-client/tun.rs", Count: 1,
+		Pattern:     `(?m)^( +)listener: tokio::io::unix::AsyncFd<std::os::fd::OwnedFd>,$`,
+		InsertAfter: "peer_check: peer::PeerCheck,",
+	},
+	{
+		File: "rust-client/tun.rs", Count: 1,
+		Pattern:     `(?m)^( +)listener: tokio::io::unix::AsyncFd::new\(listener\)\?,$`,
+		InsertAfter: "peer_check: peer::PeerCheck::new(),",
+	},
+	{
+		// Сразу после accept, до чтения: отказ — не ошибка receive, так что
+		// у вызывающего нет ни ошибки в журнале, ни паузы перед повтором.
+		File: "rust-client/tun.rs", Count: 1,
+		Pattern: `(?m)^( +)configure_nonblocking\(descriptor\.as_raw_fd\(\)\)\?;$`,
+		InsertBefore: "// Правка П4 csqtt-cli: чужой uid — закрыть соединение и ждать следующего.\n" +
+			"${1}if !self.peer_check.admit(&descriptor) {\n${1}    continue;\n${1}}",
+	},
+
+	// П6: пакет, который ОС не приняла в TUN (запись 0 байт или ошибка, кроме
+	// повторяемых и «закрыт»), отбрасывается, а писатель берёт следующий; у
+	// апстрима он останавливался до нового дескриптора. Счёт и приглушённый
+	// журнал — files/rust-client/tun_drop.rs, дочерний модуль dispatcher.rs:
+	// тестам нужен закрытый write_tun.
+	{
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern: `(?m)^()#\[cfg\(unix\)\]\nfn is_closed_tun_error\(`,
+		InsertBefore: "// Правка П6 csqtt-cli: отброс пакетов, которые ОС не приняла в TUN.\n" +
+			"#[cfg(unix)]\n#[path = \"tun_drop.rs\"]\nmod tun_drop;\n",
+	},
+	{
+		// Complete — пакет обработан: write_tun берёт следующий с нуля.
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern: `(?m)^( +)crate::log_error!\("\[ОШИБКА\] Запись TUN вернула 0 байт"\);\n +TunWriteState::Failed$`,
+		Replace: to("${1}// Правка П6 csqtt-cli: пакет отброшен, дальше — следующий.\n" +
+			"${1}tun_drop::rejected(packet.len(), *written, None);\n${1}TunWriteState::Complete"),
+	},
+	{
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern: `(?m)^( +)crate::log_error!\("\[ОШИБКА\] Запись TUN завершена: \{error\}"\);\n +TunWriteState::Failed$`,
+		Replace: to("${1}// Правка П6 csqtt-cli: пакет отброшен, дальше — следующий.\n" +
+			"${1}tun_drop::rejected(packet.len(), *written, Some(&error));\n${1}TunWriteState::Complete"),
+	},
+	{
+		// Failed больше никто не возвращает.
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern: `(?m)^( +)Closed,\n +Failed,\n\}$`,
+		Replace: to("${1}Closed,\n}"),
+	},
+	{
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern: `(?m)^( +)TunWriteState::Closed \| TunWriteState::Failed => return,$`,
+		Replace: to("${1}TunWriteState::Closed => return,"),
+	},
 }
 
 // ================================================================================
