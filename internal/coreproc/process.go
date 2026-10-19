@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +19,11 @@ const (
 	CmdPause  = "PAUSE"
 	CmdResume = "RESUME"
 )
+
+// BindIf — команда сменить физический интерфейс (правка П3): новые сокеты
+// ядра пойдут через интерфейс index, старые доживут своё. Действует, только
+// если ядро запущено с Config.BindIf; отказ ядро пишет в журнал.
+func BindIf(index uint32) string { return "BIND_IF:" + strconv.FormatUint(uint64(index), 10) }
 
 // CaptchaResult — ответ на CaptchaRequest: токен решённой капчи.
 func CaptchaResult(token string) string { return "CAPTCHA_RESULT|" + token }

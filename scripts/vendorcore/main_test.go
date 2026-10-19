@@ -84,8 +84,12 @@ func read(t *testing.T, path string) string {
 // fakeUpstream — апстрим с тем же устройством, что настоящий: файлы с CRLF,
 // как их отдаёт клон на Windows, подкаталог и сборка cargo, которую
 // переносить нельзя.
+//
+// Вендоренных крейтов и сокетов у него нет: их наборы на время теста пусты.
 func fakeUpstream(t *testing.T) string {
 	t.Helper()
+	withCrates(t)
+	withSockets(t)
 	up := t.TempDir()
 	write(t, filepath.Join(up, "LICENSE"), "PolyForm\r\n")
 	write(t, filepath.Join(up, "rust-client", "Cargo.toml"), "[package]\r\nname = \"csqtt-client\"\r\nversion = \"9.9.9\"\r\n")

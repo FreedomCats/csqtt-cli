@@ -47,6 +47,12 @@ type Config struct {
 	Listen     string
 	ListenPeer string
 	TunUDS     string
+	// BindIf — индекс физического интерфейса: все сокеты ядра наружу идут
+	// через него, мимо туннеля (правка П3); сменить на ходу — BindIf.
+	// Mark — метка SO_MARK на те же сокеты, только Linux и только вместе с
+	// BindIf. Ноль — не передаётся.
+	BindIf uint32
+	Mark   uint32
 }
 
 // Args — аргументы командной строки ядра. Флаги — в виде --имя=значение.
@@ -73,6 +79,12 @@ func (c Config) Args() []string {
 	add("listen", c.Listen)
 	add("listen-peer", c.ListenPeer)
 	add("tun-uds", c.TunUDS)
+	if c.BindIf != 0 {
+		add("bind-if", strconv.FormatUint(uint64(c.BindIf), 10))
+	}
+	if c.Mark != 0 {
+		add("mark", strconv.FormatUint(uint64(c.Mark), 10))
+	}
 	return args
 }
 

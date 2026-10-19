@@ -4,6 +4,7 @@
 #![allow(linker_messages)]
 
 mod auth;
+mod bind_if;
 mod captcha;
 mod captcha_slider;
 mod client_perf;
@@ -124,6 +125,10 @@ struct Arguments {
     validate_vk_hashes: bool,
     #[arg(long, default_value_t = false)]
     secrets_stdin: bool,
+    #[arg(long, default_value_t = 0)]
+    bind_if: u32,
+    #[arg(long, default_value_t = 0)]
+    mark: u32,
 }
 
 fn main() {
@@ -173,6 +178,7 @@ fn runtime_worker_threads(requested_workers: usize) -> usize {
 }
 
 async fn run(arguments: Arguments) -> Result<()> {
+    bind_if::configure(arguments.bind_if, arguments.mark)?;
     if arguments.validate_vk_hashes {
         return run_vk_hash_validation(&arguments).await;
     }
@@ -490,6 +496,8 @@ fn normalize_cli_argument(argument: String) -> String {
         "allow-hash-redistribution",
         "validate-vk-hashes",
         "secrets-stdin",
+        "bind-if",
+        "mark",
     ];
     if let Some(value) = argument.strip_prefix('-') {
         let name = value.split('=').next().unwrap_or(value);
@@ -622,6 +630,10 @@ fn start_control_input(
                     return;
                 }
                 _ => {
+                    if let Some(index) = line.strip_prefix("BIND_IF:") {
+                        bind_if::command(index);
+                        continue;
+                    }
                     if let Some(result) = line.strip_prefix("CAPTCHA_RESULT|") {
                         if captcha.submit_result(result.to_owned()) {
                             crate::log_error!("[КАПЧА] Результат от Kotlin записан в канал");

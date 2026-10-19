@@ -14,7 +14,6 @@ use std::{
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf},
-    net::TcpStream,
     sync::{mpsc, watch},
 };
 use turn_rustls::{ClientConfig, RootCertStore, pki_types::ServerName};
@@ -58,7 +57,7 @@ pub async fn connect(
     TurnStreamReader,
     TurnStreamWriteFailure,
 )> {
-    let socket = TcpStream::connect(server)
+    let socket = crate::bind_if::connect_tcp(server)
         .await
         .with_context(|| format!("TURN {} connect {server}", endpoint.transport.as_str()))?;
     socket

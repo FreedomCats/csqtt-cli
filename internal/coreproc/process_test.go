@@ -171,7 +171,7 @@ func TestProcessReplay(t *testing.T) {
 	p := startFake(t, "replay")
 	msgs, seen, drained := collect(p, func(m Message) bool { return m == Log{Text: "[STDIN] PAUSE"} })
 	// Ядро повторяет команды в журнал — токен капчи в нём должен быть скрыт.
-	for _, cmd := range []string{CaptchaResult(fakeCaptchaToken), CaptchaFailed("closed"), CmdPause} {
+	for _, cmd := range []string{CaptchaResult(fakeCaptchaToken), CaptchaFailed("closed"), BindIf(12), CmdPause} {
 		if err := p.Send(cmd); err != nil {
 			t.Fatal(err)
 		}
@@ -205,7 +205,7 @@ func TestProcessReplay(t *testing.T) {
 	}
 	slices.Sort(logs)
 	wantLogs := append(slices.Clone(sampleLog), "[STDIN] PAUSE", "[STDIN] STOP",
-		"[STDIN] CAPTCHA_RESULT|<токен скрыт, 24 зн.>", "[STDIN] CAPTCHA_RESULT|error:closed")
+		"[STDIN] CAPTCHA_RESULT|<токен скрыт, 24 зн.>", "[STDIN] CAPTCHA_RESULT|error:closed", "[STDIN] BIND_IF:12")
 	slices.Sort(wantLogs)
 	if !slices.Equal(logs, wantLogs) {
 		t.Errorf("журнал = %q, want %q", logs, wantLogs)

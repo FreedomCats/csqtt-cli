@@ -431,6 +431,7 @@ dependencies = [
  "md-5",
  "nix",
  "primp",
+ "primp-hyper-util",
  "primp-rustls",
  "primp-tokio-rustls",
  "proptest",
@@ -1148,8 +1149,6 @@ dependencies = [
 [[package]]
 name = "primp-hyper-util"
 version = "0.1.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bac29e007d9b369dc0429269955a7adeb63dd9be67beb96a17d2ce311c511763"
 dependencies = [
  "base64 0.22.1",
  "bytes",

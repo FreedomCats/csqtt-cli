@@ -12,13 +12,17 @@
 //
 //  1. Копирует rust-client/ и shared/ апстрима в core/ целиком, кроме файлов
 //     из excludedFiles, и лицензию ядра — в core/LICENSE.
-//  2. Применяет правила из rules.go.
-//  3. Добавляет наши файлы из scripts/vendorcore/files (addedDir).
-//  4. Записывает core/CORE_VERSION: коммит апстрима, версию ядра из
-//     Cargo.toml и ревизию протокола.
-//  5. Удаляет из core/ всё, чего нет в апстриме и в addedDir: core/ целиком
-//     принадлежит команде, руками туда ничего не кладут. Не трогает только
-//     выход сборки cargo.
+//  2. Распаковывает вендоренные крейты crates.io (crates.go) из их архивов в
+//     scripts/vendorcore/crates, сверив архив с Cargo.lock апстрима.
+//  3. Применяет правила из rules.go — к файлам апстрима и крейтов.
+//  4. Добавляет наши файлы из scripts/vendorcore/files (addedDir).
+//  5. Сверяет места создания сокетов со списком покрытых правкой П3
+//     (sockets.go): новый сокет — ошибка.
+//  6. Записывает core/CORE_VERSION: коммит апстрима, версию ядра из
+//     Cargo.toml, ревизию протокола и версии крейтов.
+//  7. Удаляет из core/ всё, чего нет в апстриме, крейтах и addedDir: core/
+//     целиком принадлежит команде, руками туда ничего не кладут. Не трогает
+//     только выход сборки cargo.
 //
 // Текстовые файлы пишутся в UTF-8 с LF, как они лежат в git апстрима: клон
 // на Windows может отдать их с CRLF. -check концы строк тоже не различает.
@@ -244,13 +248,17 @@ func run(root, upstream string, check bool) (int, error) {
 			return 0, err
 		}
 	}
+	crates, err := addCrates(root, plan)
+	if err != nil {
+		return 0, err
+	}
 
 	// Счётчик внутри applyRules не сработает, если апстрим переименовал файл:
 	// правило тогда не применится ни разу и пропадёт молча.
 	for _, r := range rules {
 		data, ok := plan[r.File]
 		if !ok {
-			return 0, fmt.Errorf("правило ссылается на %s, которого нет в апстриме", r.File)
+			return 0, fmt.Errorf("правило ссылается на %s, которого нет ни в апстриме, ни в вендоренных крейтах", r.File)
 		}
 		if !isText(data) {
 			return 0, fmt.Errorf("правило ссылается на двоичный файл %s", r.File)
@@ -283,6 +291,11 @@ func run(root, upstream string, check bool) (int, error) {
 		plan[rel] = normalize(raw)
 	}
 
+	// Сторож П3: новый сокет в ядре — ошибка и переноса, и -check.
+	if err := checkSockets(plan); err != nil {
+		return 0, err
+	}
+
 	coreVersion, err := field(plan, "rust-client/Cargo.toml", cargoVersion)
 	if err != nil {
 		return 0, err
@@ -303,6 +316,9 @@ func run(root, upstream string, check bool) (int, error) {
 		fmt.Sprintf("files    = %d", len(plan)),
 		fmt.Sprintf("rules    = %d", len(rules)),
 		fmt.Sprintf("added    = %d", len(added)),
+	}
+	for _, c := range crates {
+		header = append(header, fmt.Sprintf("crate    = %s %s sha256:%s", c.Name, c.Version, c.Checksum))
 	}
 	if version.Dirty {
 		header = append(header, "dirty    = true  # в апстриме есть незакоммиченные правки")

@@ -2,9 +2,11 @@ package coreproc
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -144,4 +146,77 @@ func TestRealCoreCheckHashes(t *testing.T) {
 		t.Fatalf("итоги: %+v", res)
 	}
 	t.Logf("итог: %+v", res[0])
+}
+
+// loopbackIndex — индекс loopback этой машины.
+func loopbackIndex(t *testing.T) uint32 {
+	t.Helper()
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagLoopback != 0 {
+			return uint32(iface.Index)
+		}
+	}
+	t.Skip("нет loopback")
+	return 0
+}
+
+// Правка П3 на настоящем ядре: с -bind-if ядро поднимается, пишет, через
+// какой интерфейс идут его сокеты, и принимает BIND_IF:. Интерфейс — loopback:
+// до VK ядро так не дойдёт, но и мимо привязки не уйдёт.
+func TestRealCoreBindIf(t *testing.T) {
+	path := realCorePath(t)
+	lo := loopbackIndex(t)
+	cfg := realCoreConfig
+	cfg.BindIf = lo
+	p, err := Start(path, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.stop(0) })
+	bound := fmt.Sprintf("[П3] Сокеты ядра — через интерфейс %d", lo)
+	changed := fmt.Sprintf("[П3] Интерфейс %d → %d", lo, lo)
+	msgs, seen, drained := collect(p, func(m Message) bool { l, ok := m.(Log); return ok && strings.HasPrefix(l.Text, changed) })
+	if err := p.Send(BindIf(lo)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, seen, changed)
+	if !slices.Contains(msgs(), Message(Log{Text: bound})) {
+		t.Errorf("в журнале нет %q", bound)
+	}
+	if cmdline := commandLine(t, p.PID()); !strings.Contains(cmdline, fmt.Sprintf("--bind-if=%d", lo)) {
+		t.Errorf("командная строка ядра: %s", cmdline)
+	}
+	if err := p.Stop(); err != nil {
+		t.Errorf("Stop() = %v", err)
+	}
+	waitFor(t, drained, "закрытие Messages")
+	checkRealCoreOutput(t, p, msgs())
+}
+
+// Индекс без интерфейса — отказ стартовать с понятной строкой, а не молча
+// непривязанные сокеты.
+func TestRealCoreBindIfRefused(t *testing.T) {
+	cfg := realCoreConfig
+	cfg.BindIf = 0x7fff_fff0
+	p, err := Start(realCorePath(t), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.stop(0) })
+	var fatal []string
+	for m := range p.Messages() {
+		if l, ok := m.(Log); ok && strings.Contains(l.Text, "[ФАТАЛ]") {
+			fatal = append(fatal, l.Text)
+		}
+	}
+	if err := p.Wait(); err == nil {
+		t.Error("ядро с -bind-if без интерфейса вышло без ошибки")
+	}
+	if len(fatal) != 1 || !strings.Contains(fatal[0], "-bind-if 2147483632") || !strings.Contains(fatal[0], "нет интерфейса") {
+		t.Errorf("фатальные строки журнала: %q", fatal)
+	}
 }
