@@ -47,23 +47,51 @@ func lockdownRules(forward bool) []guardRule {
 			guardRule{mark: true, accept: true},
 			guardRule{loopback: true, accept: true})
 	}
-	rules = append(rules,
-		guardRule{proto: unix.IPPROTO_UDP, dport: 53},
-		guardRule{proto: unix.IPPROTO_TCP, dport: 53})
+	rules = append(rules, dnsDenyRules()...)
 	if !forward {
-		// DHCP продлевает аренду и одноадресно — сервер бывает и не в
-		// локальной сети; ND и RA ходят и на глобальные адреса соседей.
-		rules = append(rules,
-			guardRule{family: unix.NFPROTO_IPV4, proto: unix.IPPROTO_UDP, sport: 68, dport: 67, accept: true},
-			guardRule{family: unix.NFPROTO_IPV6, proto: unix.IPPROTO_UDP, sport: 546, dport: 547, accept: true},
-			guardRule{family: unix.NFPROTO_IPV6, ndp: true, accept: true})
+		rules = append(rules, hostServiceRules(0)...)
 	}
-	for _, p := range localNets {
-		family := byte(unix.NFPROTO_IPV4)
-		if p.Addr().Is6() {
-			family = unix.NFPROTO_IPV6
-		}
-		rules = append(rules, guardRule{family: family, daddr: p, accept: true})
-	}
+	rules = append(rules, localNetRules(0)...)
 	return append(rules, guardRule{})
+}
+
+// dnsDenyRules — запрет порта 53, UDP и TCP, к любым адресам.
+func dnsDenyRules() []guardRule {
+	return []guardRule{
+		{proto: unix.IPPROTO_UDP, dport: 53},
+		{proto: unix.IPPROTO_TCP, dport: 53},
+	}
+}
+
+// hostServiceRules — разрешения служебных протоколов хоста семейства family
+// (unix.NFPROTO_*; 0 — обоих). DHCP продлевает аренду и одноадресно — сервер
+// бывает и не в локальной сети; ND и RA ходят и на глобальные адреса соседей.
+func hostServiceRules(family byte) []guardRule {
+	var rules []guardRule
+	for _, r := range []guardRule{
+		{family: unix.NFPROTO_IPV4, proto: unix.IPPROTO_UDP, sport: 68, dport: 67, accept: true},
+		{family: unix.NFPROTO_IPV6, proto: unix.IPPROTO_UDP, sport: 546, dport: 547, accept: true},
+		{family: unix.NFPROTO_IPV6, ndp: true, accept: true},
+	} {
+		if family == 0 || r.family == family {
+			rules = append(rules, r)
+		}
+	}
+	return rules
+}
+
+// localNetRules — разрешения локальной сети (localNets) семейства family
+// (unix.NFPROTO_*; 0 — обоих).
+func localNetRules(family byte) []guardRule {
+	var rules []guardRule
+	for _, p := range localNets {
+		f := byte(unix.NFPROTO_IPV4)
+		if p.Addr().Is6() {
+			f = unix.NFPROTO_IPV6
+		}
+		if family == 0 || f == family {
+			rules = append(rules, guardRule{family: f, daddr: p, accept: true})
+		}
+	}
+	return rules
 }

@@ -286,17 +286,19 @@ func (f *fakeTunFD) calls() []fdSend {
 	return append([]fdSend(nil), f.sends...)
 }
 
-// fakePersistent — datapath, живущий весь сеанс: Suspend зовёт onSuspend.
+// fakePersistent — datapath, живущий весь сеанс: Suspend зовёт onSuspend и
+// возвращает suspendErr.
 type fakePersistent struct {
 	*fakeDatapath
-	onSuspend func()
+	onSuspend  func()
+	suspendErr error
 }
 
 func (p *fakePersistent) Suspend() error {
 	if p.onSuspend != nil {
 		p.onSuspend()
 	}
-	return nil
+	return p.suspendErr
 }
 
 // harness — цикл на поддельном ядре: каждая попытка играет свою запись.

@@ -123,6 +123,14 @@ type Options struct {
 	// сменился. nil — молчать.
 	Logf func(format string, args ...any)
 
+	// KillSwitch — стоит ли сейчас kill-switch, набор «закрыто»: с ним
+	// datapath, снимая защиту DNS в Suspend, закрывает трафик системы, а не
+	// отпускает его мимо туннеля. Цикл спрашивает после Suspend, чтобы строка
+	// о конце попытки говорила правду: kill-switch мог и не встать
+	// (-allow-leak) или быть снят на время ручной капчи. nil — kill-switch
+	// нет.
+	KillSwitch func() bool
+
 	// DegradedRestart — сколько терпеть StateDegraded до перезапуска ядра.
 	// 0 — DefaultDegradedRestart.
 	DegradedRestart time.Duration
@@ -196,6 +204,12 @@ type Tunnel struct {
 	start     func(coreproc.Config) (Core, error)
 	sleep     func(context.Context, time.Duration) bool
 	fdTimeout time.Duration
+
+	// Трафик системы у Persistent-datapath (tun); только горутина цикла.
+	// routed — Start прошёл, и Suspend после него ещё не было; bypassed — на
+	// время переподключения туннель снят, и об этом сказано строкой, blocked
+	// — тогда стояло «закрыто».
+	routed, bypassed, blocked bool
 }
 
 // NewTunnel собирает цикл. Ошибку возвращает только на неполных настройках:
@@ -321,16 +335,50 @@ func (t *Tunnel) attempt(ctx context.Context) result {
 	return a.run(ctx.Done())
 }
 
-// suspend снимает маршруты Persistent-datapath между попытками: пока они ведут
-// в туннель без ядра, страница капчи VK не загрузится. Отказ только пишется:
-// следующая попытка всё равно начнётся.
+// suspend снимает маршруты, DNS системы и защиту DNS Persistent-datapath
+// между попытками: пока маршруты ведут в туннель без ядра, страница капчи VK
+// не загрузится. Отказ только пишется: следующая попытка всё равно начнётся.
+//
+// Если туннель в этой попытке был поднят, строка говорит, куда теперь идёт
+// трафик системы: окно мимо туннеля нужно видеть, а не узнавать из README.
+// С kill-switch трафик закрыт — так и сказано.
 func (t *Tunnel) suspend() {
 	p, ok := t.opts.Datapath.(datapath.Persistent)
 	if !ok {
 		return
 	}
 	if err := p.Suspend(); err != nil {
-		t.logf("маршруты туннеля между попытками не сняты: %v", err)
+		t.logf("туннель между попытками снят не полностью (маршруты, DNS системы, защита DNS): %v", err)
+	}
+	blocked := t.opts.KillSwitch != nil && t.opts.KillSwitch()
+	if !t.routed {
+		return
+	}
+	t.routed = false
+	t.bypassed, t.blocked = true, blocked
+	if blocked {
+		t.logf("туннель переподключается — трафик системы заблокирован (kill-switch)")
+	} else {
+		t.logf("маршруты сняты на время переподключения — трафик и DNS системы идут мимо туннеля")
+	}
+}
+
+// routedUp — Start Persistent-datapath прошёл: трафик системы снова идёт в
+// туннель. Если между попытками об обратном сказано строкой — строка, что
+// он вернулся.
+func (t *Tunnel) routedUp() {
+	if _, ok := t.opts.Datapath.(datapath.Persistent); !ok {
+		return
+	}
+	t.routed = true
+	if !t.bypassed {
+		return
+	}
+	t.bypassed = false
+	if t.blocked {
+		t.logf("туннель снова поднят — трафик системы идёт через него")
+	} else {
+		t.logf("маршруты возвращены — трафик системы снова идёт через туннель")
 	}
 }
 
@@ -512,6 +560,7 @@ func (a *attempt) config(e coreproc.ConfigEvent) {
 			return
 		}
 		a.dpUp, a.conf = true, conf
+		t.routedUp()
 		a.datapathUp()
 	case !slices.Equal(conf.DNS, a.conf.DNS):
 		if err := t.opts.Datapath.UpdateDNS(conf.DNS); err != nil {

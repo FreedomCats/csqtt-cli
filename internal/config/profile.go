@@ -76,6 +76,10 @@ type Profile struct {
 	TurnTransport string `toml:"turn_transport"`
 	// Datapath — как отдавать трафик: tun или socks.
 	Datapath string `toml:"datapath"`
+	// KillSwitch — блокировать ли трафик системы, пока туннель не поднят
+	// (datapath tun). Указатель: пропущенное поле значит «включён», выключает
+	// только явное false. Читать — KillSwitchOn.
+	KillSwitch *bool `toml:"kill_switch"`
 
 	// Socks — секция [profile.<имя>.socks].
 	Socks SocksSection `toml:"socks"`
@@ -126,6 +130,12 @@ func (p *Profile) Core() coreproc.Config {
 		cfg.Workers = DefaultWorkers
 	}
 	return cfg
+}
+
+// KillSwitchOn — включён ли kill-switch: да, если в профиле не сказано
+// обратного.
+func (p *Profile) KillSwitchOn() bool {
+	return p.KillSwitch == nil || *p.KillSwitch
 }
 
 // Names возвращает имена профилей по алфавиту — для выбора и для сообщений

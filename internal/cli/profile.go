@@ -102,6 +102,7 @@ type profileFlags struct {
 	turnTransport *string
 	datapath      *string
 	socksListen   *string
+	killSwitch    *bool
 	makeDefault   *bool
 }
 
@@ -113,6 +114,7 @@ func addProfileFlags(fs *flag.FlagSet) *profileFlags {
 		turnTransport: fs.String("turn-transport", "", "до TURN по udp или tcp_tls"),
 		datapath:      fs.String("datapath", "", "как отдавать трафик: socks или tun (tun — в следующих версиях)"),
 		socksListen:   fs.String("socks-listen", "", "адрес SOCKS5 при datapath = socks, только loopback (по умолчанию "+datapath.DefaultSocksListen+")"),
+		killSwitch:    fs.Bool("kill-switch", true, "kill-switch: "+killSwitchUsage+"; -kill-switch=false — выключить"),
 		makeDefault:   fs.Bool("default", false, "сделать профиль профилем по умолчанию"),
 	}
 }
@@ -136,6 +138,10 @@ func (f *profileFlags) apply(p *config.Profile, named map[string]bool) {
 	}
 	if named["socks-listen"] {
 		p.Socks.Listen = strings.TrimSpace(*f.socksListen)
+	}
+	if named["kill-switch"] {
+		value := *f.killSwitch
+		p.KillSwitch = &value
 	}
 }
 
@@ -502,6 +508,11 @@ func runProfileShow(_ context.Context, e *env, args []string) error {
 	printSetting(e.stdout, "workers", numberOrEmpty(p.Workers), strconv.Itoa(config.DefaultWorkers))
 	printSetting(e.stdout, "obfs", p.Obfs, "audio")
 	printSetting(e.stdout, "turn_transport", p.TurnTransport, "udp")
+	if p.KillSwitch == nil {
+		printSetting(e.stdout, "kill_switch", "", "true")
+	} else {
+		printSetting(e.stdout, "kill_switch", strconv.FormatBool(*p.KillSwitch), "")
+	}
 	printSetting(e.stdout, "socks.listen", p.Socks.Listen, datapath.DefaultSocksListen)
 	if strings.TrimSpace(p.DeviceID) == "" {
 		printField(e.stdout, "device_id", "не задан", "(заведётся при подключении)")

@@ -32,7 +32,8 @@ const dnsGuardTable = app.Name
 // маршрутизации по ней нет.
 //
 // Цепочка forward — ради контейнеров и ВМ: их запросы к резолверу в
-// локальной сети (маршрут конкретнее /1) иначе ушли бы мимо туннеля.
+// локальной сети (маршрут конкретнее /1) иначе ушли бы мимо туннеля, а при
+// закрытом IPv6 — и их IPv6 наружу.
 //
 // Таблица и цепочки создаются один раз (OpenDNSGuard), а правила ставятся и
 // снимаются по ходу (Enable, Lockdown, Disable): отказ так узнаётся до
@@ -127,9 +128,11 @@ func dnsGuardTableOwner() (uint32, bool) {
 	return table.Owner, true
 }
 
-// BlockIPv6 задаёт, закрывать ли при следующем Enable весь IPv6 системы,
-// кроме loopback и сокетов csqtt-cli: туннель его не везёт (MTU < 1280, ядро
-// снимает IPv6 с адаптера), и без запрета он шёл бы мимо туннеля.
+// BlockIPv6 задаёт, закрывать ли при следующем Enable IPv6 системы наружу:
+// туннель CSQTT IPv6 не везёт, маршрутов IPv6 в адаптер нет, и без запрета
+// он шёл бы мимо туннеля. Открытыми остаются loopback, сокеты csqtt-cli и,
+// как в «закрыто», локальная сеть IPv6, ND, RA и DHCPv6; DNS к локальной
+// сети закрыт (dnsGuardRules).
 func (g *DNSGuard) BlockIPv6(block bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -221,12 +224,17 @@ type guardRule struct {
 	accept   bool         // иначе drop
 }
 
-// dnsGuardRules — правила цепочки по порядку: сначала разрешения, потом
-// запреты. forward — цепочка транзитного трафика: метки и loopback там нет.
+// dnsGuardRules — правила цепочки по порядку: сначала разрешения резолверам,
+// потом запрет порта 53. forward — цепочка транзитного трафика: метки и
+// loopback там нет.
 //
-// При blockIPv6 IPv6 закрыт целиком, раньше разрешений по адресу: резолвер
-// туннеля с адресом IPv6 тогда тоже недоступен — маршрута IPv6 в туннель
-// нет, и запрос к нему ушёл бы мимо.
+// При blockIPv6 после запрета порта 53 разрешается локальный IPv6 — как в
+// «закрыто» (lockdownRules): служебные протоколы хоста (DHCPv6, ND и RA) и
+// локальная сеть, — а прочий IPv6 отбрасывается. Транзитному IPv6
+// контейнеров и ВМ — то же, без служебных протоколов хоста: наружу ему
+// туннеля тоже нет. Запрет порта 53 стоит раньше: DNS к локальной сети IPv6
+// закрыт, а резолвер туннеля с адресом IPv6 не разрешается вовсе — маршрута
+// IPv6 в туннель нет, и запрос к нему ушёл бы мимо.
 func dnsGuardRules(dns []netip.Addr, blockIPv6, forward bool) []guardRule {
 	var rules []guardRule
 	if !forward {
@@ -234,10 +242,6 @@ func dnsGuardRules(dns []netip.Addr, blockIPv6, forward bool) []guardRule {
 			guardRule{mark: true, accept: true},
 			guardRule{loopback: true, accept: true})
 	}
-	if blockIPv6 {
-		rules = append(rules, guardRule{family: unix.NFPROTO_IPV6})
-	}
-	protos := []byte{unix.IPPROTO_UDP, unix.IPPROTO_TCP}
 	for _, addr := range dns {
 		addr = addr.Unmap()
 		if !addr.IsValid() || (blockIPv6 && addr.Is6()) {
@@ -247,13 +251,18 @@ func dnsGuardRules(dns []netip.Addr, blockIPv6, forward bool) []guardRule {
 		if addr.Is6() {
 			family = unix.NFPROTO_IPV6
 		}
-		for _, p := range protos {
+		for _, p := range []byte{unix.IPPROTO_UDP, unix.IPPROTO_TCP} {
 			rules = append(rules, guardRule{family: family, daddr: netip.PrefixFrom(addr, addr.BitLen()),
 				proto: p, dport: 53, accept: true})
 		}
 	}
-	for _, p := range protos {
-		rules = append(rules, guardRule{proto: p, dport: 53})
+	rules = append(rules, dnsDenyRules()...)
+	if blockIPv6 {
+		if !forward {
+			rules = append(rules, hostServiceRules(unix.NFPROTO_IPV6)...)
+		}
+		rules = append(rules, localNetRules(unix.NFPROTO_IPV6)...)
+		rules = append(rules, guardRule{family: unix.NFPROTO_IPV6})
 	}
 	return rules
 }

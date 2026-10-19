@@ -32,8 +32,9 @@ type TunOptions struct {
 	Logf func(format string, args ...any)
 
 	// DNSGuard — защита от утечки DNS: включается, когда маршруты стоят,
-	// переключается при смене DNS на ходу, снимается в Suspend и Close. nil —
-	// без неё.
+	// переключается при смене DNS на ходу, снимается в Suspend и Close. Умеет
+	// закрыть IPv6 (IPv6Blocker) — закрывает IPv6 наружу, пока туннель
+	// поднят. nil — без неё.
 	DNSGuard DNSGuard
 }
 
@@ -75,6 +76,8 @@ type Tun struct {
 	guardSet bool
 	sysDNS   []netip.Addr
 	sysSet   bool
+	// ipv6Told — о закрытии IPv6 уже сказано в журнале (blockIPv6).
+	ipv6Told bool
 
 	// closeOnce и closeErr — уборка один раз, ожидание всеми (см. Close).
 	closeOnce sync.Once
@@ -199,6 +202,7 @@ func (t *Tun) Start(_ context.Context, conf TunConf) error {
 		return fmt.Errorf("tun: маршруты: %w", err)
 	}
 	t.logf("[TUN] адаптер %q: адрес %v/32, MTU %d, маршруты %v", t.opts.Name, a, TunnelMTU, tunRoutes4)
+	t.blockIPv6()
 	t.dns = slices.Clone(conf.DNS)
 	if err := t.applyDNS(adapter); err != nil {
 		return errors.Join(fmt.Errorf("tun: %w", err), t.suspendLocked())
@@ -259,6 +263,29 @@ func (t *Tun) applyDNS(adapter *tunAdapter) error {
 		t.sysDNS, t.sysSet = servers, true
 	}
 	return t.guardTo(servers)
+}
+
+// blockIPv6 говорит защите DNS закрыть IPv6 системы наружу при следующем
+// Enable: маршрутов IPv6 в туннель нет никогда, и без запрета IPv6 шёл бы
+// мимо него. Локальная сеть IPv6 остаётся открытой, как и IPv4.
+// Под t.mu. Зовётся перед каждым включением защиты — защита могла смениться
+// между сеансами, а вызов дешёвый; строка в журнал — один раз.
+func (t *Tun) blockIPv6() {
+	blocker, ok := t.opts.DNSGuard.(IPv6Blocker)
+	if ok {
+		blocker.BlockIPv6(true)
+	}
+	if t.ipv6Told {
+		return
+	}
+	t.ipv6Told = true
+	if ok {
+		t.logf("[TUN] IPv6 системы наружу закрыт защитой DNS, пока туннель поднят (открыты локальная сеть, "+
+			"loopback и сокеты %s): туннель IPv6 не везёт", app.Name)
+	} else {
+		t.logf("[TUN] Внимание: туннель не везёт IPv6, а закрыть его без защиты DNS нечем — " +
+			"IPv6 системы идёт мимо туннеля")
+	}
 }
 
 // tunnelResolvers — резолверы туннеля, которые годятся системе: только

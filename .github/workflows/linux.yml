@@ -75,20 +75,22 @@ jobs:
       - name: Сборка тестов
         run: |
           mkdir -p build/out
-          for pkg in linuxsys datapath; do
+          for pkg in linuxsys datapath cli; do
             go test -c -o "build/out/$pkg.test" "./internal/$pkg"
           done
 
       # Пропуск здесь — тоже провал: значит, проверки сети не шли вовсе. Из
-      # datapath — только тесты адаптера (…Netns): остальные идут в задании
-      # test, а здесь, без curl в образе, один из них пропустился бы.
+      # datapath и cli — только тесты сети (…Netns): остальные идут в задании
+      # test, а здесь, без curl в образе, один из них пропустился бы. IPv6 в
+      # контейнере включён явно: без него проверки закрытия IPv6 пропускаются.
       - name: Тесты в контейнере
         run: |
           set -o pipefail
-          for pkg in linuxsys datapath; do
+          for pkg in linuxsys datapath cli; do
             run=.
-            [ "$pkg" = datapath ] && run='Netns$'
+            [ "$pkg" != linuxsys ] && run='Netns$'
             docker run --rm --cap-add NET_ADMIN --device /dev/net/tun \
+              --sysctl net.ipv6.conf.all.disable_ipv6=0 \
               -e CSQTT_TEST_NETNS=1 -v "$PWD/build/out":/csqtt-cli:ro "$IMAGE" \
               "/csqtt-cli/$pkg.test" -test.count=1 -test.v -test.run "$run" | tee "build/out/$pkg.log"
             if grep -- '--- SKIP' "build/out/$pkg.log"; then

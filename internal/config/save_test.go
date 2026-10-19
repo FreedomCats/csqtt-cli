@@ -22,6 +22,7 @@ func sampleFile() *File {
 				Obfs:          "video",
 				TurnTransport: "tcp_tls",
 				Datapath:      DatapathSocks,
+				KillSwitch:    boolPtr(false),
 				Socks:         SocksSection{Listen: "127.0.0.1:1081"},
 			},
 			"work": {
@@ -56,8 +57,60 @@ func TestSaveRoundTrip(t *testing.T) {
 		t.Fatalf("профилей %d, ожидалось %d: %v", len(got.Profiles), len(want.Profiles), got.Names())
 	}
 	for name, p := range want.Profiles {
-		if *got.Profiles[name] != *p {
+		if !sameProfile(got.Profiles[name], p) {
 			t.Errorf("%s после записи и чтения = %+v,\nожидалось %+v", name, *got.Profiles[name], *p)
+		}
+	}
+}
+
+// sameProfile сравнивает профили; kill_switch — по значению, а не по
+// указателю.
+func sameProfile(a, b *Profile) bool {
+	if (a.KillSwitch == nil) != (b.KillSwitch == nil) ||
+		a.KillSwitch != nil && *a.KillSwitch != *b.KillSwitch {
+		return false
+	}
+	x, y := *a, *b
+	x.KillSwitch, y.KillSwitch = nil, nil
+	return x == y
+}
+
+func boolPtr(v bool) *bool { return &v }
+
+// kill_switch пишется, только если задан, и тем значением, что задано:
+// пропуск — «включён» (KillSwitchOn).
+func TestSaveKillSwitch(t *testing.T) {
+	for _, tc := range []struct {
+		value *bool
+		line  string
+		on    bool
+	}{
+		{nil, "", true},
+		{boolPtr(true), "kill_switch = true\n", true},
+		{boolPtr(false), "kill_switch = false\n", false},
+	} {
+		path := filepath.Join(t.TempDir(), FileName)
+		f := &File{Profiles: map[string]*Profile{"home": {
+			Name: "home", Peer: "203.0.113.10", PasswordRef: "dpapi:8f2a1c", VkHashesRef: "dpapi:1c9bd4",
+			KillSwitch: tc.value,
+		}}}
+		if err := Save(path, f); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if has := strings.Contains(string(raw), "kill_switch"); has != (tc.line != "") ||
+			tc.line != "" && !strings.Contains(string(raw), tc.line) {
+			t.Errorf("kill_switch %v: в файле\n%s", tc.value, raw)
+		}
+		got, err := Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p := got.Profiles["home"]; p.KillSwitchOn() != tc.on || (p.KillSwitch == nil) != (tc.value == nil) {
+			t.Errorf("kill_switch %v: после чтения KillSwitch %v, KillSwitchOn %v", tc.value, p.KillSwitch, p.KillSwitchOn())
 		}
 	}
 }
@@ -83,7 +136,7 @@ func TestSaveOmitsEmptyFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(raw)
-	for _, key := range []string{"workers", "obfs", "turn_transport", "datapath", "socks"} {
+	for _, key := range []string{"workers", "obfs", "turn_transport", "datapath", "kill_switch", "socks"} {
 		if strings.Contains(text, key+" =") || strings.Contains(text, "."+key+"]") {
 			t.Errorf("в файле есть незаданный ключ %q:\n%s", key, text)
 		}

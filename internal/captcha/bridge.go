@@ -16,6 +16,11 @@
 //   - auto — сразу отказ unsupported. Автопрогона в окне на десктопе пока нет,
 //     ждать десять секунд незачем.
 //
+// При kill-switch окно ходит в сеть через прокси csqtt-cli (Dial), и правила
+// не трогаются. Всё, что идёт в сеть само, — ручной режим (браузер системы),
+// окно без Dial, то же окно, когда прокси не поднялся, — мост оборачивает в
+// Direct: на это время kill-switch снимается.
+//
 // Решатель ядра при этом выключен (coreproc.CoreSolverOffEnv): его попытки
 // портят сессию капчи раньше, чем она дойдёт до окна.
 package captcha
@@ -59,6 +64,12 @@ type Options struct {
 	// (proxy.go). nil — окно ходит в сеть само.
 	Dial DialFunc
 
+	// Direct зовётся перед тем, как капча пойдёт в сеть мимо прокси: ручной
+	// режим, окно без Dial, окно, для которого прокси не поднялся; done — когда
+	// это кончилось. При kill-switch так он снимается на время капчи (cli).
+	// nil — ничего не делать.
+	Direct func() (done func())
+
 	// Logf — журнал: что происходит на странице капчи и с окном. Токена в нём
 	// нет. nil — молчать.
 	Logf func(format string, args ...any)
@@ -71,6 +82,9 @@ type Options struct {
 type Bridge struct {
 	opts   Options
 	window Window // окно платформы; nil — сразу ручной режим
+	// direct — то же окно без прокси: на случай, когда прокси для window не
+	// поднялся (ErrProxy). nil — без Dial window и так идёт в сеть само.
+	direct Window
 	manual *Manual
 
 	mu  sync.Mutex
@@ -121,13 +135,21 @@ func NewBridge(opts Options) *Bridge {
 	case !errors.Is(err, errors.ErrUnsupported):
 		b.logf("[CAPTCHA] окна капчи не будет, только ручной режим: %v", err)
 	}
+	if b.window != nil && opts.Dial != nil {
+		direct := opts
+		direct.Dial = nil
+		if w, err := platformWindow(direct); err == nil {
+			b.direct = w
+		}
+	}
 	return b
 }
 
-// newBridgeWith — мост с заданным окном (для тестов).
-func newBridgeWith(opts Options, w Window) *Bridge {
+// newBridgeWith — мост с заданными окнами (для тестов); direct — окно без
+// прокси, nil — его нет.
+func newBridgeWith(opts Options, w, direct Window) *Bridge {
 	b := NewBridge(opts)
-	b.window = w
+	b.window, b.direct = w, direct
 	return b
 }
 
@@ -224,18 +246,39 @@ func (b *Bridge) open(ctx context.Context, creq coreproc.CaptchaRequest, owner u
 	return s
 }
 
-// solveIn решает капчу в окне, а не открылось окно — вручную.
+// solveIn решает капчу в окне; прокси для окна не поднялся — в том же окне
+// без прокси; окно не открылось — вручную. Всё, что идёт в сеть мимо
+// прокси, — под Direct.
 func (b *Bridge) solveIn(ctx context.Context, req Request) (string, error) {
 	if b.window == nil {
-		return b.manual.Solve(ctx, req)
+		return b.solveDirect(ctx, req, b.manual)
 	}
-	token, err := b.window.Solve(ctx, req)
+	var token string
+	var err error
+	if b.opts.Dial == nil {
+		token, err = b.solveDirect(ctx, req, b.window)
+	} else {
+		token, err = b.window.Solve(ctx, req)
+		if errors.Is(err, ErrProxy) && b.direct != nil && ctx.Err() == nil {
+			b.logf("[CAPTCHA] %v — окно капчи пойдёт в сеть само", err)
+			token, err = b.solveDirect(ctx, req, b.direct)
+		}
+	}
 	if (errors.Is(err, ErrBrowser) || errors.Is(err, ErrProxy)) && ctx.Err() == nil {
 		fmt.Fprintf(b.opts.Out, "\nОкно капчи не открылось (%v) — решите её вручную.\n", err)
 		b.logf("[CAPTCHA] окно не открылось, ручной режим: %v", err)
-		return b.manual.Solve(ctx, req)
+		return b.solveDirect(ctx, req, b.manual)
 	}
 	return token, err
+}
+
+// solveDirect решает капчу в w, который идёт в сеть сам, — под Direct.
+func (b *Bridge) solveDirect(ctx context.Context, req Request, w Window) (string, error) {
+	if b.opts.Direct != nil {
+		done := b.opts.Direct()
+		defer done()
+	}
+	return w.Solve(ctx, req)
 }
 
 // verdict — ответ ядру по исходу окна и строка человеку о том, чем оно

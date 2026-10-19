@@ -214,3 +214,86 @@ var (
 	_ Datapath            = (*datapath.Tun)(nil)
 	_ datapath.Persistent = (*datapath.Tun)(nil)
 )
+
+// Строка после конца попытки говорит правду о трафике системы: если туннель
+// в попытке был поднят (Start прошёл) — с kill-switch трафик закрыт, без него
+// идёт мимо туннеля; попытка, в которой туннель не поднимался, строк не даёт;
+// Start следующей — строка, что трафик вернулся в туннель. Kill-switch
+// спрашивается после каждого Suspend: снятый на время капчи — «мимо туннеля».
+//
+// Все попытки падают сами, а когда записи кончились, цикл останавливается:
+// Start и конец попытки идут в порядке строк ядра, без гонки с Connected.
+func TestTunKillSwitchLines(t *testing.T) {
+	crash := []string{`[PANIC] Rust client task failed`, "exit 1"}
+	const (
+		blockedLine  = "туннель переподключается — трафик системы заблокирован (kill-switch)"
+		bypassLine   = "маршруты сняты на время переподключения — трафик и DNS системы идут мимо туннеля"
+		upAgainLine  = "туннель снова поднят — трафик системы идёт через него"
+		returnedLine = "маршруты возвращены — трафик системы снова идёт через туннель"
+	)
+	cases := []struct {
+		name string
+		// locked — что ответит KillSwitch после каждого Suspend; nil —
+		// kill-switch нет.
+		locked []bool
+		want   []string
+	}{
+		{"без kill-switch", nil, []string{bypassLine, returnedLine, bypassLine}},
+		{"kill-switch", []bool{true, true, true}, []string{blockedLine, upAgainLine, blockedLine}},
+		{"kill-switch снят на время капчи", []bool{false, true, true}, []string{bypassLine, returnedLine, blockedLine}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var opts Options
+			var asked []int
+			var th *tunHarness
+			if tc.locked != nil {
+				opts.KillSwitch = func() bool {
+					n := len(th.suspendedAt())
+					asked = append(asked, n)
+					return tc.locked[n-1]
+				}
+			}
+			th = newTunHarness(t, opts,
+				join(recStartTun(101), recCredentials, recConfig, crash), // поднят и упал
+				join(recStartTun(202), crash),                            // упал, не поднявшись
+				join(recStartTun(303), recCredentials, recConfig, crash)) // снова поднят и упал
+			if err := th.result(th.run()); err != nil {
+				t.Fatalf("Run() = %v", err)
+			}
+			if got := th.suspendedAt(); !slices.Equal(got, []int{1, 2, 3}) {
+				t.Fatalf("Suspend после попыток %v", got)
+			}
+			if tc.locked != nil && !slices.Equal(asked, []int{1, 2, 3}) {
+				t.Errorf("KillSwitch спрошен после Suspend №%v, ждали после каждого", asked)
+			}
+			var got []string
+			for _, l := range th.logLines() {
+				if strings.Contains(l, "трафик") {
+					got = append(got, l)
+				}
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("строки о трафике:\n  было  %q\n  ждали %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// Отказ Suspend — строка о том, что снято не всё; попытка всё равно следующая.
+func TestTunSuspendFailureLine(t *testing.T) {
+	crash := []string{`[PANIC] Rust client task failed`, "exit 1"}
+	th := newTunHarness(t, Options{}, join(recStartTun(101), recCredentials, recConfig, crash))
+	th.dp.suspendErr = errors.New("tun: DNS системы: resolvconf -d: сбой")
+	if err := th.result(th.run()); err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	if len(th.attempts()) != 2 {
+		t.Errorf("попыток %d, ждали следующую после отказа Suspend", len(th.attempts()))
+	}
+	if !slices.ContainsFunc(th.logLines(), func(l string) bool {
+		return strings.Contains(l, "снят не полностью") && strings.Contains(l, "resolvconf -d: сбой")
+	}) {
+		t.Errorf("нет строки об отказе Suspend: %q", th.logLines())
+	}
+}

@@ -103,6 +103,9 @@ func render(f *File) string {
 		}
 		writeString(&b, "obfs", p.Obfs)
 		writeString(&b, "turn_transport", p.TurnTransport)
+		if p.KillSwitch != nil {
+			fmt.Fprintf(&b, "kill_switch = %t\n", *p.KillSwitch)
+		}
 
 		if listen := strings.TrimSpace(p.Socks.Listen); listen != "" {
 			fmt.Fprintf(&b, "\n[profile.%s.socks]\n", name)

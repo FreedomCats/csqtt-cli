@@ -432,3 +432,51 @@ func TestProfileRmWithoutConfirmation(t *testing.T) {
 		t.Errorf("повторное удаление: код %d, stderr:\n%s", code, stderr)
 	}
 }
+
+// -kill-switch=false записывает kill_switch = false, -kill-switch — true;
+// без флага поле не трогается. show показывает значение, а пропуск — как
+// умолчание true.
+func TestProfileSetKillSwitch(t *testing.T) {
+	te := newTestEnv(t)
+	te.addHome()
+	showKillSwitch := func() string {
+		t.Helper()
+		code, stdout, stderr := te.run("profile", "show", "home")
+		if code != exitOK {
+			t.Fatalf("show: код %d, stderr:\n%s", code, stderr)
+		}
+		for _, line := range strings.Split(stdout, "\n") {
+			if strings.Contains(line, "kill_switch") {
+				return strings.Join(strings.Fields(line), " ")
+			}
+		}
+		t.Fatalf("в show нет kill_switch:\n%s", stdout)
+		return ""
+	}
+	if got := showKillSwitch(); !strings.Contains(got, "true (умолчание)") {
+		t.Errorf("show без поля: %q", got)
+	}
+
+	for _, tc := range []struct {
+		args []string
+		want *bool
+		show string
+	}{
+		{[]string{"-kill-switch=false"}, boolPtr(false), "kill_switch false"},
+		{[]string{"-workers", "9"}, boolPtr(false), "kill_switch false"},
+		{[]string{"-kill-switch"}, boolPtr(true), "kill_switch true"},
+	} {
+		if code, _, stderr := te.run(append([]string{"profile", "set", "home"}, tc.args...)...); code != exitOK {
+			t.Fatalf("%v: код %d, stderr:\n%s", tc.args, code, stderr)
+		}
+		file, _ := config.Load(te.configPath())
+		if got := file.Profiles["home"].KillSwitch; got == nil || *got != *tc.want {
+			t.Errorf("%v: kill_switch %v, ждали %v", tc.args, got, *tc.want)
+		}
+		if got := showKillSwitch(); got != tc.show {
+			t.Errorf("%v: show %q, ждали %q", tc.args, got, tc.show)
+		}
+	}
+}
+
+func boolPtr(v bool) *bool { return &v }

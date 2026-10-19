@@ -32,6 +32,9 @@ workers = 18
 obfs = "audio"
 # До TURN: udp или tcp_tls (если UDP в сети душат). По умолчанию — udp.
 turn_transport = "udp"
+# Kill-switch для tun: пока туннель не поднят, трафик системы заблокирован.
+# По умолчанию включён; false — трафик между попытками идёт мимо туннеля.
+kill_switch = true
 
 [profile.home.socks]
 # Адрес SOCKS5 — только loopback. По умолчанию — 127.0.0.1:1080.

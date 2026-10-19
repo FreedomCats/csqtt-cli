@@ -89,7 +89,9 @@ type SystemDNS struct {
 	resolvconf string
 	// warning — чем способ ненадёжен (Warning).
 	warning string
-	// applied — Set что-то поставил, и Revert есть что снимать.
+	// applied — Set звали, и Revert есть что снимать: отмечается до
+	// вызовов, так что снимается и поставленное наполовину (SetLinkDNS
+	// прошёл, SetLinkDomains — нет).
 	applied bool
 }
 
@@ -219,7 +221,8 @@ func findResolvconf() (string, error) {
 // resolvconfPaths — где искать resolvconf до PATH; подменяется в тестах.
 var resolvconfPaths = []string{"/usr/sbin/resolvconf", "/sbin/resolvconf"}
 
-// Applied — поставил ли Set DNS, который ещё не снят.
+// Applied — звали ли Set после последнего Revert: поставленное, хотя бы
+// отчасти, ещё не снято.
 func (s *SystemDNS) Applied() bool { return s.applied }
 
 // Warning — чем выбранный способ ненадёжен; "" — ничем.
@@ -279,10 +282,15 @@ func (s *SystemDNS) recordExists() bool {
 // Set делает servers DNS системы; повторный вызов заменяет прежние. index —
 // индекс интерфейса адаптера (для systemd-resolved). Пустой servers снимает
 // поставленное: сервер DNS не выдал, остаётся DNS системы.
+//
+// После отказа Revert всё равно снимает то, что успело встать: каждый способ
+// снимает и несделанное без вреда (RevertLink, resolvconf -d, возврат
+// копии, которой нет).
 func (s *SystemDNS) Set(index int, servers []netip.Addr) error {
 	if len(servers) == 0 {
 		return s.Revert(index)
 	}
+	s.applied = true
 	var err error
 	switch s.method {
 	case DNSResolved:
@@ -299,7 +307,6 @@ func (s *SystemDNS) Set(index int, servers []netip.Addr) error {
 	if err != nil {
 		return fmt.Errorf("DNS системы (%s): %w", s.method, err)
 	}
-	s.applied = true
 	return nil
 }
 

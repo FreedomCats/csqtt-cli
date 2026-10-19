@@ -572,9 +572,85 @@ func TestSystemDNSResolvedErrors(t *testing.T) {
 	if err := dns.Set(7, testServers); err == nil || !strings.Contains(err.Error(), "SetLinkDNS") {
 		t.Errorf("Set при отказе: %v", err)
 	}
-	if dns.Applied() {
-		t.Error("Applied после отказа Set")
+}
+
+// Set встал наполовину (SetLinkDNS прошёл, SetLinkDomains — нет): Revert
+// снимает и это, повторный — уже ничего.
+func TestSystemDNSResolvedPartialSet(t *testing.T) {
+	etc, _ := fakeDNSRoots(t)
+	writeFile(t, filepath.Join(etc, "resolv.conf"), "nameserver 127.0.0.53\n")
+	bus := &fakeBus{errs: map[string]error{
+		"SetLinkDomains": dbus.Error{Name: "org.freedesktop.DBus.Error.AccessDenied"},
+	}}
+	stubBus(t, bus, nil)
+	dns, err := DetectSystemDNS("csqtt-cli")
+	if err != nil {
+		t.Fatal(err)
 	}
+	bus.calls = nil
+	if err := dns.Set(7, testServers); err == nil || !strings.Contains(err.Error(), "SetLinkDomains") {
+		t.Fatalf("Set при отказе: %v", err)
+	}
+	if !dns.Applied() {
+		t.Error("после частичного Set снимать нечего")
+	}
+	if err := dns.Revert(7); err != nil {
+		t.Fatal(err)
+	}
+	if err := dns.Revert(7); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"SetLinkDNS", "SetLinkDomains", "RevertLink"}; !slices.Equal(bus.calls, want) {
+		t.Errorf("вызовы %v, ждали %v", bus.calls, want)
+	}
+	if dns.Applied() {
+		t.Error("Applied после Revert")
+	}
+}
+
+// Отказ resolvconf -a (запись могла встать до сбоя) — Revert снимает
+// запись; отказ перезаписи до копии — Revert ничего не портит.
+func TestSystemDNSFailedSetReverts(t *testing.T) {
+	t.Run("resolvconf", func(t *testing.T) {
+		cmds, _ := resolvconfSetup(t, "Debian resolvconf 1.91")
+		dns, err := DetectSystemDNS("csqtt-cli")
+		if err != nil {
+			t.Fatal(err)
+		}
+		old := runCommand
+		runCommand = func(stdin []byte, prog string, args ...string) ([]byte, error) {
+			out, _ := old(stdin, prog, args...)
+			if len(args) > 0 && args[0] == "-a" {
+				return out, errors.New("resolvconf: сбой обновления")
+			}
+			return out, nil
+		}
+		if err := dns.Set(1, testServers); err == nil {
+			t.Fatal("Set без отказа")
+		}
+		if err := dns.Revert(1); err != nil {
+			t.Fatal(err)
+		}
+		if want := []string{"resolvconf -a tun.csqtt-cli", "resolvconf -d tun.csqtt-cli"}; !slices.Equal(cmds.calls, want) {
+			t.Errorf("вызовы %q, ждали %q", cmds.calls, want)
+		}
+	})
+	t.Run("перезапись", func(t *testing.T) {
+		etc, _ := fakeDNSRoots(t)
+		path := filepath.Join(etc, "resolv.conf")
+		own := fileMarker + "; …\nnameserver 192.0.2.53\n"
+		writeFile(t, path, own)
+		dns, _ := DetectSystemDNS("csqtt-cli")
+		if err := dns.Set(1, testServers); err == nil {
+			t.Fatal("Set без отказа")
+		}
+		if err := dns.Revert(1); err != nil {
+			t.Fatal(err)
+		}
+		if got := readFile(t, path); got != own {
+			t.Errorf("Revert после отказа тронул файл: %q", got)
+		}
+	})
 }
 
 // Аргументы SetLinkDNS и SetLinkDomains — в виде, который ждёт D-Bus.

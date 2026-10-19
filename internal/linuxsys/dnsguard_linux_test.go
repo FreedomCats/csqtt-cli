@@ -31,23 +31,44 @@ func TestDNSGuardRules(t *testing.T) {
 	assertRules(t, "forward", dnsGuardRules(dns, false, true), want[2:])
 }
 
-// При закрытом IPv6 запрет IPv6 идёт раньше разрешений, а резолвер IPv6
-// не разрешается: маршрута в туннель для него нет.
+// При закрытом IPv6 резолвер IPv6 не разрешается: маршрута в туннель для
+// него нет. После запрета порта 53 — локальный IPv6, как в «закрыто»:
+// служебные протоколы хоста (не в forward) и локальная сеть, — потом
+// отброс прочего IPv6.
 func TestDNSGuardRulesBlockIPv6(t *testing.T) {
 	v4 := netip.MustParsePrefix("192.0.2.53/32")
+	v6 := byte(unix.NFPROTO_IPV6)
 	dns := []netip.Addr{v4.Addr(), netip.MustParseAddr("2001:db8::53")}
 
-	want := []guardRule{
+	head := []guardRule{
 		{mark: true, accept: true},
 		{loopback: true, accept: true},
-		{family: unix.NFPROTO_IPV6},
 		{family: unix.NFPROTO_IPV4, daddr: v4, proto: unix.IPPROTO_UDP, dport: 53, accept: true},
 		{family: unix.NFPROTO_IPV4, daddr: v4, proto: unix.IPPROTO_TCP, dport: 53, accept: true},
 		{proto: unix.IPPROTO_UDP, dport: 53},
 		{proto: unix.IPPROTO_TCP, dport: 53},
 	}
-	assertRules(t, "output", dnsGuardRules(dns, true, false), want)
-	assertRules(t, "forward", dnsGuardRules(dns, true, true), want[2:])
+	services := []guardRule{
+		{family: v6, proto: unix.IPPROTO_UDP, sport: 546, dport: 547, accept: true},
+		{family: v6, ndp: true, accept: true},
+	}
+	local := []guardRule{
+		{family: v6, daddr: netip.MustParsePrefix("fe80::/10"), accept: true},
+		{family: v6, daddr: netip.MustParsePrefix("fc00::/7"), accept: true},
+		{family: v6, daddr: netip.MustParsePrefix("ff00::/8"), accept: true},
+		{family: v6},
+	}
+
+	var out []guardRule
+	out = append(out, head...)
+	out = append(out, services...)
+	out = append(out, local...)
+	assertRules(t, "output", dnsGuardRules(dns, true, false), out)
+
+	var fwd []guardRule
+	fwd = append(fwd, head[2:]...)
+	fwd = append(fwd, local...)
+	assertRules(t, "forward", dnsGuardRules(dns, true, true), fwd)
 }
 
 // Адрес IPv4 в виде IPv6 (::ffff:a.b.c.d) сравнивается как IPv4, пустой

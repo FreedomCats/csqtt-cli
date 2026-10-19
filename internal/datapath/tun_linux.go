@@ -122,7 +122,8 @@ func openTunAdapter(name string, logf func(string, ...any)) (*tunAdapter, error)
 		},
 		// Маршрутов IPv6 нет: туннель IPv6 не везёт, а отбросить такие
 		// пакеты, как мост на Windows, некому — они шли бы мимо оболочки
-		// прямо в ядро. IPv6 системы закроет таблица защиты (L3b, §05).
+		// прямо в ядро. IPv6 системы наружу закрывает таблица защиты
+		// (blockIPv6).
 		addRoutes:    func() error { return linuxsys.SetTunnelRoutes(index, tunRoutes4) },
 		removeRoutes: func() error { return linuxsys.ClearTunnelRoutes(index, tunRoutes4) },
 		setDNS: func(servers []netip.Addr) error {

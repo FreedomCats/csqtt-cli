@@ -238,7 +238,7 @@ func TestBrowserThroughBridge(t *testing.T) {
 	b := newBrowserStand(t)
 	srv := newStand(t)
 	out := &bytes.Buffer{}
-	bridge := newBridgeWith(Options{Out: out, Lines: lines.New(strings.NewReader("")), Logf: t.Logf}, b)
+	bridge := newBridgeWith(Options{Out: out, Lines: lines.New(strings.NewReader("")), Logf: t.Logf}, b, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()

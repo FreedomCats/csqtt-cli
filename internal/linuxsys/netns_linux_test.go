@@ -126,7 +126,8 @@ func demoteDefault(t *testing.T, index uint32) {
 
 // Защита DNS на настоящих nftables: что пропускает и что отбрасывает
 // (отброшенное на выходе — EPERM при отправке), повторное открытие при
-// живой таблице, закрытие IPv6 и исчезновение таблицы с соединением.
+// живой таблице, закрытие IPv6 наружу (локальный IPv6 открыт) и
+// исчезновение таблицы с соединением.
 // Резолвер туннеля — 192.0.2.53, чужой — 198.51.100.1; ответы не нужны.
 // TCP проверяется на шлюзе контейнера: он сразу отказывает, а отброшенный
 // SYN ядро повторяет, и соединение уходит в таймаут.
@@ -184,15 +185,29 @@ func TestDNSGuardNetns(t *testing.T) {
 		t.Errorf("повторный Disable: %v", err)
 	}
 
-	if ipv6Dummy(t) {
+	if ipv6Dummy(t, "ttdns0") {
+		// IPv6 наружу закрыт; резолвер туннеля с адресом IPv6 не
+		// разрешается, даже в ULA: маршрута IPv6 в туннель нет.
 		g.BlockIPv6(true)
-		if err := g.Enable([]netip.Addr{tunnelDNS}); err != nil {
+		if err := g.Enable([]netip.Addr{tunnelDNS, netip.MustParseAddr("fd00:db8:1::53")}); err != nil {
 			t.Fatal(err)
 		}
 		expectSend(t, "udp", "[2001:db8:1::5]:443", 0, unix.EPERM)
 		expectSend(t, "udp", "[2001:db8:1::5]:443", mark, nil)
 		expectSend(t, "udp", "[::1]:443", 0, nil)
 		expectSend(t, "udp", "192.0.2.53:53", 0, nil)
+		expectSend(t, "udp", "[fd00:db8:1::53]:53", 0, unix.EPERM)
+		// Локальный IPv6 — как в «закрыто»: link-local, ULA, мультикаст, ND
+		// и DHCPv6 проходят, DNS к локальной сети — нет.
+		expectSend(t, "udp", "[fe80::5%ttdns0]:443", 0, nil)
+		expectSend(t, "udp", "[fd00:db8:1::5]:443", 0, nil)
+		expectSend(t, "udp", "[ff02::fb%ttdns0]:5353", 0, nil)
+		expectSend(t, "udp", "[fe80::5%ttdns0]:53", 0, unix.EPERM)
+		expectSend(t, "udp", "[fd00:db8:1::5]:53", 0, unix.EPERM)
+		expectICMPv6(t, "2001:db8:1::5", 128, unix.EPERM) // echo request
+		expectICMPv6(t, "2001:db8:1::5", 135, nil)        // neighbor solicitation
+		expectSendFrom(t, 546, "[2001:db8:1::5]:547", nil)
+		expectSendFrom(t, 545, "[2001:db8:1::5]:547", unix.EPERM)
 		g.BlockIPv6(false)
 		if err := g.Enable([]netip.Addr{tunnelDNS}); err != nil {
 			t.Fatal(err)
@@ -249,13 +264,16 @@ func TestKillSwitchNetns(t *testing.T) {
 		t.Errorf("повторный Lockdown: %v", err)
 	}
 
-	if ipv6Dummy(t) {
+	if ipv6Dummy(t, "ttks6") {
 		expectSend(t, "udp", "[2001:db8:1::5]:443", 0, unix.EPERM)
 		expectSend(t, "udp", "[2001:db8:1::5]:443", mark, nil)
 		expectSend(t, "udp", "[::1]:443", 0, nil)
-		expectSend(t, "udp", "[ff02::fb%ttdns0]:5353", 0, nil)
+		expectSend(t, "udp", "[ff02::fb%ttks6]:5353", 0, nil)
+		expectSend(t, "udp", "[fd00:db8:1::5]:443", 0, nil)
+		expectSend(t, "udp", "[fd00:db8:1::5]:53", 0, unix.EPERM)
 		expectICMPv6(t, "2001:db8:1::5", 128, unix.EPERM) // echo request
 		expectICMPv6(t, "2001:db8:1::5", 135, nil)        // neighbor solicitation
+		expectSendFrom(t, 546, "[2001:db8:1::5]:547", nil)
 	}
 
 	// Из «закрыто» в защиту DNS: публичный адрес открыт, DNS — только
@@ -288,11 +306,12 @@ func TestKillSwitchNetns(t *testing.T) {
 	}
 }
 
-// expectSendFrom отправляет пакет UDP на address с порта источника port.
+// expectSendFrom отправляет пакет UDP на address (IPv4 или IPv6) с порта
+// источника port.
 func expectSendFrom(t *testing.T, port int, address string, want error) {
 	t.Helper()
 	d := &net.Dialer{LocalAddr: &net.UDPAddr{Port: port}}
-	conn, err := d.Dial("udp4", address)
+	conn, err := d.Dial("udp", address)
 	if err == nil {
 		_, err = conn.Write([]byte("csqtt-cli"))
 		conn.Close()
@@ -410,11 +429,15 @@ func dnsGuardTableExists(t *testing.T) bool {
 	return false
 }
 
-// ipv6Dummy заводит интерфейс с 2001:db8:1::2/64, чтобы пакетам IPv6 было
-// куда уйти; false — IPv6 в контейнере выключен, проверка пропускается.
-func ipv6Dummy(t *testing.T) bool {
+// ipv6Dummy заводит интерфейс name с 2001:db8:1::2/64 и ULA
+// fd00:db8:1::2/64, чтобы пакетам IPv6 было куда уйти (link-local и
+// мультикаст — через него же); false — IPv6 в контейнере выключен, проверка
+// пропускается. Имя у каждого теста своё: net кэширует индекс зоны
+// (%name) по имени, и у пересозданного интерфейса с тем же именем адреса
+// с зоной вели бы в удалённый.
+func ipv6Dummy(t *testing.T, name string) bool {
 	t.Helper()
-	link := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: "ttdns0"}}
+	link := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: name}}
 	if err := netlink.LinkAdd(link); err != nil {
 		t.Fatal(err)
 	}
@@ -422,11 +445,16 @@ func ipv6Dummy(t *testing.T) bool {
 	if err := netlink.LinkSetUp(link); err != nil {
 		t.Fatal(err)
 	}
-	addr, _ := netlink.ParseAddr("2001:db8:1::2/64")
-	addr.Flags = unix.IFA_F_NODAD
-	if err := netlink.AddrAdd(link, addr); err != nil {
-		t.Logf("IPv6 не проверен: %v (нужен --sysctl net.ipv6.conf.all.disable_ipv6=0)", err)
-		return false
+	for i, a := range []string{"2001:db8:1::2/64", "fd00:db8:1::2/64"} {
+		addr, _ := netlink.ParseAddr(a)
+		addr.Flags = unix.IFA_F_NODAD
+		if err := netlink.AddrAdd(link, addr); err != nil {
+			if i > 0 {
+				t.Fatal(err)
+			}
+			t.Logf("IPv6 не проверен: %v (нужен --sysctl net.ipv6.conf.all.disable_ipv6=0)", err)
+			return false
+		}
 	}
 	return true
 }

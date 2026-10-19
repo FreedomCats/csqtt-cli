@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -110,7 +112,7 @@ func testBridge(w Window, opts Options) (*Bridge, *bytes.Buffer) {
 	if opts.Lines == nil {
 		opts.Lines = lines.New(strings.NewReader(""))
 	}
-	return newBridgeWith(opts, w), out
+	return newBridgeWith(opts, w, nil), out
 }
 
 // auto — сразу отказ unsupported, окна нет.
@@ -286,5 +288,146 @@ func TestBridgeManualOnly(t *testing.T) {
 	got, err := b.Solve(context.Background(), manualReq("https://id.vk.com/a"))
 	if err != nil || got != token {
 		t.Fatalf("Solve: %q, %v", got, err)
+	}
+}
+
+// directProbe — Options.Direct для тестов: считает, сколько капч сейчас идёт
+// в сеть мимо прокси, и сколько раз Direct звали.
+type directProbe struct {
+	mu     sync.Mutex
+	active int
+	calls  int
+}
+
+func (p *directProbe) direct() func() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.active++
+	p.calls++
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			p.mu.Lock()
+			defer p.mu.Unlock()
+			p.active--
+		})
+	}
+}
+
+func (p *directProbe) state() (active, calls int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.active, p.calls
+}
+
+// probedWindow — окно, которое запоминает, было ли оно под Direct.
+type probedWindow struct {
+	Window
+	probe  *directProbe
+	mu     sync.Mutex
+	direct []bool
+}
+
+func (w *probedWindow) Solve(ctx context.Context, req Request) (string, error) {
+	active, _ := w.probe.state()
+	w.mu.Lock()
+	w.direct = append(w.direct, active > 0)
+	w.mu.Unlock()
+	return w.Window.Solve(ctx, req)
+}
+
+func (w *probedWindow) seen() []bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]bool(nil), w.direct...)
+}
+
+func noDial(context.Context, string, string) (net.Conn, error) {
+	return nil, errors.New("не нужен")
+}
+
+// Direct — только для того, что идёт в сеть мимо прокси: окно без Dial,
+// окно без прокси, когда прокси не поднялся, и ручной режим. Окно через
+// прокси и отказ auto его не трогают; после капчи Direct снят.
+func TestBridgeDirect(t *testing.T) {
+	const token = "выдуманный-токен-0123456789"
+	cases := []struct {
+		name   string
+		dial   bool
+		window outcome // исход окна (через прокси, если dial)
+		direct bool    // есть окно без прокси
+		// Ожидания: окно под Direct; окно без прокси открыто; ручной режим.
+		windowDirect, directOpened, manual bool
+		calls                              int
+	}{
+		{name: "окно без Dial", window: outcome{token: token}, windowDirect: true, calls: 1},
+		{name: "окно через прокси", dial: true, direct: true, window: outcome{token: token}},
+		{name: "прокси не поднялся", dial: true, direct: true, window: outcome{err: ErrProxy},
+			directOpened: true, calls: 1},
+		{name: "прокси не поднялся, окна без прокси нет", dial: true, window: outcome{err: ErrProxy},
+			manual: true, calls: 1},
+		{name: "браузер не запустился", dial: true, direct: true, window: outcome{err: ErrBrowser},
+			manual: true, calls: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			probe := &directProbe{}
+			opts := Options{Out: &bytes.Buffer{}, Lines: lines.New(strings.NewReader(token + "\n")),
+				Direct: probe.direct}
+			if tc.dial {
+				opts.Dial = noDial
+			}
+			window := &probedWindow{Window: newFakeWindow(), probe: probe}
+			fakeDirect := newFakeWindow()
+			direct := &probedWindow{Window: fakeDirect, probe: probe}
+			var d Window
+			if tc.direct {
+				d = direct
+			}
+			b := newBridgeWith(opts, window, d)
+
+			done := solveAsync(b, context.Background(), manualReq("https://id.vk.com/a"))
+			window.Window.(*fakeWindow).next(t).result <- tc.window
+			if tc.directOpened {
+				fakeDirect.next(t).result <- outcome{token: token}
+			}
+			if got := wait(t, done); got.token != token || got.err != nil {
+				t.Fatalf("Solve = %q, %v", got.token, got.err)
+			}
+			if got := window.seen(); !slices.Equal(got, []bool{tc.windowDirect}) {
+				t.Errorf("окно под Direct: %v, ждали %v", got, tc.windowDirect)
+			}
+			if got := direct.seen(); tc.directOpened != (len(got) > 0) || tc.directOpened && !got[0] {
+				t.Errorf("окно без прокси: %v, ждали открытым под Direct: %v", got, tc.directOpened)
+			}
+			active, calls := probe.state()
+			if active != 0 || calls != tc.calls {
+				t.Errorf("Direct: активно %d, вызовов %d; ждали 0 и %d", active, calls, tc.calls)
+			}
+		})
+	}
+
+	probe := &directProbe{}
+	b := newBridgeWith(Options{Out: &bytes.Buffer{}, Lines: lines.New(strings.NewReader("")), Direct: probe.direct},
+		newFakeWindow(), nil)
+	if _, err := b.Solve(context.Background(), coreproc.CaptchaRequest{Mode: ModeAuto, RedirectURI: "https://id.vk.com/x"}); reason(err) != "unsupported" {
+		t.Fatalf("auto: %v", err)
+	}
+	if _, calls := probe.state(); calls != 0 {
+		t.Error("auto звал Direct")
+	}
+}
+
+// Без окна для платформы ручной режим — под Direct, и после ответа он снят.
+func TestBridgeManualOnlyDirect(t *testing.T) {
+	const token = "выдуманный-токен-0123456789"
+	probe := &directProbe{}
+	b := newBridgeWith(Options{Out: &bytes.Buffer{}, Lines: lines.New(strings.NewReader(token + "\n")),
+		Direct: probe.direct}, nil, nil)
+	if got, err := b.Solve(context.Background(), manualReq("https://id.vk.com/a")); err != nil || got != token {
+		t.Fatalf("Solve: %q, %v", got, err)
+	}
+	if active, calls := probe.state(); active != 0 || calls != 1 {
+		t.Errorf("Direct: активно %d, вызовов %d", active, calls)
 	}
 }

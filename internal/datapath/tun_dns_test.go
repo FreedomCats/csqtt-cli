@@ -362,3 +362,81 @@ func TestTunRequiresDNSGuard(t *testing.T) {
 		t.Error("tun: DNSGuard = false, а он забирает весь трафик")
 	}
 }
+
+// ipv6DNSGuard — fakeDNSGuard, который умеет закрыть IPv6 (IPv6Blocker);
+// каждый Enable проверяет, что закрыть его уже попросили.
+type ipv6DNSGuard struct {
+	*fakeDNSGuard
+	block bool
+}
+
+func (g *ipv6DNSGuard) BlockIPv6(block bool) {
+	f := g.f
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.events = append(f.events, fmt.Sprint("block6 ", block))
+	g.block = block
+}
+
+func (g *ipv6DNSGuard) Enable(dns []netip.Addr) error {
+	g.f.mu.Lock()
+	if !g.block {
+		g.f.errorf("защита DNS включена, а IPv6 не закрыт: %v", g.f.events)
+	}
+	g.f.mu.Unlock()
+	return g.fakeDNSGuard.Enable(dns)
+}
+
+// IPv6 туннель не везёт никогда: защита, которая умеет его закрыть, слышит
+// это перед каждым включением, в каждой попытке; строка в журнал — одна.
+// Без такой защиты — предупреждение, что IPv6 идёт мимо туннеля.
+func TestTunBlocksIPv6(t *testing.T) {
+	w, f, g := dnsTun(t, true)
+	blocker := &ipv6DNSGuard{fakeDNSGuard: g}
+	w.opts.DNSGuard = blocker
+	var logged []string
+	w.opts.Logf = func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
+	ctx := context.Background()
+
+	if err := w.Start(ctx, conf("192.0.2.2", "198.51.100.53")); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	expectEvents(t, f, "Start", "routes", "block6 true", "enable [198.51.100.53]", "set [198.51.100.53]")
+	if err := w.Suspend(); err != nil {
+		t.Fatalf("Suspend: %v", err)
+	}
+	f.takeEvents()
+	if err := w.Start(ctx, conf("192.0.2.2", "198.51.100.53")); err != nil {
+		t.Fatalf("Start второй попытки: %v", err)
+	}
+	expectEvents(t, f, "Start второй попытки", "routes", "block6 true", "enable [198.51.100.53]", "set [198.51.100.53]")
+	if n := countContaining(logged, "IPv6 системы наружу закрыт"); n != 1 {
+		t.Errorf("строк о закрытом IPv6 %d, ждали одну: %q", n, logged)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	w, _, _ = dnsTun(t, false)
+	logged = nil
+	w.opts.Logf = func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
+	if err := w.Start(ctx, conf("192.0.2.2", "198.51.100.53")); err != nil {
+		t.Fatalf("Start без защиты: %v", err)
+	}
+	if n := countContaining(logged, "IPv6 системы идёт мимо туннеля"); n != 1 {
+		t.Errorf("без защиты — строк о IPv6 мимо туннеля %d: %q", n, logged)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func countContaining(lines []string, sub string) int {
+	n := 0
+	for _, l := range lines {
+		if strings.Contains(l, sub) {
+			n++
+		}
+	}
+	return n
+}

@@ -28,8 +28,9 @@ import (
 // DialFunc — чем прокси соединяется с сайтом: DialContext у net.Dialer.
 type DialFunc = func(ctx context.Context, network, address string) (net.Conn, error)
 
-// ErrProxy — прокси для окна не поднялся, окно не открывалось. CLI по нему
-// открывает окно без прокси, сняв kill-switch на время капчи.
+// ErrProxy — прокси для окна не поднялся, окно не открывалось. Bridge по нему
+// открывает то же окно без прокси, под Options.Direct: kill-switch на время
+// капчи снимается.
 var ErrProxy = errors.New("прокси для окна капчи не поднялся")
 
 // proxyDomains — куда окну капчи можно ходить: сам домен и его поддомены.
