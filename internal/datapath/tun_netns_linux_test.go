@@ -3,6 +3,7 @@ package datapath
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"net"
 	"net/netip"
 	"os"
@@ -11,8 +12,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/nftables"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
+
+	"github.com/FreedomCats/csqtt-cli/internal/app"
+	"github.com/FreedomCats/csqtt-cli/internal/linuxsys"
 )
 
 // netnsEnv включает проверки, которые создают настоящий адаптер. Только в
@@ -330,5 +335,202 @@ func TestTunForeignLinkNetns(t *testing.T) {
 	}
 	if err := fromOtherProcess(t, "lock"); err != nil {
 		t.Errorf("блокировка не отпущена после отказа: %v", err)
+	}
+}
+
+// Чужой постоянный TUN с тем же именем и флагами TUNSETIFF без
+// IFF_TUN_EXCL молча подхватил бы; с ним — EBUSY. Так закрыто окно между
+// проверкой LinkKind и созданием адаптера.
+func TestTunExclusiveNetns(t *testing.T) {
+	skipOutsideNetns(t)
+	const name = "csqtttest3"
+	fd, err := unix.Open(tunDevice, unix.O_RDWR|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ifr, err := unix.NewIfreq(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ifr.SetUint16(tunFlags)
+	if err := unix.IoctlIfreq(fd, unix.TUNSETIFF, ifr); err != nil {
+		t.Fatalf("TUNSETIFF: %v", err)
+	}
+	if err := unix.IoctlSetInt(fd, unix.TUNSETPERSIST, 1); err != nil {
+		t.Fatalf("TUNSETPERSIST: %v", err)
+	}
+	unix.Close(fd)
+	defer func() {
+		if link, err := netlink.LinkByName(name); err == nil {
+			netlink.LinkDel(link)
+		}
+	}()
+
+	fd, err = createTUN(name)
+	if err == nil {
+		unix.Close(fd)
+		t.Fatal("createTUN подхватил чужой постоянный TUN")
+	}
+	if !errors.Is(err, unix.EBUSY) {
+		t.Errorf("createTUN: %v, ждали EBUSY", err)
+	}
+}
+
+// resolvConf — /etc/resolv.conf: в контейнере docker монтирует его
+// отдельным файлом, никто его не ведёт — способ «перезапись».
+const resolvConf = "/etc/resolv.conf"
+
+func readResolvConf(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile(resolvConf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// sendUDP отправляет пакет UDP на address: nil или отказ (EPERM —
+// отброшен на выходе правилами nftables).
+func sendUDP(address string) error {
+	conn, err := net.Dial("udp4", address)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	_, err = conn.Write([]byte("csqtt-dns"))
+	return err
+}
+
+// guardRuleCount — сколько правил в цепочках таблицы защиты inet csqtt-cli;
+// -1 — таблицы нет.
+func guardRuleCount(t *testing.T) int {
+	t.Helper()
+	conn, err := nftables.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	table, err := conn.ListTableOfFamily(app.Name, nftables.TableFamilyINet)
+	if err != nil {
+		return -1
+	}
+	chains, err := conn.ListChainsOfTableFamily(nftables.TableFamilyINet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, c := range chains {
+		if c.Table.Name != table.Name {
+			continue
+		}
+		rules, err := conn.GetRules(table, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n += len(rules)
+	}
+	return n
+}
+
+// Настоящий Tun с настоящей защитой DNS (linuxsys.DNSGuard) и DNS системы
+// способом «перезапись». После Start: в resolv.conf — DNS туннеля, DNS к
+// чужому резолверу отбрасывается, к резолверу туннеля — уходит в адаптер.
+// Смена DNS на ходу переводит на новый резолвер и файл, и защиту. Suspend и
+// Close возвращают прежний resolv.conf и оставляют таблицу без правил
+// (саму таблицу закрывает её владелец — вызывающий).
+func TestTunDNSNetns(t *testing.T) {
+	skipOutsideNetns(t)
+	const name = "csqtttest4"
+	const mark = 0x1075
+	ctx := context.Background()
+	orig := readResolvConf(t)
+
+	guard, err := linuxsys.OpenDNSGuard(mark)
+	if err != nil {
+		t.Fatalf("OpenDNSGuard: %v", err)
+	}
+	defer guard.Close()
+	w := NewTun(TunOptions{Name: name, Logf: t.Logf, DNSGuard: guard})
+	defer w.Close()
+
+	addr := netip.MustParseAddr("192.0.2.2")
+	dns1, dns2 := netip.MustParseAddr("198.51.100.53"), netip.MustParseAddr("198.51.100.54")
+	const foreign = "203.0.113.53:53"
+	if err := w.Start(ctx, TunConf{Address: addr, DNS: []netip.Addr{dns1}}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	fd, err := w.dup()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if fd >= 0 {
+			unix.Close(fd)
+		}
+	}()
+
+	up := func(step string, dns, old netip.Addr) {
+		t.Helper()
+		conf := readResolvConf(t)
+		if !strings.Contains(conf, "\nnameserver "+dns.String()+"\n") ||
+			(old.IsValid() && strings.Contains(conf, "nameserver "+old.String())) {
+			t.Errorf("%s: resolv.conf\n%s", step, conf)
+		}
+		if err := sendUDP(foreign); !errors.Is(err, unix.EPERM) {
+			t.Errorf("%s: DNS к чужому резолверу: %v, ждали EPERM", step, err)
+		}
+		if old.IsValid() {
+			if err := sendUDP(netip.AddrPortFrom(old, 53).String()); !errors.Is(err, unix.EPERM) {
+				t.Errorf("%s: DNS к прежнему резолверу туннеля: %v, ждали EPERM", step, err)
+			}
+		}
+		to := netip.AddrPortFrom(dns, 53)
+		if err := sendUDP(to.String()); err != nil {
+			t.Fatalf("%s: DNS к резолверу туннеля: %v", step, err)
+		}
+		readUDP(t, fd, to, "csqtt-dns")
+		if n := guardRuleCount(t); n <= 0 {
+			t.Errorf("%s: правил защиты %d", step, n)
+		}
+	}
+	down := func(step string) {
+		t.Helper()
+		if conf := readResolvConf(t); conf != orig {
+			t.Errorf("%s: resolv.conf\n%s\nждали прежний:\n%s", step, conf, orig)
+		}
+		if _, err := os.Stat(resolvConf + "." + app.Name + "-backup"); err == nil {
+			t.Errorf("%s: копия resolv.conf осталась", step)
+		}
+		if err := sendUDP(foreign); err != nil {
+			t.Errorf("%s: DNS к чужому резолверу: %v", step, err)
+		}
+		if n := guardRuleCount(t); n != 0 {
+			t.Errorf("%s: правил защиты %d, ждали 0 (таблица на месте)", step, n)
+		}
+	}
+
+	up("после Start", dns1, netip.Addr{})
+	if err := w.UpdateDNS([]netip.Addr{dns2}); err != nil {
+		t.Fatalf("UpdateDNS: %v", err)
+	}
+	up("после UpdateDNS", dns2, dns1)
+
+	if err := w.Suspend(); err != nil {
+		t.Fatalf("Suspend: %v", err)
+	}
+	down("после Suspend")
+
+	if err := w.Start(ctx, TunConf{Address: addr, DNS: []netip.Addr{dns2}}); err != nil {
+		t.Fatalf("Start второй попытки: %v", err)
+	}
+	up("после Start второй попытки", dns2, netip.Addr{})
+
+	unix.Close(fd)
+	fd = -1
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	down("после Close")
+	if linkExists(name) {
+		t.Error("интерфейс остался после Close")
 	}
 }

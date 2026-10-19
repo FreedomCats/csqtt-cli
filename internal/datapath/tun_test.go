@@ -21,6 +21,14 @@ type fakeAdapter struct {
 	configureErr error
 	// closeGate — если задан, close ждёт его закрытия.
 	closeGate chan struct{}
+
+	// DNS системы и общий с fakeDNSGuard журнал (tun_dns_test.go).
+	routed    bool
+	sysDNS    []netip.Addr // nil — DNS системы прежний
+	setDNSErr error
+	events    []string
+	guard     *fakeDNSGuard
+	t         *testing.T
 }
 
 func (f *fakeAdapter) adapter() *tunAdapter {
@@ -34,8 +42,24 @@ func (f *fakeAdapter) adapter() *tunAdapter {
 			f.configured = append(f.configured, addr)
 			return nil
 		},
-		addRoutes:    func() error { f.mu.Lock(); f.routesAdded++; f.mu.Unlock(); return nil },
-		removeRoutes: func() error { f.mu.Lock(); f.routesRemove++; f.mu.Unlock(); return nil },
+		addRoutes: func() error {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			f.routesAdded++
+			f.routed = true
+			f.events = append(f.events, "routes")
+			return nil
+		},
+		removeRoutes: func() error {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			f.routesRemove++
+			f.routed = false
+			f.events = append(f.events, "unroute")
+			return nil
+		},
+		setDNS:    f.setDNS,
+		revertDNS: f.revertDNS,
 		close: func() error {
 			if f.closeGate != nil {
 				<-f.closeGate
@@ -43,6 +67,7 @@ func (f *fakeAdapter) adapter() *tunAdapter {
 			f.mu.Lock()
 			defer f.mu.Unlock()
 			f.closed++
+			f.events = append(f.events, "close")
 			return nil
 		},
 	}

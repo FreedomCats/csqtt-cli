@@ -29,7 +29,9 @@ const tunFlags = unix.IFF_TUN | unix.IFF_NO_PI
 // оставляет и умирает вместе с процессом, так что упавший запуск следующему
 // не мешает. Абстрактные имена у каждого сетевого пространства свои, как и
 // имена интерфейсов: csqtt-cli в контейнере с хостовым не конфликтует.
-const tunLockName = "@" + app.Name + "-tun"
+// Переменная — ради тестов: им нельзя занимать блокировку работающего
+// csqtt-cli.
+var tunLockName = "@" + app.Name + "-tun"
 
 // tunUnsupported — на Linux tun работает, если ядро Linux умеет TUN.
 func tunUnsupported() error {
@@ -61,7 +63,14 @@ func (t *Tun) SendFD(ctx context.Context, socket string, pid int) error {
 }
 
 // openTunAdapter создаёт адаптер name: без адреса и опущенным. Адрес, MTU и
-// маршруты задают configure и addRoutes. На отказе за собой убирает всё.
+// маршруты задают configure и addRoutes, DNS системы — setDNS. На отказе
+// за собой убирает всё.
+//
+// DNS на Linux — не свойство адаптера, а настройка системы: способ
+// (systemd-resolved, resolvconf, перезапись /etc/resolv.conf) выбирает
+// linuxsys.DetectSystemDNS по тому, кто ведёт resolv.conf, — до создания
+// адаптера, так что незнакомый генератор файла — отказ открытия, а не
+// попытки.
 //
 // Адаптер не постоянный: интерфейс живёт, пока открыт его дескриптор, и
 // после падения процесса исчезает. Поэтому чужой интерфейс с тем же
@@ -79,10 +88,19 @@ func openTunAdapter(name string, logf func(string, ...any)) (*tunAdapter, error)
 	}
 	if exists {
 		unlock()
-		return nil, fmt.Errorf("адаптер %q: в системе уже есть интерфейс с этим именем (тип %s), и создал его не %s; "+
-			"если он не нужен, удалите его: sudo ip link del %s", name, kind, app.Name, name)
+		return nil, foreignLinkError(name, kind)
+	}
+	dns, err := linuxsys.DetectSystemDNS(name)
+	if err != nil {
+		unlock()
+		return nil, fmt.Errorf("DNS системы: %w", err)
 	}
 	fd, err := createTUN(name)
+	if errors.Is(err, unix.EBUSY) {
+		// Чужой интерфейс появился между LinkKind и TUNSETIFF.
+		unlock()
+		return nil, foreignLinkError(name, "tun")
+	}
 	if err != nil {
 		unlock()
 		return nil, fmt.Errorf("адаптер %q: %w", name, err)
@@ -93,6 +111,10 @@ func openTunAdapter(name string, logf func(string, ...any)) (*tunAdapter, error)
 		unlock()
 		return nil, fmt.Errorf("адаптер %q: %w", name, err)
 	}
+	logf("[TUN] DNS системы задаётся так: %s", dns)
+	if w := dns.Warning(); w != "" {
+		logf("[TUN] Внимание: %s", w)
+	}
 
 	return &tunAdapter{
 		configure: func(addr netip.Addr) error {
@@ -100,9 +122,30 @@ func openTunAdapter(name string, logf func(string, ...any)) (*tunAdapter, error)
 		},
 		// Маршрутов IPv6 нет: туннель IPv6 не везёт, а отбросить такие
 		// пакеты, как мост на Windows, некому — они шли бы мимо оболочки
-		// прямо в ядро. IPv6 системы закроет таблица защиты (L3, §05).
+		// прямо в ядро. IPv6 системы закроет таблица защиты (L3b, §05).
 		addRoutes:    func() error { return linuxsys.SetTunnelRoutes(index, tunRoutes4) },
 		removeRoutes: func() error { return linuxsys.ClearTunnelRoutes(index, tunRoutes4) },
+		setDNS: func(servers []netip.Addr) error {
+			if err := dns.Set(index, servers); err != nil {
+				return err
+			}
+			if len(servers) == 0 {
+				logf("[TUN] у туннеля нет резолверов IPv4 — DNS системы %s не трогает", app.Name)
+			} else {
+				logf("[TUN] DNS системы (%s): %v", dns.Method(), servers)
+			}
+			return nil
+		},
+		revertDNS: func() error {
+			if !dns.Applied() {
+				return nil
+			}
+			if err := dns.Revert(index); err != nil {
+				return err
+			}
+			logf("[TUN] DNS системы возвращён (%s)", dns.Method())
+			return nil
+		},
 		dup: func() (int, error) {
 			return unix.FcntlInt(uintptr(fd), unix.F_DUPFD_CLOEXEC, 0)
 		},
@@ -116,8 +159,16 @@ func openTunAdapter(name string, logf func(string, ...any)) (*tunAdapter, error)
 	}, nil
 }
 
+// foreignLinkError — отказ, когда интерфейс name уже есть и создал его не
+// csqtt-cli.
+func foreignLinkError(name, kind string) error {
+	return fmt.Errorf("адаптер %q: в системе уже есть интерфейс с этим именем (тип %s), и создал его не %s; "+
+		"если он не нужен, удалите его: sudo ip link del %s", name, kind, app.Name, name)
+}
+
 // createTUN открывает /dev/net/tun и заводит на нём адаптер name с
-// tunFlags.
+// tunFlags. IFF_TUN_EXCL — только новый: существующий постоянный TUN с тем
+// же именем без него молча подхватился бы, а с ним — EBUSY.
 func createTUN(name string) (int, error) {
 	fd, err := unix.Open(tunDevice, unix.O_RDWR|unix.O_CLOEXEC, 0)
 	if err != nil {
@@ -128,7 +179,7 @@ func createTUN(name string) (int, error) {
 		unix.Close(fd)
 		return -1, err
 	}
-	ifr.SetUint16(tunFlags)
+	ifr.SetUint16(tunFlags | unix.IFF_TUN_EXCL)
 	if err := unix.IoctlIfreq(fd, unix.TUNSETIFF, ifr); err != nil {
 		unix.Close(fd)
 		return -1, fmt.Errorf("TUNSETIFF: %w", err)

@@ -4,8 +4,11 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/FreedomCats/csqtt-cli/internal/app"
 )
 
 // tunHelperEnv включает режим помощника: тестовый бинарь, запущенный самим
@@ -14,10 +17,20 @@ import (
 // с этим именем (Tun.Open).
 const tunHelperEnv = "CSQTT_TUN_HELPER"
 
+// tunLockEnv — имя блокировки адаптера, которое тест передаёт помощнику.
+const tunLockEnv = "CSQTT_TUN_LOCK"
+
 // helperRefused — код выхода помощника, которому отказали.
 const helperRefused = 3
 
+// TestMain уводит тесты на свою блокировку адаптера: настоящую
+// (@csqtt-cli-tun) держит работающий csqtt-cli, и тесты падали бы ложно, а
+// заняв её, мешали бы ему. Помощник берёт имя у теста.
 func TestMain(m *testing.M) {
+	tunLockName = "@" + app.Name + "-test-tun-" + strconv.Itoa(os.Getpid())
+	if name, ok := os.LookupEnv(tunLockEnv); ok {
+		tunLockName = name
+	}
 	if mode, ok := os.LookupEnv(tunHelperEnv); ok {
 		os.Exit(runTunHelper(mode))
 	}
@@ -52,7 +65,7 @@ func runTunHelper(mode string) int {
 func fromOtherProcess(t *testing.T, mode string) error {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^$")
-	cmd.Env = append(os.Environ(), tunHelperEnv+"="+mode)
+	cmd.Env = append(os.Environ(), tunHelperEnv+"="+mode, tunLockEnv+"="+tunLockName)
 	out, err := cmd.CombinedOutput()
 	var exit *exec.ExitError
 	if errors.As(err, &exit) && exit.ExitCode() == helperRefused {
@@ -67,8 +80,11 @@ func fromOtherProcess(t *testing.T, mode string) error {
 // Второй csqtt-cli с datapath tun получает отказ, пока жив первый, и
 // проходит, когда первый отпустил блокировку. Внутри одного процесса
 // захваты считаются: резерв сеанса и открытие адаптера друг другу не
-// мешают.
+// мешают. Имя блокировки — тестовое (TestMain).
 func TestTunLockExcludesOtherProcess(t *testing.T) {
+	if tunLockName == "@"+app.Name+"-tun" {
+		t.Fatal("тест взял бы блокировку настоящего csqtt-cli")
+	}
 	session, err := acquireTunLock()
 	if err != nil {
 		t.Fatalf("захват на сеанс: %v", err)
