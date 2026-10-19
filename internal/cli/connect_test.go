@@ -51,7 +51,7 @@ func TestConnectRefusesTun(t *testing.T) {
 		if code != exitError {
 			t.Errorf("%q: код %d", args, code)
 		}
-		for _, want := range []string{"tun", "-datapath socks", "profile set home -datapath socks"} {
+		for _, want := range []string{"tun", "-datapath socks", "home -datapath socks)"} {
 			if !strings.Contains(stderr, want) {
 				t.Errorf("%q: нет %q:\n%s", args, want, stderr)
 			}

@@ -332,3 +332,39 @@ func TestKillSwitchCaptchaFailures(t *testing.T) {
 		t.Errorf("строки после отказа возврата: %q", stdout.String())
 	}
 }
+
+// Ctrl+C посреди капчи мимо прокси: мост возвращается, не дожидаясь окна, и
+// connect закрывает таблицу раньше, чем окно. Конец такой капчи правил больше
+// не трогает и ложной строки «kill-switch не встал» не пишет.
+func TestKillSwitchCaptchaAfterClose(t *testing.T) {
+	session := &fakeLockdownSession{}
+	setup, stdout, _, err := setupKillSwitch(t, session, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ks := setup.killSwitch
+	done := ks.captchaDirect()
+	if session.locked {
+		t.Fatal("капча мимо прокси не сняла «закрыто»")
+	}
+	setup.close()
+	if !session.closed {
+		t.Fatal("сессия не закрыта")
+	}
+	session.lockdownErr = errors.New("таблица закрыта")
+	lockdowns := session.lockdowns
+	stdout.Reset()
+	done()
+	if session.lockdowns != lockdowns {
+		t.Error("после закрытия сессии kill-switch снова ставил «закрыто»")
+	}
+	if err := ks.Disable(); err != nil {
+		t.Errorf("Disable после закрытия: %v", err)
+	}
+	if ks.Enable(nil) == nil {
+		t.Error("Enable после закрытия прошёл")
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("строки после закрытия:\n%s", stdout.String())
+	}
+}

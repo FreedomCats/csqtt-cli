@@ -87,6 +87,12 @@ func setupDNSGuard(out *printer, warn io.Writer, allowLeak bool, killSwitchOff s
 	}
 	out.line("kill-switch: пока туннель не поднят, трафик системы заблокирован")
 	setup.guard, setup.killSwitch = ks, ks
+	// Окно капчи мимо прокси может закрыться и после конца connect: его
+	// done не должен ставить «закрыто» в закрытую таблицу.
+	setup.close = func() {
+		ks.shutdown()
+		_ = session.Close()
+	}
 	return setup, nil
 }
 

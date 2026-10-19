@@ -1,8 +1,9 @@
 // connect.go — команда csqtt-cli connect.
 //
 // Всё сделанное раньше собирается здесь в одну команду: профиль и секреты из
-// хранилища → настройки ядра (coreproc.Config), datapath socks, мост капчи,
-// цикл подключения супервизора и вывод хода подключения.
+// хранилища → настройки ядра (coreproc.Config), datapath (socks или tun —
+// fulltunnel.go), мост капчи, цикл подключения супервизора и вывод хода
+// подключения.
 //
 // Сборка отделена от запуска: planConnect ничего не трогает в сети и
 // возвращает готовый план, а run уже поднимает туннель.
@@ -51,9 +52,19 @@ func connectCommand() *command {
 если в файле он один или назван в default_profile. Пароль и хеши звонков VK
 лежат в хранилище секретов; записывает их ` + app.Name + ` profile add.
 
-Сейчас трафик отдаётся только через локальный SOCKS5 (-datapath socks или
-datapath = "socks" в профиле): через туннель ходят программы, настроенные на
-этот прокси. Режим tun — весь трафик системы — появится в следующих версиях.
+Режим tun (datapath = "tun", умолчание) — системный VPN: весь трафик
+системы идёт в туннель через адаптер csqtt-cli. Он требует прав root
+(sudo ` + app.Name + ` connect) и пока работает только на Linux. Файл настроек,
+секреты и окно капчи под sudo остаются у того, кто его вызвал. Пока туннель
+не поднят, kill-switch блокирует трафик системы; пока поднят, DNS системы
+ходит только к резолверам туннеля, а IPv6 наружу закрыт. Не включились
+защита DNS или kill-switch — подключения не будет, разве что с -allow-leak.
+Сокеты самого ` + app.Name + ` и ядра идут мимо туннеля через физический
+интерфейс; сменилась сеть — туннель переподключается.
+
+Режим socks (-datapath socks или datapath = "socks" в профиле) прав не
+требует: трафик отдаётся через локальный SOCKS5, и через туннель ходят
+программы, настроенные на этот прокси.
 
 Ход подключения печатается строками в stdout, под ними в терминале — строка
 состояния: воркеры, трафик, скорость, аптайм. Капча VK открывается в окне
@@ -70,7 +81,16 @@ func runConnect(ctx context.Context, e *env, args []string) error {
 	fs := newFlagSet(connectCommand())
 	configPath := addConfigFlag(fs)
 	verbose := addVerboseFlag(fs)
-	mode := fs.String("datapath", "", "как отдавать трафик: socks; без флага — из профиля")
+	mode := fs.String("datapath", "", "как отдавать трафик: tun (весь трафик системы, нужен root) или socks; "+
+		"без флага — из профиля")
+	// Выключить на запуск, а не включить: включён он и так, если профиль
+	// не выключил.
+	noKillSwitch := fs.Bool("no-kill-switch", false, "выключить kill-switch на этот запуск: "+killSwitchUsage)
+	// Флаг без поля в профиле: согласие на утечку даётся на один запуск, а не
+	// записывается навсегда. Один на защиту DNS и kill-switch: отказывают они
+	// по одной причине — nftables.
+	allowLeak := fs.Bool("allow-leak", false,
+		"tun: подключаться, даже если защита от утечки DNS и kill-switch не включились")
 	rest, err := parseWithArgs(e, fs, args)
 	if err != nil {
 		return err
@@ -83,11 +103,30 @@ func runConnect(ctx context.Context, e *env, args []string) error {
 		name = rest[0]
 	}
 
-	plan, err := e.planConnect(*configPath, name, *mode, setFlags(fs)["datapath"])
+	named := setFlags(fs)
+	plan, err := e.planConnect(connectFlags{
+		configPath:   *configPath,
+		name:         name,
+		mode:         *mode,
+		modeNamed:    named["datapath"],
+		noKillSwitch: named["no-kill-switch"] && *noKillSwitch,
+		allowLeak:    *allowLeak,
+	})
 	if err != nil {
 		return err
 	}
 	return plan.run(ctx, e, *verbose)
+}
+
+// connectFlags — флаги и аргумент connect.
+type connectFlags struct {
+	configPath, name string
+	// mode — -datapath; modeNamed — флаг назван, иначе режим из профиля.
+	mode      string
+	modeNamed bool
+	// noKillSwitch и allowLeak действуют только в режиме tun: у socks нет
+	// ни защиты DNS, ни kill-switch, и флаги, как в qwdtt-cli, ему не мешают.
+	noKillSwitch, allowLeak bool
 }
 
 // connectPlan — всё, что собрано до входа в цикл подключения. Сети здесь
@@ -97,38 +136,50 @@ type connectPlan struct {
 	// cfg — настройки ядра с паролем и хешами.
 	cfg      coreproc.Config
 	corePath string
+	// mode — config.DatapathSocks или config.DatapathTun.
+	mode string
+
+	// allowLeak — -allow-leak: отказ защиты DNS и kill-switch не мешает
+	// подключению в tun.
+	allowLeak bool
+	// killSwitchOff — чем kill-switch выключен, для строки до подключения;
+	// пусто — включён.
+	killSwitchOff string
 }
 
 // planConnect собирает план: профиль, режим, секреты из хранилища, путь к
 // ядру. Профиль без device_id (файл писали руками) записывается заново — Save
 // заводит id, иначе ядро представилось бы серверу как «unknown».
-func (e *env) planConnect(configPath, name, mode string, modeNamed bool) (*connectPlan, error) {
-	path, file, err := loadProfiles(configPath)
+func (e *env) planConnect(f connectFlags) (*connectPlan, error) {
+	path, file, err := loadProfiles(f.configPath)
 	if err != nil {
 		return nil, err
 	}
-	p, err := file.Profile(name)
+	p, err := file.Profile(f.name)
 	if err != nil {
 		return nil, err
 	}
 
-	if !modeNamed {
+	mode := strings.TrimSpace(f.mode)
+	if !f.modeNamed {
 		mode = config.EffectiveDatapath(p.Datapath)
 	}
-	switch strings.TrimSpace(mode) {
+	switch mode {
 	case config.DatapathSocks:
 	case config.DatapathTun:
-		// Отказ, а не тихий SOCKS5: человек, ждущий VPN на всю систему,
-		// решил бы, что весь его трафик в туннеле.
+		// Права и система — до секретов и до сети: отказ, а не тихий
+		// SOCKS5, — человек, ждущий VPN на всю систему, решил бы, что весь
+		// его трафик в туннеле.
 		from := "в профиле datapath = \"tun\" (умолчание)"
-		if modeNamed {
+		if f.modeNamed {
 			from = "-datapath tun"
 		}
-		return nil, fmt.Errorf("%s: режим tun — весь трафик системы — появится в следующих версиях, "+
-			"сейчас только SOCKS5: %s connect -datapath socks %s, или запишите в профиль: %s profile set %s -datapath socks",
-			from, app.Name, p.Name, app.Name, p.Name)
+		if err := tunRequirementsError(newTun(datapath.TunOptions{}).Requires(), from, p.Name, f.configPath,
+			f.modeNamed); err != nil {
+			return nil, err
+		}
 	default:
-		return nil, usagef("-datapath %q: допустимы %s и %s", mode, config.DatapathSocks, config.DatapathTun)
+		return nil, usagef("-datapath %q: допустимы %s и %s", f.mode, config.DatapathSocks, config.DatapathTun)
 	}
 
 	if strings.TrimSpace(p.DeviceID) == "" {
@@ -155,7 +206,45 @@ func (e *env) planConnect(configPath, name, mode string, modeNamed bool) (*conne
 	if err != nil {
 		return nil, err
 	}
-	return &connectPlan{profile: p, cfg: cfg, corePath: corePath}, nil
+	plan := &connectPlan{profile: p, cfg: cfg, corePath: corePath, mode: mode, allowLeak: f.allowLeak}
+	switch {
+	case f.noKillSwitch:
+		plan.killSwitchOff = "-no-kill-switch"
+	case !p.KillSwitchOn():
+		plan.killSwitchOff = "kill_switch = false в профиле"
+	}
+	return plan, nil
+}
+
+// isRoot — запущен ли csqtt-cli с правами root. Переменная ради тестов.
+// На Windows Geteuid — -1, но tun там отказывает раньше, по Unsupported.
+var isRoot = func() bool { return os.Geteuid() == 0 }
+
+// tunRequirementsError объясняет, почему tun не запустится, или возвращает
+// nil. Неподдерживаемая система проверяется первой: права тут не помогут, и
+// советовать sudo незачем. from — откуда взялся режим tun, для начала
+// строки; modeNamed — tun задан флагом -datapath, и в команде с sudo он
+// нужен снова: профиль мог бы выбрать socks.
+func tunRequirementsError(req datapath.Requirements, from, profile, configPath string, modeNamed bool) error {
+	args := profile
+	if configPath != "" {
+		args = "-config " + configPath + " " + profile
+	}
+	tunArgs := args
+	if modeNamed {
+		tunArgs = "-datapath tun " + args
+	}
+	socks := fmt.Sprintf("%s connect -datapath socks %s (насовсем — %s profile set %s -datapath socks)",
+		app.Name, args, app.Name, args)
+	if req.Unsupported != nil {
+		return fmt.Errorf("%s: режим tun — весь трафик системы: %w; на этой системе есть только SOCKS5: %s",
+			from, req.Unsupported, socks)
+	}
+	if req.Admin && !isRoot() {
+		return fmt.Errorf("%s: режиму tun — весь трафик системы — нужны права root: sudo %s connect %s; "+
+			"без прав работает только SOCKS5: %s", from, app.Name, tunArgs, socks)
+	}
+	return nil
 }
 
 // findCore — путь к csqtt-core рядом с csqtt-cli.
@@ -187,36 +276,55 @@ func (plan *connectPlan) run(ctx context.Context, e *env, verbose bool) error {
 	workers := coreproc.NormalizeWorkers(cfg.Workers, len(cfg.Hashes))
 	out.header(workers)
 
-	socks, err := datapath.NewSocks(datapath.SocksOptions{Listen: p.Socks.Listen, Logf: out.debugf})
+	var dp *sessionDatapath
+	var err error
+	if plan.mode == config.DatapathTun {
+		dp, err = plan.openTun(e, out, verbose)
+	} else {
+		dp, err = openSocks(p, out)
+	}
 	if err != nil {
 		return err
 	}
-	defer socks.Close()
+	defer dp.close()
 
-	bridge := captcha.NewBridge(captcha.Options{
-		Out:   out.aside(e.stderr),
-		Lines: e.lines(),
-		Open:  e.openURL,
-		Logf:  out.debugf,
+	newBridge := e.captchaBridge
+	if newBridge == nil {
+		newBridge = func(opts captcha.Options) supervisor.CaptchaFunc { return captcha.NewBridge(opts).Solve }
+	}
+	solve := newBridge(captcha.Options{
+		Out:    out.aside(e.stderr),
+		Lines:  e.lines(),
+		Open:   e.openURL,
+		Dial:   dp.captchaDial,
+		Direct: dp.captchaDirect,
+		Logf:   out.debugf,
 	})
 	tunnel, err := supervisor.NewTunnel(supervisor.Options{
 		CorePath:     plan.corePath,
 		Config:       cfg,
-		Link:         socks.Link(),
-		Datapath:     socks,
-		Captcha:      bridge.Solve,
+		Link:         dp.link,
+		TunFD:        dp.tunFD,
+		Datapath:     dp.datapath,
+		Captcha:      solve,
 		OnMessage:    out.message,
 		OnTransition: out.transition,
 		Logf:         out.logf,
+		KillSwitch:   dp.killSwitch,
+		Prepare:      dp.prepare,
 	})
 	if err != nil {
 		return err
 	}
+	if dp.watch != nil {
+		// Снимается раньше datapath: перезапуск после остановки незачем.
+		defer dp.watch(tunnel.Restart)()
+	}
 	out.setWorkers(tunnel.Workers)
-	out.setConnectedNote(fmt.Sprintf("SOCKS5 на %v", socks.ListenAddr()))
+	out.setConnectedNote(dp.note)
 
-	out.line("профиль %s: сервер %s, хешей %d, воркеров %d, SOCKS5 %v",
-		p.Name, cfg.Peer, len(cfg.Hashes), workers, socks.ListenAddr())
+	out.line("профиль %s: сервер %s, хешей %d, воркеров %d, %s",
+		p.Name, cfg.Peer, len(cfg.Hashes), workers, dp.describe)
 	if workers < cfg.Workers {
 		out.line("предупреждение: воркеров в профиле %d, а на %d хеш(ах) ядро запустит %d (не больше 27 на хеш)",
 			cfg.Workers, len(cfg.Hashes), workers)
@@ -237,6 +345,50 @@ func (plan *connectPlan) run(ctx context.Context, e *env, verbose bool) error {
 			hashNumbers(dead), app.Name, p.Name)
 	}
 	return explainConnectError(err, p.Name, dead)
+}
+
+// sessionDatapath — datapath сеанса и то, что от него нужно циклу
+// подключения, мосту капчи и слежению за сетью. Строят его openSocks и
+// openTun (fulltunnel.go).
+type sessionDatapath struct {
+	datapath supervisor.Datapath
+	// link или tunFD — канал пакетов с ядром, ровно один.
+	link  supervisor.Link
+	tunFD supervisor.TunFD
+	// describe — для строки профиля, note — для строки «туннель работает».
+	describe, note string
+
+	// prepare — supervisor.Options.Prepare: интерфейс и метка ядру на
+	// каждую попытку; nil — не нужны (socks).
+	prepare func(cfg *coreproc.Config) error
+	// killSwitch — supervisor.Options.KillSwitch; nil — kill-switch нет.
+	killSwitch func() bool
+	// captchaDial и captchaDirect — captcha.Options.Dial и Direct; nil —
+	// окно ходит в сеть само, снимать нечего.
+	captchaDial   captcha.DialFunc
+	captchaDirect func() (done func())
+	// watch начинает слежение за сменой сети и возвращает его остановку;
+	// nil — следить незачем (socks).
+	watch func(restart func(error)) (stop func())
+
+	// close убирает всё в обратном порядке.
+	close func()
+}
+
+// openSocks — datapath socks: слушатель SOCKS5 открывается до запуска ядра,
+// чтобы занятый порт выяснился до входа в VK.
+func openSocks(p *config.Profile, out *printer) (*sessionDatapath, error) {
+	socks, err := datapath.NewSocks(datapath.SocksOptions{Listen: p.Socks.Listen, Logf: out.debugf})
+	if err != nil {
+		return nil, err
+	}
+	return &sessionDatapath{
+		datapath: socks,
+		link:     socks.Link(),
+		describe: fmt.Sprintf("SOCKS5 %v", socks.ListenAddr()),
+		note:     fmt.Sprintf("SOCKS5 на %v", socks.ListenAddr()),
+		close:    func() { _ = socks.Close() },
+	}, nil
 }
 
 // explainConnectError дописывает к ошибке конца подключения, что делать

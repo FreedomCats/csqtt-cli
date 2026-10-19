@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -179,8 +180,8 @@ func TestCoreCrashRetries(t *testing.T) {
 	}
 }
 
-// Ядро вышло до PROCESS — негодные аргументы: перезапуск не поможет, Run
-// возвращает *StartupError с последними строками журнала.
+// Первое же ядро Run вышло до PROCESS — негодные аргументы: перезапуск не
+// поможет, Run возвращает *StartupError с последними строками журнала.
 func TestCoreExitsBeforeStart(t *testing.T) {
 	h := newHarness(t, Options{}, []string{
 		`error: unexpected argument '--listen-peer' found`,
@@ -197,6 +198,38 @@ func TestCoreExitsBeforeStart(t *testing.T) {
 	}
 	if n := len(h.attempts()); n != 1 || len(h.sleeps()) != 0 {
 		t.Errorf("попыток %d, задержек %v", n, h.sleeps())
+	}
+}
+
+// Ядро уже работало в этом Run, а потом вышло до PROCESS (в новой сети не
+// разрешилось имя сервера): аргументы годны, и это обычная неудача — с
+// задержкой, понятной причиной и следующей попыткой.
+func TestCoreExitsBeforeStartAfterWorking(t *testing.T) {
+	crash := join(recStart, []string{"exit 1"})
+	early := []string{`[ФАТАЛ] [КЛИЕНТ] Не удалось разрешить адрес сервера`, "exit 1"}
+	h := newHarness(t, Options{}, crash, early, recConnect)
+	done := h.run()
+	h.waitState(StateConnected)
+	h.cancel()
+	if err := h.result(done); err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	if n := len(h.attempts()); n != 3 {
+		t.Errorf("попыток %d, ожидалось 3", n)
+	}
+	if got, want := h.sleeps(), []time.Duration{time.Second, 2 * time.Second}; !slices.Equal(got, want) {
+		t.Errorf("задержки %v, ожидались %v", got, want)
+	}
+	recs := h.transitionsTo(StateReconnecting)
+	if len(recs) != 2 {
+		t.Fatalf("переподключения: %+v", recs)
+	}
+	var se *StartupError
+	cause := recs[1].Cause
+	if cause == nil || errors.As(cause, &se) || strings.Contains(cause.Error(), "\n") ||
+		!strings.Contains(cause.Error(), "не начав работу") || !strings.Contains(cause.Error(), "exit status 1") ||
+		!strings.Contains(cause.Error(), "Не удалось разрешить адрес сервера") {
+		t.Errorf("причина: %v", cause)
 	}
 }
 
@@ -780,3 +813,207 @@ func TestInterruptFollowsParent(t *testing.T) {
 		t.Fatal("отмена родителя не дошла")
 	}
 }
+
+// Prepare зовётся перед каждой попыткой, и ядро каждой попытки получает своё:
+// индекс интерфейса, выбранный к её началу.
+func TestPrepareEachAttempt(t *testing.T) {
+	crash := join(recStart, []string{"exit 1"})
+	var index uint32
+	h := newHarness(t, Options{Prepare: func(cfg *coreproc.Config) error {
+		index++
+		cfg.BindIf, cfg.Mark = index, 0x1075
+		return nil
+	}}, crash, crash)
+	if err := h.result(h.run()); err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	cores := h.attempts()
+	if len(cores) != 3 {
+		t.Fatalf("попыток %d", len(cores))
+	}
+	for i, c := range cores {
+		if c.cfg.BindIf != uint32(i+1) || c.cfg.Mark != 0x1075 {
+			t.Errorf("попытка %d: -bind-if %d, -mark %#x", i+1, c.cfg.BindIf, c.cfg.Mark)
+		}
+		if len(c.cfg.Hashes) != 1 {
+			t.Errorf("попытка %d: Prepare получил настройки без хешей: %v", i+1, c.cfg.Hashes)
+		}
+	}
+}
+
+// Отказ Prepare (сети нет) — ядро не запускается, попытка неудачна и
+// повторяется через обычную задержку.
+func TestPrepareFailure(t *testing.T) {
+	noNet := errors.New("нет сети")
+	calls := 0
+	h := newHarness(t, Options{Prepare: func(*coreproc.Config) error {
+		calls++
+		if calls <= 2 {
+			return noNet
+		}
+		return nil
+	}}, recConnect)
+	done := h.run()
+	h.waitState(StateConnected)
+	h.cancel()
+	if err := h.result(done); err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	if n := len(h.attempts()); n != 1 {
+		t.Errorf("ядро запускалось %d раз, ожидался 1 — после двух отказов Prepare", n)
+	}
+	if got, want := h.sleeps(), []time.Duration{time.Second, 2 * time.Second}; !slices.Equal(got, want) {
+		t.Errorf("задержки %v, ожидались %v", got, want)
+	}
+	recs := h.transitionsTo(StateReconnecting)
+	if len(recs) != 2 || !errors.Is(recs[0].Cause, noNet) {
+		t.Errorf("переподключения: %+v", recs)
+	}
+}
+
+// Restart посреди работающей попытки: ядро получает Stop, следующая попытка
+// — сразу, а счётчик неудач сброшен: после неё задержка снова 1 с.
+func TestRestartDuringAttempt(t *testing.T) {
+	crash := join(recStart, []string{"exit 1"})
+	changed := errors.New("сеть сменилась")
+	h := newHarness(t, Options{}, crash, crash, recConnect, crash)
+	done := h.run()
+	h.waitState(StateConnected)
+	h.tunnel.Restart(changed)
+	h.tunnel.Restart(changed) // вторая просьба до исполнения — тот же перезапуск
+	if err := h.result(done); err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	cores := h.attempts()
+	if len(cores) != 5 {
+		t.Fatalf("попыток %d, ожидалось 5 (две неудачи, перезапуск, неудача, конец)", len(cores))
+	}
+	if !cores[2].wasStopped() {
+		t.Error("ядру перезапущенной попытки не послали Stop")
+	}
+	if got, want := h.sleeps(), []time.Duration{time.Second, 2 * time.Second, 0, time.Second}; !slices.Equal(got, want) {
+		t.Errorf("задержки %v, ожидались %v", got, want)
+	}
+	recs := h.transitionsTo(StateReconnecting)
+	if len(recs) < 3 || !errors.Is(recs[2].Cause, changed) || recs[2].Delay != 0 {
+		t.Errorf("переподключение по перезапуску: %+v", recs)
+	}
+}
+
+// Restart посреди попытки, которая туннель ещё не подняла: счётчик неудач
+// сбрасывает сам перезапуск, а не Connected.
+func TestRestartBeforeConnected(t *testing.T) {
+	crash := join(recStart, []string{"exit 1"})
+	h := newHarness(t, Options{}, crash, crash, join(recStart, []string{"wait never"}), crash)
+	done := h.run()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(h.attempts()) < 3 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	// Ядро третьей попытки запущено: просьбу забирает она.
+	h.tunnel.Restart(errors.New("сеть сменилась"))
+	if err := h.result(done); err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	if got, want := h.sleeps(), []time.Duration{time.Second, 2 * time.Second, 0, time.Second}; !slices.Equal(got, want) {
+		t.Errorf("задержки %v, ожидались %v", got, want)
+	}
+	if h.transitionsTo(StateConnected) != nil {
+		t.Error("туннель поднимался — сброс мог прийти от Connected")
+	}
+}
+
+// Restart во время задержки прерывает её и сбрасывает счётчик неудач;
+// просьба, пришедшая между попытками, следующую попытку не обрывает — она и
+// есть перезапуск.
+func TestRestartDuringDelay(t *testing.T) {
+	crash := join(recStart, []string{"exit 1"})
+	h := newHarness(t, Options{}, crash, crash, crash, recConnect)
+	slept := make(chan time.Duration, 4)
+	blocked := false
+	h.tunnel.sleep = func(ctx context.Context, d time.Duration) bool {
+		slept <- d
+		if d < 2*time.Second || blocked {
+			return ctx.Err() == nil
+		}
+		blocked = true
+		<-ctx.Done() // вторая задержка — до прерывания
+		return false
+	}
+	done := h.run()
+	if d := <-slept; d != time.Second {
+		t.Fatalf("первая задержка %v", d)
+	}
+	if d := <-slept; d != 2*time.Second {
+		t.Fatalf("вторая задержка %v", d)
+	}
+	h.tunnel.Restart(errors.New("сеть вернулась"))
+	if d := <-slept; d != time.Second {
+		t.Errorf("задержка после прерванной %v, ожидалась 1s: счётчик неудач не сброшен", d)
+	}
+	h.waitState(StateConnected)
+	time.Sleep(50 * time.Millisecond)
+	if st := h.tunnel.State(); st != StateConnected {
+		t.Errorf("после прерванной задержки попытка оборвана: %s\n%s", st, h.dump())
+	}
+	h.cancel()
+	if err := h.result(done); err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	if n := len(h.attempts()); n != 4 {
+		t.Errorf("попыток %d, ожидалось 4", n)
+	}
+	if h.attempts()[3].wasStopped() != true {
+		t.Error("ядру не послали Stop по Ctrl+C")
+	}
+}
+
+// Просьба о перезапуске, пока попытка и так кончается (сервер не ответил, ядру
+// послан Stop), не пропадает: причина конца — прежняя, но следующая попытка —
+// без задержки.
+func TestRestartWhileStopping(t *testing.T) {
+	h := newHarness(t, Options{}, recConnect)
+	first := &handCore{msgs: make(chan coreproc.Message), stopped: make(chan struct{})}
+	starts := 0
+	h.tunnel.start = func(cfg coreproc.Config) (Core, error) {
+		if starts++; starts == 1 {
+			return first, nil
+		}
+		return h.start(cfg)
+	}
+	done := h.run()
+	first.msgs <- coreproc.ParseLine(recStart[0])
+	first.msgs <- coreproc.ParseLine(fatalLine("handshake_timeout", "FATAL_HANDSHAKE: сервер молчит"))
+	<-first.stopped
+	h.tunnel.Restart(errors.New("сеть сменилась"))
+	// Ядро ещё доигрывает остановку: просьбу забирает сама попытка.
+	deadline := time.Now().Add(5 * time.Second)
+	for len(h.tunnel.restart) > 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	close(first.msgs)
+	h.waitState(StateConnected)
+	h.cancel()
+	if err := h.result(done); err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	if got := h.sleeps(); !slices.Equal(got, []time.Duration{0}) {
+		t.Errorf("задержки %v, ожидалась одна нулевая", got)
+	}
+	var se *ServerError
+	if recs := h.transitionsTo(StateReconnecting); len(recs) != 1 || !errors.As(recs[0].Cause, &se) {
+		t.Errorf("причина конца попытки — не прежняя: %+v", recs)
+	}
+}
+
+// handCore — ядро, чьим выводом тест управляет сам.
+type handCore struct {
+	msgs    chan coreproc.Message
+	stopped chan struct{}
+	once    sync.Once
+}
+
+func (c *handCore) Messages() <-chan coreproc.Message { return c.msgs }
+func (c *handCore) Send(string) error                 { return nil }
+func (c *handCore) Stop() error                       { c.once.Do(func() { close(c.stopped) }); return nil }
+func (c *handCore) Wait() error                       { return nil }

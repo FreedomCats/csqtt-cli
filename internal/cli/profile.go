@@ -112,7 +112,7 @@ func addProfileFlags(fs *flag.FlagSet) *profileFlags {
 		workers:       fs.Int("workers", 0, "число воркеров: кратно 9, от 9 до 126, не больше 27 на хеш"),
 		obfs:          fs.String("obfs", "", "маскировка RTP: audio или video"),
 		turnTransport: fs.String("turn-transport", "", "до TURN по udp или tcp_tls"),
-		datapath:      fs.String("datapath", "", "как отдавать трафик: socks или tun (tun — в следующих версиях)"),
+		datapath:      fs.String("datapath", "", "как отдавать трафик: tun (весь трафик системы, нужен root; пока только Linux) или socks"),
 		socksListen:   fs.String("socks-listen", "", "адрес SOCKS5 при datapath = socks, только loopback (по умолчанию "+datapath.DefaultSocksListen+")"),
 		killSwitch:    fs.Bool("kill-switch", true, "kill-switch: "+killSwitchUsage+"; -kill-switch=false — выключить"),
 		makeDefault:   fs.Bool("default", false, "сделать профиль профилем по умолчанию"),

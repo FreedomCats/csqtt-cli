@@ -131,6 +131,13 @@ type Options struct {
 	// нет.
 	KillSwitch func() bool
 
+	// Prepare дописывает в настройки ядра перед каждой попыткой, до его
+	// запуска, то, что между попытками меняется: индекс физического
+	// интерфейса и метку (BindIf, Mark — правка П3). Ошибка — ядро не
+	// запускается, попытка считается неудачной, и следующая начнётся через
+	// обычную задержку. nil — настройки как в Config.
+	Prepare func(cfg *coreproc.Config) error
+
 	// DegradedRestart — сколько терпеть StateDegraded до перезапуска ядра.
 	// 0 — DefaultDegradedRestart.
 	DegradedRestart time.Duration
@@ -162,8 +169,10 @@ func (e *ServerError) Error() string {
 	return msg
 }
 
-// StartupError — ядро вышло, не начав работу (до PROCESS): негодные аргументы
-// или ядро не той версии. Перезапуск ничего не изменит.
+// StartupError — ядро вышло, не начав работу (до PROCESS), а в этом Run оно
+// ещё ни разу не работало: негодные аргументы или ядро не той версии.
+// Перезапуск ничего не изменит. Если ядро уже доходило до PROCESS, такой выход
+// — обычная неудача попытки (сеть до PROCESS ядру тоже нужна).
 type StartupError struct {
 	Err error
 	// Log — последние строки журнала ядра: в них причина.
@@ -182,6 +191,20 @@ func (e *StartupError) Error() string {
 }
 
 func (e *StartupError) Unwrap() error { return e.Err }
+
+// retryable — тот же выход до PROCESS, когда аргументы уже годились (ядро
+// в этом Run работало): одной строкой, с последней строкой журнала, без
+// типа *StartupError — это не конец цикла.
+func (e *StartupError) retryable() error {
+	msg := "ядро вышло, не начав работу"
+	if len(e.Log) > 0 {
+		msg += " (" + e.Log[len(e.Log)-1] + ")"
+	}
+	if e.Err == nil {
+		return errors.New(msg)
+	}
+	return fmt.Errorf("%s: %w", msg, e.Err)
+}
 
 // Tunnel — цикл подключения: ядро, datapath, автомат и политика перезапуска,
 // связанные вместе.
@@ -210,6 +233,14 @@ type Tunnel struct {
 	// время переподключения туннель снят, и об этом сказано строкой, blocked
 	// — тогда стояло «закрыто».
 	routed, bypassed, blocked bool
+
+	// coreStarted — ядро в этом Run хоть раз дошло до PROCESS: аргументы
+	// годны, и выход до PROCESS дальше — не их вина. Только горутина цикла.
+	coreStarted bool
+
+	// restart — просьба о перезапуске (Restart), ещё не исполненная. Одной
+	// достаточно: перезапуск, попрошенный дважды, — всё равно один.
+	restart chan error
 }
 
 // NewTunnel собирает цикл. Ошибку возвращает только на неполных настройках:
@@ -238,7 +269,24 @@ func NewTunnel(opts Options) (*Tunnel, error) {
 		},
 		sleep:     sleepCtx,
 		fdTimeout: defaultFDTimeout,
+		restart:   make(chan error, 1),
 	}, nil
+}
+
+// Restart обрывает идущую попытку с причиной reason и начинает новую сразу:
+// без задержки и со сброшенным счётчиком неудач. Идущую задержку перед
+// попыткой прерывает. Зовётся из любой горутины — при смене сети: ядро с
+// прежним -bind-if через новый интерфейс не пойдёт.
+//
+// Просьба, пришедшая между попытками, исполняется следующей: она и есть
+// перезапуск. Маршруты на время перезапуска снимаются, как после любой
+// неудачной попытки.
+func (t *Tunnel) Restart(reason error) {
+	select {
+	case t.restart <- reason:
+	default:
+		// Просьба уже ждёт.
+	}
 }
 
 // State — текущее состояние подключения. Нужно строке состояния, которая
@@ -280,33 +328,74 @@ func (t *Tunnel) Run(ctx context.Context) error {
 
 		t.suspend()
 		var delay time.Duration
-		if errors.Is(res.err, ErrServerRestart) {
+		switch {
+		case res.restart:
+			// Перезапуск попросили (сеть сменилась): новая сеть — новый счёт.
+			t.backoff.reset()
+		case errors.Is(res.err, ErrServerRestart):
 			// Перезапуск сервера — не неудача клиента.
 			t.backoff.reset()
 			delay = ServerRestartDelay
-		} else {
+		default:
 			delay = t.backoff.next()
 		}
 		t.report(t.machine.Reconnect(res.err, delay))
-		if !t.sleep(ctx, delay) {
+		if !t.pause(ctx, delay) {
 			return nil
 		}
 	}
 }
 
-// result — чем кончилась попытка. final — следующей не будет.
+// pause ждёт задержку перед следующей попыткой. Restart её прерывает и
+// сбрасывает счётчик неудач. false — цикл остановлен.
+func (t *Tunnel) pause(ctx context.Context, delay time.Duration) bool {
+	sctx, wake := context.WithCancel(ctx)
+	woken := make(chan bool, 1)
+	go func() {
+		select {
+		case <-t.restart:
+			woken <- true
+			wake()
+		case <-sctx.Done():
+			woken <- false
+		}
+	}()
+	slept := t.sleep(sctx, delay)
+	wake()
+	// Горутина должна кончиться здесь: иначе она забрала бы просьбу,
+	// пришедшую уже следующей попытке.
+	if <-woken {
+		t.backoff.reset()
+		return ctx.Err() == nil
+	}
+	return slept && ctx.Err() == nil
+}
+
+// result — чем кончилась попытка. final — следующей не будет; restart —
+// следующая начинается сразу (Restart).
 type result struct {
-	err   error
-	final bool
+	err     error
+	final   bool
+	restart bool
 }
 
 // attempt проводит одну попытку: запускает ядро, ведёт его до выхода и
 // возвращает причину конца.
 func (t *Tunnel) attempt(ctx context.Context) result {
 	t.report(t.machine.BeginAttempt())
+	// Эта попытка и есть перезапуск, о котором могли попросить раньше.
+	select {
+	case <-t.restart:
+	default:
+	}
 
 	cfg := t.opts.Config
 	cfg.Hashes = t.hashes.Alive()
+	if t.opts.Prepare != nil {
+		if err := t.opts.Prepare(&cfg); err != nil {
+			return result{err: err}
+		}
+	}
 	var socket string
 	if t.opts.TunFD != nil {
 		socket = t.opts.TunFD.SocketName()
@@ -454,6 +543,13 @@ func (a *attempt) run(cancelled <-chan struct{}) result {
 		case <-cancelled:
 			cancelled = nil
 			a.stop(result{})
+		case reason := <-a.tunnel.restart:
+			if a.stopping {
+				// Попытка и так кончается — следующая начнётся сразу.
+				a.res.restart = true
+			} else {
+				a.stop(result{err: reason, restart: true})
+			}
 		case <-degradedC:
 			a.stopDegradedTimer()
 			a.stop(result{err: fmt.Errorf("туннель без связи дольше %s — ядро перезапускается",
@@ -466,7 +562,14 @@ func (a *attempt) run(cancelled <-chan struct{}) result {
 	case a.stopping:
 		return a.res
 	case !a.started:
-		return result{err: &StartupError{Err: exitErr, Log: a.lastLog}, final: true}
+		startup := &StartupError{Err: exitErr, Log: a.lastLog}
+		if a.tunnel.coreStarted {
+			// До PROCESS ядро уже ходит в сеть: проверяет интерфейс -bind-if и
+			// разрешает имя сервера. В новой сети, которая ещё не пропускает
+			// наружу, это кончается выходом — обычная неудача, а не конец.
+			return result{err: startup.retryable()}
+		}
+		return result{err: startup, final: true}
 	case exitErr != nil:
 		return result{err: fmt.Errorf("ядро завершилось: %w", exitErr)}
 	default:
@@ -495,7 +598,7 @@ func (a *attempt) handle(m coreproc.Message) {
 
 	switch e := m.(type) {
 	case coreproc.PIDEvent:
-		a.started = true
+		a.started, t.coreStarted = true, true
 		a.sendFD(e.PID)
 	case coreproc.ListenEvent:
 		if t.opts.Link != nil {
@@ -682,8 +785,16 @@ func (a *attempt) stop(res result) {
 
 // ──────────────────────────── Ctrl+C ────────────────────────────
 
-// Interrupt возвращает контекст, отменяемый по первому Ctrl+C (SIGINT) или
-// SIGTERM, и функцию снятия обработчика.
+// Interrupt возвращает контекст, отменяемый по первому Ctrl+C (SIGINT),
+// SIGTERM или SIGHUP, и функцию снятия обработчика. SIGHUP — закрыли
+// терминал, в котором шёл connect (sudo передаёт его дальше): без уборки
+// адаптер ушёл бы сам, а resolv.conf остался бы на резолвере туннеля до
+// следующего запуска. На Windows SIGHUP не приходит, подписка на него ничего
+// не меняет.
+//
+// Если SIGHUP при запуске игнорируется (nohup), на него не подписываемся:
+// Notify снял бы игнорирование, и connect, запущенный под nohup, умирал бы с
+// терминалом или сеансом SSH. Проверка — на момент вызова, до Notify.
 //
 // Второй Ctrl+C убивает процесс немедленно: по первому сигналу обработчик
 // снимается, и следующий уходит системе, у которой поведение по умолчанию —
@@ -696,7 +807,11 @@ func Interrupt(parent context.Context) (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(parent)
 
 	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	stopOn := []os.Signal{os.Interrupt, syscall.SIGTERM}
+	if !signal.Ignored(syscall.SIGHUP) {
+		stopOn = append(stopOn, syscall.SIGHUP)
+	}
+	signal.Notify(signals, stopOn...)
 
 	go func() {
 		select {

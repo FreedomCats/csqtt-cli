@@ -34,8 +34,15 @@ func TestMain(m *testing.M) {
 	// каталога.
 	os.Unsetenv("DBUS_SESSION_BUS_ADDRESS")
 	os.Unsetenv("XDG_RUNTIME_DIR")
+	if os.Getenv(asMainEnv) != "" {
+		os.Exit(Main(os.Args[1:], Build{}))
+	}
 	os.Exit(m.Run())
 }
+
+// asMainEnv — с этой переменной тестовый бинарь — сам csqtt-cli: Main с
+// аргументами командной строки. Связки ключей у него нет, как у тестов.
+const asMainEnv = "CSQTT_CLI_AS_MAIN"
 
 // fakeSecretSession — выдуманный токен сессии капчи, который ядро печатает в
 // журнал: на экране его быть не должно.
@@ -119,6 +126,7 @@ func fakeCore(mode string) int {
 
 	// connected — туннель поднимается и работает до STOP.
 	case "connected":
+		fmt.Fprintf(os.Stderr, "[ТЕСТ] аргументы ядра: %s\n", strings.Join(os.Args[1:], " "))
 		event("PROCESS", fmt.Sprintf(`{"pid":%d}`, os.Getpid()))
 		event("LISTEN", `{"port":9}`)
 		fmt.Fprintf(os.Stderr, "[КАПЧА] solveOnce URL: https://id.vk.ru/not_robot_captcha?session_token=%s&variant=popup\n", fakeSecretSession)
@@ -128,6 +136,13 @@ func fakeCore(mode string) int {
 		event("READY", `{"worker":1}`)
 		event("STATS", `{"active":1,"bytes_up":100,"bytes_down":200}`)
 		return waitStop()
+
+	// crash — ядро запускается и падает: попытка повторяется.
+	case "crash":
+		fmt.Fprintf(os.Stderr, "[ТЕСТ] аргументы ядра: %s\n", strings.Join(os.Args[1:], " "))
+		event("PROCESS", fmt.Sprintf(`{"pid":%d}`, os.Getpid()))
+		fmt.Fprintln(os.Stderr, "[PANIC] сеть недоступна")
+		return 1
 
 	// startup — ядро падает, не начав работу.
 	case "startup":

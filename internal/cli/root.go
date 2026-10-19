@@ -66,6 +66,9 @@ type env struct {
 	// corePath подменяет поиск csqtt-core рядом с csqtt-cli. Пусто — рядом
 	// (connect.go); подменяют тесты, где ядро — поддельное.
 	corePath func() (string, error)
+	// captchaBridge подменяет мост капчи (captcha.NewBridge): тесты смотрят,
+	// с чем его собрали. Пусто — настоящий.
+	captchaBridge func(opts captcha.Options) supervisor.CaptchaFunc
 	// secretStore подменяет хранилище секретов рядом с файлом настроек.
 	// Пусто — config.NewSecretStoreFor; подменяют тесты.
 	secretStore func(configPath string) config.SecretStore
@@ -119,6 +122,13 @@ func lookup(name string) *command {
 
 // Main — точка входа CLI. Возвращает код возврата; os.Exit зовёт cmd/csqtt-cli.
 func Main(args []string, build Build) int {
+	// Служебный запуск самого csqtt-cli от имени вызвавшего sudo — не
+	// команда человека: ни паузы перед выходом, ни обработки Ctrl+C
+	// (secrethelper_linux.go).
+	if code, ok := runSecretHelper(args, os.Stdin, os.Stdout, os.Stderr); ok {
+		return code
+	}
+
 	e := &env{
 		stdout:  os.Stdout,
 		stderr:  os.Stderr,
@@ -128,10 +138,11 @@ func Main(args []string, build Build) int {
 	}
 	defer pauseBeforeExit(e)
 
-	// Первый Ctrl+C или SIGTERM отменяет контекст команды, второй Ctrl+C
-	// убивает процесс: обработчик снимается по первому сигналу, и следующий
-	// уходит системе (supervisor.Interrupt). Ждать корректной остановки
-	// дважды пользователь не обязан, а на зависшем ядре она бы и не помогла.
+	// Первый Ctrl+C, SIGTERM или SIGHUP (если он не игнорируется, как под
+	// nohup) отменяет контекст команды, второй Ctrl+C убивает процесс:
+	// обработчик снимается по первому сигналу, и следующий уходит системе
+	// (supervisor.Interrupt). Ждать корректной остановки дважды пользователь
+	// не обязан, а на зависшем ядре она бы и не помогла.
 	ctx, stop := supervisor.Interrupt(context.Background())
 	defer stop()
 

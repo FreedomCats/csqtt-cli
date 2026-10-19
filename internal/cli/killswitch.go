@@ -14,6 +14,7 @@
 package cli
 
 import (
+	"errors"
 	"net/netip"
 	"sync"
 
@@ -22,6 +23,10 @@ import (
 
 // killSwitchUsage — что делает kill-switch, для подсказок флагов.
 const killSwitchUsage = "в режиме tun он блокирует трафик системы, пока туннель не поднят"
+
+// errKillSwitchClosed — Enable после закрытия сессии: туннель поднимать уже
+// не в чем.
+var errKillSwitchClosed = errors.New("kill-switch: сессия защиты уже закрыта")
 
 // lockdownSession — защита, которая умеет kill-switch (Lockdown):
 // linuxsys.DNSGuard.
@@ -51,6 +56,10 @@ type killSwitchGuard struct {
 	// признак: окно прежнего запроса может ещё закрываться, когда открылось
 	// новое.
 	captchas int
+	// closed — сессия закрыта (shutdown): правила ушли вместе с таблицей, и
+	// трогать их больше нечем. Окно капчи, брошенное по Ctrl+C, может
+	// закрыться уже после этого.
+	closed bool
 }
 
 // newKillSwitchGuard ставит «закрыто» сразу — до первой попытки: туннеля ещё
@@ -69,6 +78,9 @@ func newKillSwitchGuard(session lockdownSession, allowLeak bool, logf func(strin
 func (g *killSwitchGuard) Enable(dns []netip.Addr) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.closed {
+		return errKillSwitchClosed
+	}
 	err := g.session.Enable(dns)
 	if err == nil {
 		g.locked, g.up = false, true
@@ -94,6 +106,9 @@ func (g *killSwitchGuard) Enable(dns []netip.Addr) error {
 func (g *killSwitchGuard) Disable() error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.closed {
+		return nil
+	}
 	return g.downLocked()
 }
 
@@ -131,7 +146,7 @@ func (g *killSwitchGuard) openForCaptcha() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.captchas++
-	if !g.locked {
+	if !g.locked || g.closed {
 		return
 	}
 	if err := g.session.Disable(); err != nil {
@@ -149,7 +164,7 @@ func (g *killSwitchGuard) closeAfterCaptcha() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.captchas--
-	if g.captchas > 0 || g.up || g.locked {
+	if g.captchas > 0 || g.up || g.locked || g.closed {
 		return
 	}
 	if err := g.lockdownLocked(); err != nil {
@@ -158,6 +173,15 @@ func (g *killSwitchGuard) closeAfterCaptcha() {
 	if g.locked {
 		g.logf("kill-switch возвращён: пока туннель не поднят, трафик системы заблокирован")
 	}
+}
+
+// shutdown — сессия закрывается (dnsGuardSetup.close): дальше kill-switch
+// правил не трогает и строк не пишет. Зовётся до Close сессии, под тем же
+// замком, что и переходы, — переход, уже начатый, успевает закончиться.
+func (g *killSwitchGuard) shutdown() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.closed, g.locked = true, false
 }
 
 // directFunc — captchaDirect для Options.Direct моста капчи; nil, если
