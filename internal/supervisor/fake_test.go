@@ -245,6 +245,60 @@ func (d *fakeDatapath) calls() ([]datapath.TunConf, [][]netip.Addr) {
 	return append([]datapath.TunConf(nil), d.starts...), append([][]netip.Addr(nil), d.dns...)
 }
 
+// fakeTunFD — канал дескриптором адаптера: имена сокетов по порядку, вызовы
+// SendFD запоминаются. send подменяет поведение SendFD; nil — ядро
+// принимает сразу.
+type fakeTunFD struct {
+	mu    sync.Mutex
+	names int
+	sends []fdSend
+	send  func(ctx context.Context, socket string, pid int) error
+}
+
+// fdSend — вызов SendFD: куда, кому и чем кончился.
+type fdSend struct {
+	socket string
+	pid    int
+	err    error
+}
+
+func (f *fakeTunFD) SocketName() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.names++
+	return fmt.Sprintf("csqtt-cli-tun-test-%d", f.names)
+}
+
+func (f *fakeTunFD) SendFD(ctx context.Context, socket string, pid int) error {
+	var err error
+	if f.send != nil {
+		err = f.send(ctx, socket, pid)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sends = append(f.sends, fdSend{socket, pid, err})
+	return err
+}
+
+func (f *fakeTunFD) calls() []fdSend {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]fdSend(nil), f.sends...)
+}
+
+// fakePersistent — datapath, живущий весь сеанс: Suspend зовёт onSuspend.
+type fakePersistent struct {
+	*fakeDatapath
+	onSuspend func()
+}
+
+func (p *fakePersistent) Suspend() error {
+	if p.onSuspend != nil {
+		p.onSuspend()
+	}
+	return nil
+}
+
 // harness — цикл на поддельном ядре: каждая попытка играет свою запись.
 // Когда записи кончились, следующая попытка отменяет Run.
 type harness struct {
@@ -286,7 +340,13 @@ func newHarness(t *testing.T, opts Options, scripts ...[]string) *harness {
 	}
 	opts.Config.Peer = "203.0.113.10:46000"
 	opts.Config.Password = "test-password"
-	opts.Link, opts.Datapath = h.link, h.dp
+	// Режим дескриптора (TunFD) и свой datapath тест задаёт сам.
+	if opts.TunFD == nil {
+		opts.Link = h.link
+	}
+	if opts.Datapath == nil {
+		opts.Datapath = h.dp
+	}
 	opts.OnTransition = func(tr Transition) {
 		h.mu.Lock()
 		h.trs = append(h.trs, tr)

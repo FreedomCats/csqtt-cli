@@ -3,9 +3,10 @@
 //
 // Автомат (state.go) помнит, где мы; политика (policy.go) считает задержки и
 // годность хешей; здесь они связываются с процессом ядра и datapath. Цикл
-// запускает ядро на каждую попытку, раздаёт его сообщения, поднимает datapath
-// по TUNCONF, обрывает затянувшуюся деградацию и ждёт назначенную задержку
-// перед следующей попыткой.
+// запускает ядро на каждую попытку, раздаёт его сообщения, отдаёт ядру
+// дескриптор адаптера (tun на Linux), поднимает datapath по TUNCONF, обрывает
+// затянувшуюся деградацию и ждёт назначенную задержку перед следующей
+// попыткой.
 //
 // Главное обязательство файла — ядро не переживает попытку: к возврату из
 // попытки процесс вышел, а его вывод прочитан до конца.
@@ -53,13 +54,29 @@ type Link interface {
 	SetCorePort(port uint16)
 }
 
-// Datapath — куда идут пакеты туннеля: *datapath.Socks. Живёт весь сеанс:
-// строит и закрывает его вызывающий, цикл зовёт Start на первый TUNCONF каждой
-// попытки и UpdateDNS — на повторный.
+// TunFD — канал пакетов дескриптором адаптера (Linux, datapath tun):
+// *datapath.Tun. Вместо -listen-peer ядро получает -tun-uds с новым именем на
+// каждую попытку (SocketName), а когда оно запустилось (PROCESS), — новый
+// дубликат дескриптора адаптера через этот сокет (SendFD).
+type TunFD interface {
+	SocketName() string
+	SendFD(ctx context.Context, socket string, pid int) error
+}
+
+// Datapath — куда идут пакеты туннеля: *datapath.Socks, *datapath.Tun. Живёт
+// весь сеанс: строит и закрывает его вызывающий, цикл зовёт Start на первый
+// TUNCONF каждой попытки и UpdateDNS — на повторный. Если он ещё и
+// datapath.Persistent, после неудачной попытки, до задержки, цикл зовёт
+// Suspend.
 type Datapath interface {
 	Start(ctx context.Context, conf datapath.TunConf) error
 	UpdateDNS(dns []netip.Addr) error
 }
+
+// defaultFDTimeout — сколько ждать, пока ядро примет дескриптор адаптера.
+// Слушать сокет ядро начинает сразу после PROCESS, принимает за
+// миллисекунды; срок — только чтобы зависшее ядро не держало попытку.
+const defaultFDTimeout = 10 * time.Second
 
 // CaptchaFunc решает капчу по запросу ядра и возвращает токен. Ждать она
 // обязана не дольше ctx: он отменяется с концом попытки.
@@ -78,11 +95,15 @@ type Options struct {
 
 	// Config — настройки ядра с паролем и хешами (config.Profile.Core и
 	// секреты). Hashes перед каждой попыткой заменяются годными, Listen и
-	// ListenPeer ставит цикл по Link.
+	// ListenPeer ставит цикл по Link, TunUDS — по TunFD.
 	Config coreproc.Config
 
-	// Link и Datapath — канал пакетов и datapath сеанса; обязательны.
-	Link     Link
+	// Link или TunFD — канал пакетов с ядром, ровно один из двух: Link —
+	// loopback (socks), TunFD — дескриптор адаптера (tun на Linux).
+	Link  Link
+	TunFD TunFD
+
+	// Datapath — datapath сеанса; обязателен.
 	Datapath Datapath
 
 	// Captcha решает капчу. nil — ядро сразу получает отказ: без окна решать
@@ -170,9 +191,11 @@ type Tunnel struct {
 	outMu sync.Mutex
 
 	// start и sleep подменяются в тестах: без первого понадобились бы ядро и
-	// сервер, без второго тест на задержки шёл бы минуту.
-	start func(coreproc.Config) (Core, error)
-	sleep func(context.Context, time.Duration) bool
+	// сервер, без второго тест на задержки шёл бы минуту. fdTimeout —
+	// defaultFDTimeout, в тестах короче.
+	start     func(coreproc.Config) (Core, error)
+	sleep     func(context.Context, time.Duration) bool
+	fdTimeout time.Duration
 }
 
 // NewTunnel собирает цикл. Ошибку возвращает только на неполных настройках:
@@ -181,8 +204,8 @@ func NewTunnel(opts Options) (*Tunnel, error) {
 	switch {
 	case opts.CorePath == "":
 		return nil, errors.New("супервизор: не задан путь к ядру")
-	case opts.Link == nil || opts.Datapath == nil:
-		return nil, errors.New("супервизор: не заданы канал пакетов и datapath")
+	case (opts.Link == nil) == (opts.TunFD == nil) || opts.Datapath == nil:
+		return nil, errors.New("супервизор: нужны datapath и один канал пакетов — Link или TunFD")
 	}
 	hashes := NewHashPool(opts.Config.Hashes)
 	if len(hashes.Alive()) == 0 {
@@ -199,7 +222,8 @@ func NewTunnel(opts Options) (*Tunnel, error) {
 		start: func(cfg coreproc.Config) (Core, error) {
 			return coreproc.Start(path, cfg)
 		},
-		sleep: sleepCtx,
+		sleep:     sleepCtx,
+		fdTimeout: defaultFDTimeout,
 	}, nil
 }
 
@@ -240,6 +264,7 @@ func (t *Tunnel) Run(ctx context.Context) error {
 			return res.err
 		}
 
+		t.suspend()
 		var delay time.Duration
 		if errors.Is(res.err, ErrServerRestart) {
 			// Перезапуск сервера — не неудача клиента.
@@ -268,23 +293,45 @@ func (t *Tunnel) attempt(ctx context.Context) result {
 
 	cfg := t.opts.Config
 	cfg.Hashes = t.hashes.Alive()
-	cfg.Listen = datapath.CoreListen
-	cfg.ListenPeer = t.opts.Link.Addr().String()
+	var socket string
+	if t.opts.TunFD != nil {
+		socket = t.opts.TunFD.SocketName()
+		cfg.TunUDS = socket
+	} else {
+		cfg.Listen = datapath.CoreListen
+		cfg.ListenPeer = t.opts.Link.Addr().String()
+	}
 	core, err := t.start(cfg)
 	if err != nil {
 		return result{err: fmt.Errorf("запуск ядра: %w", err), final: true}
 	}
-	// Порт вышедшего ядра может занять чужой процесс: пакеты туда не шлём.
-	defer t.opts.Link.SetCorePort(0)
+	if t.opts.Link != nil {
+		// Порт вышедшего ядра может занять чужой процесс: пакеты туда не шлём.
+		defer t.opts.Link.SetCorePort(0)
+	}
 
 	actx, cancel := context.WithCancel(ctx)
-	a := &attempt{tunnel: t, core: core, ctx: actx}
+	a := &attempt{tunnel: t, core: core, ctx: actx, socket: socket,
+		fdSent: t.opts.TunFD == nil, fdDone: make(chan error, 1)}
 	// Порядок снятия: таймер, отмена (капча бросает ожидание), горутины.
 	defer a.wg.Wait()
 	defer cancel()
 	defer a.stopDegradedTimer()
 
 	return a.run(ctx.Done())
+}
+
+// suspend снимает маршруты Persistent-datapath между попытками: пока они ведут
+// в туннель без ядра, страница капчи VK не загрузится. Отказ только пишется:
+// следующая попытка всё равно начнётся.
+func (t *Tunnel) suspend() {
+	p, ok := t.opts.Datapath.(datapath.Persistent)
+	if !ok {
+		return
+	}
+	if err := p.Suspend(); err != nil {
+		t.logf("маршруты туннеля между попытками не сняты: %v", err)
+	}
 }
 
 // report отдаёт состоявшийся переход наружу. Пару (Transition, bool) принимает
@@ -325,6 +372,15 @@ type attempt struct {
 	dpUp bool             // datapath поднят в этой попытке
 	conf datapath.TunConf // с каким TUNCONF
 
+	// Дескриптор адаптера (TunFD): socket — значение -tun-uds этой попытки,
+	// fdSending — передача начата, fdSent — ядро дескриптор приняло (без
+	// TunFD — с начала попытки), fdDone — итог передачи из её горутины.
+	socket    string
+	fdSending bool
+	fdSent    bool
+	fdDone    chan error
+	upShown   bool // DatapathUp автомату уже сообщён
+
 	degraded *time.Timer
 	lastLog  []string
 }
@@ -345,6 +401,8 @@ func (a *attempt) run(cancelled <-chan struct{}) result {
 				continue
 			}
 			a.handle(m)
+		case err := <-a.fdDone:
+			a.fdHandedOff(err)
 		case <-cancelled:
 			cancelled = nil
 			a.stop(result{})
@@ -390,8 +448,11 @@ func (a *attempt) handle(m coreproc.Message) {
 	switch e := m.(type) {
 	case coreproc.PIDEvent:
 		a.started = true
+		a.sendFD(e.PID)
 	case coreproc.ListenEvent:
-		t.opts.Link.SetCorePort(uint16(e.Port))
+		if t.opts.Link != nil {
+			t.opts.Link.SetCorePort(uint16(e.Port))
+		}
 	case coreproc.ConfigEvent:
 		a.config(e)
 	case coreproc.ErrorEvent:
@@ -450,15 +511,8 @@ func (a *attempt) config(e coreproc.ConfigEvent) {
 			a.stop(result{err: fmt.Errorf("datapath: %w", err)})
 			return
 		}
-		first := !a.dpUp
 		a.dpUp, a.conf = true, conf
-		if first {
-			tr, moved := t.machine.DatapathUp()
-			t.report(tr, moved)
-			if moved {
-				a.moved(tr)
-			}
-		}
+		a.datapathUp()
 	case !slices.Equal(conf.DNS, a.conf.DNS):
 		if err := t.opts.Datapath.UpdateDNS(conf.DNS); err != nil {
 			t.logf("DNS туннеля не сменился: %v", err)
@@ -466,6 +520,52 @@ func (a *attempt) config(e coreproc.ConfigEvent) {
 		}
 		a.conf.DNS = conf.DNS
 	}
+}
+
+// datapathUp сообщает автомату, что datapath поднят: Start прошёл, а ядро
+// получило дескриптор адаптера (с TunFD). Обычно дескриптор уходит задолго
+// до TUNCONF, но туннель без него не работает, в каком бы порядке они ни
+// пришли.
+func (a *attempt) datapathUp() {
+	if !a.dpUp || !a.fdSent || a.upShown {
+		return
+	}
+	a.upShown = true
+	t := a.tunnel
+	tr, moved := t.machine.DatapathUp()
+	t.report(tr, moved)
+	if moved {
+		a.moved(tr)
+	}
+}
+
+// sendFD — ядро запустилось (PROCESS): с TunFD оно вот-вот откроет сокет
+// -tun-uds, и ему уходит дубликат дескриптора адаптера. Передача ждёт
+// ядро, поэтому — в своей горутине, итог приходит в run через fdDone.
+func (a *attempt) sendFD(pid int) {
+	t := a.tunnel
+	if t.opts.TunFD == nil || a.fdSending {
+		return
+	}
+	a.fdSending = true
+	a.wg.Go(func() {
+		ctx, cancel := context.WithTimeout(a.ctx, t.fdTimeout)
+		defer cancel()
+		a.fdDone <- t.opts.TunFD.SendFD(ctx, a.socket, pid)
+	})
+}
+
+// fdHandedOff — итог передачи дескриптора. Отказ — конец попытки: ядро без
+// адаптера держит воркеров, а подавать в них нечего.
+func (a *attempt) fdHandedOff(err error) {
+	if err != nil {
+		if a.ctx.Err() == nil {
+			a.stop(result{err: fmt.Errorf("дескриптор адаптера ядру: %w", err)})
+		}
+		return
+	}
+	a.fdSent = true
+	a.datapathUp()
 }
 
 // callUnavailable исключает хеш из следующих попыток. Ядро тем временем

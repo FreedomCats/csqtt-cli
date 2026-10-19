@@ -720,6 +720,7 @@ func TestNewTunnelChecks(t *testing.T) {
 	cases := map[string]func(o *Options){
 		"нет ядра":     func(o *Options) { o.CorePath = "" },
 		"нет канала":   func(o *Options) { o.Link = nil },
+		"два канала":   func(o *Options) { o.TunFD = &fakeTunFD{} },
 		"нет datapath": func(o *Options) { o.Datapath = nil },
 		"нет хешей":    func(o *Options) { o.Config.Hashes = nil },
 		"пустой хеш":   func(o *Options) { o.Config.Hashes = []string{""} },
@@ -730,6 +731,11 @@ func TestNewTunnelChecks(t *testing.T) {
 		if _, err := NewTunnel(o); err == nil {
 			t.Errorf("%s: принято", name)
 		}
+	}
+	fd := ok
+	fd.Link, fd.TunFD = nil, &fakeTunFD{}
+	if _, err := NewTunnel(fd); err != nil {
+		t.Errorf("NewTunnel с дескриптором вместо канала: %v", err)
 	}
 	tun, _ := NewTunnel(ok)
 	if tun.opts.DegradedRestart != DefaultDegradedRestart {

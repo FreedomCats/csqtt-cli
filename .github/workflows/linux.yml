@@ -75,18 +75,28 @@ jobs:
       - name: Сборка тестов
         run: |
           mkdir -p build/out
-          go test -c -o build/out/linuxsys.test ./internal/linuxsys
+          for pkg in linuxsys datapath; do
+            go test -c -o "build/out/$pkg.test" "./internal/$pkg"
+          done
 
-      # Пропуск здесь — тоже провал: значит, проверки сети не шли вовсе.
+      # Пропуск здесь — тоже провал: значит, проверки сети не шли вовсе. Из
+      # datapath — только тесты адаптера (…Netns): остальные идут в задании
+      # test, а здесь, без curl в образе, один из них пропустился бы.
       - name: Тесты в контейнере
         run: |
           set -o pipefail
-          for pkg in linuxsys; do
+          for pkg in linuxsys datapath; do
+            run=.
+            [ "$pkg" = datapath ] && run='Netns$'
             docker run --rm --cap-add NET_ADMIN --device /dev/net/tun \
               -e CSQTT_TEST_NETNS=1 -v "$PWD/build/out":/csqtt-cli:ro "$IMAGE" \
-              "/csqtt-cli/$pkg.test" -test.count=1 -test.v | tee "build/out/$pkg.log"
+              "/csqtt-cli/$pkg.test" -test.count=1 -test.v -test.run "$run" | tee "build/out/$pkg.log"
             if grep -- '--- SKIP' "build/out/$pkg.log"; then
               echo "::error::$pkg: тесты пропущены"
+              exit 1
+            fi
+            if ! grep -q -- '--- PASS' "build/out/$pkg.log"; then
+              echo "::error::$pkg: ни одного теста"
               exit 1
             fi
           done
