@@ -329,7 +329,7 @@ func (m *menu) askMode(ctx context.Context) (string, error) {
 		}
 	}
 
-	fmt.Fprintf(w, "  1. Весь трафик компьютера. Нужны права root: меню запускают через sudo %s.\n", app.Name)
+	fmt.Fprintln(w, "  1. Весь трафик компьютера. Нужны права root: меню запросит их при подключении (sudo).")
 	fmt.Fprintf(w, "  2. %s\n", socks)
 	for {
 		line, err := m.wizardAsk(ctx, "Выберите [1]: ")

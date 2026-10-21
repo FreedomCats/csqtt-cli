@@ -103,3 +103,80 @@ func TestMenuHangupClosesMenu(t *testing.T) {
 		t.Errorf("меню показано %d раз, ожидался один:\n%s", n, out.String())
 	}
 }
+
+// Пока идёт подключение, перезапущенное с правами (sudo), настоящий Ctrl+C
+// достаётся и меню: оно его не разбирает — подключение остановит запущенный
+// csqtt-cli, а меню после этого покажется снова. SIGHUP (закрыли терминал)
+// закрывает меню, когда подключение кончится. Сломанный разбор закрыл бы весь
+// тестовый процесс с кодом 130 — это тоже провал.
+func TestMenuSignalsWhileElevatedChild(t *testing.T) {
+	for _, c := range []struct {
+		sig syscall.Signal
+		// menus — сколько раз показано меню.
+		menus int
+	}{
+		{sig: syscall.SIGINT, menus: 2},
+		{sig: syscall.SIGHUP, menus: 1},
+	} {
+		t.Run(c.sig.String(), func(t *testing.T) {
+			guard := make(chan os.Signal, 1)
+			signal.Notify(guard, os.Interrupt, syscall.SIGHUP)
+			t.Cleanup(func() { signal.Stop(guard) })
+
+			tunSupport(t, nil)
+			runAsRoot(t, false)
+			te := newMenuEnv(t)
+			te.addHome()
+			relaunched := make(chan struct{})
+			te.elevate = func([]string) (bool, error) {
+				// Сигнал приходит, пока «дочерний» идёт; меню успевает его
+				// получить до конца перезапуска.
+				if err := syscall.Kill(os.Getpid(), c.sig); err != nil {
+					t.Error(err)
+				}
+				time.Sleep(300 * time.Millisecond)
+				close(relaunched)
+				return false, nil
+			}
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { r.Close(); w.Close() })
+			te.stdin = r
+
+			out, errOut := &syncBuffer{}, &syncBuffer{}
+			e := te.env(out, errOut)
+			e.signals = true
+			done := make(chan int, 1)
+			go func() { done <- run(context.Background(), e, []string{"menu", "-config", te.configPath()}) }()
+
+			if _, err := w.WriteString("\n"); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-relaunched:
+			case <-time.After(10 * time.Second):
+				t.Fatalf("перезапуска не было:\n%s\nstderr:\n%s", out.String(), errOut.String())
+			}
+			if c.menus == 2 {
+				deadline := time.Now().Add(10 * time.Second)
+				for strings.Count(out.String(), "1. Подключиться") < 2 {
+					if time.Now().After(deadline) {
+						t.Fatalf("меню не вернулось:\n%s\nstderr:\n%s", out.String(), errOut.String())
+					}
+					time.Sleep(5 * time.Millisecond)
+				}
+				if _, err := w.WriteString("0\n"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if code := waitExit(t, done, out, errOut); code != exitOK {
+				t.Errorf("код %d, stderr:\n%s", code, errOut.String())
+			}
+			if n := strings.Count(out.String(), "1. Подключиться"); n != c.menus {
+				t.Errorf("меню показано %d раз, ожидалось %d:\n%s", n, c.menus, out.String())
+			}
+		})
+	}
+}

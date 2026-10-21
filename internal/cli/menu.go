@@ -40,12 +40,18 @@ func menuCommand() *command {
 сервера или вопросами), меняет ссылки на звонки VK, пароль и адрес сервера,
 удаляет профиль. Делает оно это теми же командами, что набираются руками.
 
-Режиму tun нужны права root: sudo ` + app.Name + ` (файл настроек и секреты
-под sudo остаются у того, кто его вызвал). Без прав меню предложит
-подключиться в режиме socks.
+Режиму tun нужны права root. Без них меню само запросит их для одного
+подключения: на Linux — через sudo в том же терминале (sudo спросит пароль),
+на Windows — окном UAC. Файл настроек и секреты при этом остаются у того,
+кто открыл меню. Если прав взять негде, меню предложит подключиться в режиме
+socks.
 
 Ctrl+C во время подключения останавливает туннель и возвращает в меню,
-в самом меню — закрывает его.`,
+в самом меню — закрывает его.
+
+С -connect меню не показывается: сразу подключение к профилю, а если ссылки
+на звонки перестали работать — вопрос о новых. После остановки — выход. Так
+меню перезапускает себя с правами.`,
 		run: runMenu,
 	}
 }
@@ -75,6 +81,7 @@ func runMenu(ctx context.Context, e *env, args []string) error {
 	cmd := menuCommand()
 	fs := newFlagSet(cmd)
 	configPath := addConfigFlag(fs)
+	connectTo := fs.String("connect", "", "сразу подключиться к профилю, без меню; после остановки — выход")
 	rest, err := parseWithArgs(e, fs, args)
 	if err != nil {
 		return err
@@ -86,10 +93,13 @@ func runMenu(ctx context.Context, e *env, args []string) error {
 		return fmt.Errorf("меню работает только в терминале; без него — команды, список: %s help", app.Name)
 	}
 
-	m := &menu{e: e, config: *configPath}
+	m := &menu{e: e, config: *configPath, once: *connectTo != ""}
 	if e.signals {
 		stop := m.catchSignals()
 		defer stop()
+	}
+	if m.once {
+		return m.connectOnly(ctx, *connectTo)
 	}
 	return m.loop(ctx)
 }
@@ -102,6 +112,9 @@ type menu struct {
 	// current — профиль, выбранный пунктом «Выбрать другой профиль». Только
 	// на этот сеанс: default_profile не меняется. Пусто — профиль по умолчанию.
 	current string
+
+	// once — меню без меню (-connect): одно подключение и выход.
+	once bool
 
 	// signals — куда отдать Ctrl+C; nil — сигналы не перехвачены (тесты).
 	signals *menuSignals
@@ -152,6 +165,24 @@ func (m *menu) loop(ctx context.Context) error {
 			fmt.Fprintf(e.stderr, "Не получилось: %v\n", err)
 		}
 	}
+}
+
+// connectOnly — menu -connect: подключение с вопросами меню, но без него
+// самого. Так работает перезапуск с правами (relaunchArgs): вопрос о новых
+// ссылках задаёт процесс с правами. На Windows спросить больше некому — старое
+// окно меню к этому времени закрыто.
+func (m *menu) connectOnly(ctx context.Context, name string) error {
+	err := m.connect(ctx, name)
+	switch {
+	case errors.Is(err, errMenuExit):
+		m.e.noPause = true
+		return nil
+	case errors.Is(err, context.Canceled):
+		// Ctrl+C до подъёма туннеля — тоже остановка, а не сбой: меню, которое
+		// перезапустило этот csqtt-cli, иначе сказало бы о коде 1.
+		return nil
+	}
+	return err
 }
 
 // load читает файл настроек. Файла нет — меню начинается с пустого списка:
@@ -303,7 +334,7 @@ func (m *menu) connect(ctx context.Context, name string) error {
 		plan, err := m.e.planConnect(connectFlags{configPath: m.config, name: name, mode: mode, modeNamed: mode != ""})
 		var refusal *tunRefusal
 		if errors.As(err, &refusal) {
-			if mode, err = m.tunRefused(ctx, refusal); err != nil || mode == "" {
+			if mode, err = m.tunRefused(ctx, name, refusal); err != nil || mode == "" {
 				return err
 			}
 			continue
@@ -339,13 +370,33 @@ func (m *menu) connect(ctx context.Context, name string) error {
 }
 
 // tunRefused — профиль в режиме tun, а tun не запустится: нет прав root или
-// система его не умеет. Меню печатает ту же подсказку, что и connect, и
-// предлагает подключиться в socks на этот раз — профиль не меняется.
-// Возвращает режим следующей попытки; пусто — не подключаться.
-func (m *menu) tunRefused(ctx context.Context, r *tunRefusal) (string, error) {
-	// Здесь при r.needsRoot меню будет запрашивать права само — sudo или
-	// окно UAC (I1b): человек из меню командной строки не знает.
-	fmt.Fprintf(m.e.stderr, "%s.\n", capitalize(r.Error()))
+// система его не умеет. Прав не хватает — меню запрашивает их само и
+// перезапускает с ними одно подключение. Если прав взять негде или система tun
+// не умеет, меню объясняет почему и предлагает подключиться в socks на этот
+// раз — профиль не меняется. Возвращает режим следующей попытки; пусто — не
+// подключаться.
+func (m *menu) tunRefused(ctx context.Context, name string, r *tunRefusal) (string, error) {
+	reason := r.Error()
+	if r.needsRoot && m.once {
+		// menu -connect и есть перезапуск с правами — или его набрали руками.
+		// Перезапускать снова нельзя: sudo, который запускает не от root
+		// (обёртка в контейнере, runas_default), вкладывал бы процессы без конца.
+		if os.Getenv("SUDO_USER") != "" {
+			return "", fmt.Errorf("права root не получены: %s запущен через sudo, но не от root", app.Name)
+		}
+		return "", r
+	}
+	if r.needsRoot {
+		// Не отсылать к sudo csqtt-cli connect, а запросить права: человек
+		// из меню командной строки не знает.
+		err := m.connectElevated(name)
+		var no *noElevationError
+		if !errors.As(err, &no) {
+			return "", err
+		}
+		reason = no.Error()
+	}
+	fmt.Fprintf(m.e.stderr, "%s.\n", capitalize(reason))
 	agreed, err := m.e.confirm(ctx, "Подключиться на этот раз в режиме socks — только программы, в которых указан прокси SOCKS5?")
 	if err != nil || !agreed {
 		return "", err
@@ -359,11 +410,40 @@ func (m *menu) connectOnce(ctx context.Context, plan *connectPlan) error {
 	ctx, done := m.connecting(ctx)
 	defer done()
 
-	fmt.Fprintln(m.e.stdout, "Подключение. Остановить — Ctrl+C, после этого снова откроется меню.")
+	if m.once {
+		fmt.Fprintln(m.e.stdout, "Подключение. Остановить — Ctrl+C.")
+	} else {
+		fmt.Fprintln(m.e.stdout, "Подключение. Остановить — Ctrl+C, после этого снова откроется меню.")
+	}
 	if m.e.connectRun != nil {
 		return m.e.connectRun(ctx, plan)
 	}
 	return plan.run(ctx, m.e, false)
+}
+
+// connectElevated перезапускает подключение с правами (elevate.go) и ждёт
+// его. Ошибка *noElevationError — прав взять неоткуда.
+func (m *menu) connectElevated(name string) error {
+	// Файл настроек — тот, что читает меню, и без -config: под sudo
+	// csqtt-cli взял бы ~/.config вызвавшего, а XDG_CONFIG_HOME, из которого
+	// меню могло читать, sudo не передаёт (config.Path).
+	path, err := profilePath(m.config)
+	if err != nil {
+		return err
+	}
+	done := m.runningChild()
+	detached, err := m.e.relaunch(relaunchArgs(name, path))
+	done()
+
+	switch {
+	case err != nil:
+		return err
+	case detached || m.leaving():
+		// Подключение ушло в своё окно с правами (Windows) — это окно
+		// больше не нужно. Или, пока шло подключение, закрыли терминал.
+		return errMenuExit
+	}
+	return nil
 }
 
 // storeHashes спрашивает новые ссылки на звонки и записывает их вместо прежних.
@@ -443,6 +523,9 @@ type menuSignals struct {
 	// closing — во время подключения пришёл SIGTERM или SIGHUP: после
 	// остановки туннеля меню закрывается.
 	closing bool
+	// child — идёт подключение, перезапущенное с правами (sudo): сигнал
+	// терминал отдал и ему, и разбирается с ним он. Меню ждёт его конца.
+	child bool
 	// exit — выйти, не дожидаясь меню.
 	exit func()
 }
@@ -497,6 +580,15 @@ func (m *menu) catchSignals() func() {
 
 func (s *menuSignals) handle(sig os.Signal) {
 	s.mu.Lock()
+	if s.child {
+		// Ctrl+C остановит подключение в запущенном csqtt-cli, и меню
+		// вернётся. Закрытый терминал — то же, но возвращаться некуда.
+		if sig != os.Interrupt {
+			s.closing = true
+		}
+		s.mu.Unlock()
+		return
+	}
 	cancel := s.cancel
 	s.cancel = nil
 	if cancel != nil && sig != os.Interrupt {
@@ -528,6 +620,23 @@ func (m *menu) connecting(ctx context.Context) (context.Context, func()) {
 		s.cancel = nil
 		s.mu.Unlock()
 		cancel()
+	}
+}
+
+// runningChild — запущен csqtt-cli с правами: пока он идёт, сигналы меню не
+// трогают. Возвращает функцию, которая снимает отметку.
+func (m *menu) runningChild() func() {
+	s := m.signals
+	if s == nil {
+		return func() {}
+	}
+	s.mu.Lock()
+	s.child = true
+	s.mu.Unlock()
+	return func() {
+		s.mu.Lock()
+		s.child = false
+		s.mu.Unlock()
 	}
 }
 

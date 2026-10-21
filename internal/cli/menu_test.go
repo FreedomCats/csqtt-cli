@@ -593,15 +593,20 @@ func TestMenuConnectExhaustedDeclined(t *testing.T) {
 	}
 }
 
-// Профиль в режиме tun, а прав root нет: та же подсказка, что у connect, и
+// Профиль в режиме tun, прав root нет, и взять их неоткуда: причина и
 // предложение подключиться в socks на этот раз. Профиль не меняется.
-func TestMenuTunWithoutRootOffersSocks(t *testing.T) {
+func TestMenuTunNoElevationOffersSocks(t *testing.T) {
 	for _, agree := range []bool{true, false} {
 		t.Run(fmt.Sprintf("согласие %v", agree), func(t *testing.T) {
 			tunSupport(t, nil)
 			runAsRoot(t, false)
 			te := newMenuEnv(t)
 			te.addHome()
+			relaunches := 0
+			te.elevate = func([]string) (bool, error) {
+				relaunches++
+				return false, &noElevationError{reason: "у этой учётной записи нет прав"}
+			}
 			var modes []string
 			// План ищет ядро, но подъём подставной: ядро не запускается.
 			te.core = "connected"
@@ -619,11 +624,17 @@ func TestMenuTunWithoutRootOffersSocks(t *testing.T) {
 			if code != exitOK {
 				t.Fatalf("код возврата %d, stderr:\n%s", code, stderr)
 			}
-			for _, want := range []string{"нужны права root: sudo csqtt-cli connect -config " + te.configPath() + " home",
+			for _, want := range []string{"У этой учётной записи нет прав.",
 				"Подключиться на этот раз в режиме socks"} {
 				if !strings.Contains(stderr, want) {
 					t.Errorf("нет %q:\n%s", want, stderr)
 				}
+			}
+			if strings.Contains(stderr, "sudo csqtt-cli connect") {
+				t.Errorf("подсказка командной строки в меню:\n%s", stderr)
+			}
+			if relaunches != 1 {
+				t.Errorf("перезапусков %d, ожидался 1", relaunches)
 			}
 			if agree && (len(modes) != 1 || modes[0] != config.DatapathSocks) {
 				t.Errorf("подключения: %q, ожидалось одно в socks", modes)
@@ -755,6 +766,9 @@ func TestMenuEndsOnClosedInput(t *testing.T) {
 				te.addHome("-datapath", "socks")
 			case c.tun:
 				te.addHome()
+				te.elevate = func([]string) (bool, error) {
+					return false, &noElevationError{reason: "sudo не найден"}
+				}
 			}
 			te.pipe = true
 			// Подъём туннеля подставной (connectRun), ядро запускает только

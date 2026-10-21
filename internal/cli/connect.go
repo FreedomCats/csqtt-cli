@@ -216,9 +216,9 @@ func (e *env) planConnect(f connectFlags) (*connectPlan, error) {
 	return plan, nil
 }
 
-// isRoot — запущен ли csqtt-cli с правами root. Переменная ради тестов.
-// На Windows Geteuid — -1, но tun там отказывает раньше, по Unsupported.
-var isRoot = func() bool { return os.Geteuid() == 0 }
+// isRoot — запущен ли csqtt-cli с правами root, на Windows — администратора
+// (isElevated). Переменная ради тестов.
+var isRoot = isElevated
 
 // tunRequirementsError объясняет, почему tun не запустится, или возвращает
 // nil. Неподдерживаемая система проверяется первой: права тут не помогут, и

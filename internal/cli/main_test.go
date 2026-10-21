@@ -255,6 +255,9 @@ type testEnv struct {
 	endOfInput bool
 	// connectRun — env.connectRun: подъём туннеля в меню без ядра.
 	connectRun func(ctx context.Context, plan *connectPlan) error
+	// elevate — env.elevate: перезапуск с правами. Пусто — перезапуск
+	// считается ошибкой теста: настоящий sudo тесты не зовут никогда.
+	elevate func(args []string) (detached bool, err error)
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -310,6 +313,13 @@ func (te *testEnv) env(stdout, stderr io.Writer) *env {
 		e.tty = func() bool { return true }
 	}
 	e.connectRun = te.connectRun
+	e.elevate = te.elevate
+	if e.elevate == nil {
+		e.elevate = func(args []string) (bool, error) {
+			te.t.Errorf("перезапуск с правами не подставлен: %q", args)
+			return false, errors.New("перезапуск с правами в тесте не подставлен")
+		}
+	}
 	return e
 }
 

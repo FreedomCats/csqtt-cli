@@ -78,6 +78,9 @@ type env struct {
 	// connectRun подменяет подъём туннеля по готовому плану — для меню
 	// (menu.go). Пусто — plan.run; подменяют тесты, где сети нет.
 	connectRun func(ctx context.Context, plan *connectPlan) error
+	// elevate подменяет перезапуск с правами (elevate.go): тесты не зовут
+	// sudo и UAC. Пусто — настоящий перезапуск.
+	elevate func(args []string) (detached bool, err error)
 
 	// tty подменяет проверку «stdin и stdout — терминал», от которой зависит,
 	// откроется ли меню (menu.go). Пусто — проверяются настоящие потоки.
