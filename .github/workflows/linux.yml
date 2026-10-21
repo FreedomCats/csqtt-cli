@@ -157,6 +157,14 @@ jobs:
       - name: buildcore -test
         run: go run ./scripts/buildcore -test
 
+      # Лицензии crates ядра (cargo metadata по Cargo.lock для каждой цели
+      # релиза): без CSQTT_TEST_NOTICES эта часть теста пропускается. Здесь —
+      # потому что есть cargo и исходники crates после сборки.
+      - name: Лицензии crates ядра
+        env:
+          CSQTT_TEST_NOTICES: '1'
+        run: go test -count=1 -run TestRealModule -v ./scripts/notices
+
       # coreproc и supervisor на настоящем ядре: запуск, события, выход по STOP,
       # конец хешей. Сервер не нужен: пир — документационный адрес, хеш выдуман.
       - name: coreproc и supervisor на ядре

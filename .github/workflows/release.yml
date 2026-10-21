@@ -1,0 +1,289 @@
+# Релиз: тесты на Windows и Linux, ядро по заданию на цель, сборка
+# scripts/release и черновик GitHub Release с архивами, SHA256SUMS.txt и
+# блоком «Скачать» в описании.
+#
+# Пуш тега v* — сборка и черновик релиза с этим тегом; опубликовать
+# черновик — вручную, на странице Releases. Пуш в ветку release/… и ручной
+# запуск (workflow_dispatch, даже на теге) только собирают: архивы остаются
+# артефактом прогона, релиз не создаётся. Ветка — для пробной сборки без тега.
+#
+# Ядро на Rust собирается под каждую цель отдельным заданием: Windows — на
+# Windows (компилятор C для aws-lc — MSVC), Linux amd64 и arm64 — на
+# ubuntu-22.04, arm64 кросс-сборкой. Архивы собираются на Linux из готовых
+# ядер: документы там в LF, как в git, и архивы те же, что у scripts/release
+# на Linux из тех же бинарей. Подпись wintun.dll (WinVerifyTrust есть только
+# на Windows) и запуск ядра Windows проверяет задание ядра Windows; архив
+# Wintun в обоих местах сверяется с одним хешем, так что DLL в zip — та же.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+    branches: ['release/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    uses: ./.github/workflows/windows.yml
+
+  test-linux:
+    uses: ./.github/workflows/linux.yml
+
+  # Ядро Windows: buildcore ставит +crt-static, а release -nozip проверяет то
+  # же, что при сборке архива (PE x86-64 без импорта CRT), и запускает его.
+  core-windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      CGO_ENABLED: '0'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # Действия закреплены по хешу коммита: тег можно перевесить.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # Rust на образе раннера может отставать от rust-version ядра.
+      - name: Rust
+        id: rust
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustc -V
+          echo "version=$(rustc -V | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
+
+      # Ключ — как у задания core в windows.yml: тег и ветка release/…
+      # берут кэш из main, и сборка не идёт с нуля.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            build/cargo
+          key: core-${{ runner.os }}-rust-${{ steps.rust.outputs.version }}-${{ hashFiles('core/rust-client/Cargo.lock') }}
+          restore-keys: core-${{ runner.os }}-rust-${{ steps.rust.outputs.version }}-
+
+      - name: buildcore
+        run: go run ./scripts/buildcore
+
+      - name: Проверка ядра
+        run: go run ./scripts/release -platforms windows/amd64 -core windows/amd64=build/out/csqtt-core.exe -nozip -out "$RUNNER_TEMP/probe"
+
+      - name: Подпись wintun.dll
+        run: go run ./scripts/wintun -dest "$RUNNER_TEMP/wintun"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: core-windows-amd64
+          path: build/out/csqtt-core.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  # Ядро Linux. Раннер — ubuntu-22.04 (glibc 2.35), и для arm64 тоже: C-код
+  # aws-lc с заголовками glibc 2.38 и новее тянет __isoc23_* и не запустится
+  # на системах старше (§09б архитектуры). arm64 — кросс-сборкой на x86-64:
+  # нативные раннеры arm бесплатны только публичным репозиториям. Ядро arm64
+  # запускается под qemu-user с библиотеками из libc6-arm64-cross.
+  core-linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    env:
+      CGO_ENABLED: '0'
+    strategy:
+      matrix:
+        include:
+          # Кэш amd64 — тот же, что у задания core в linux.yml.
+          - arch: amd64
+            target: x86_64-unknown-linux-gnu
+            cache: core-Linux
+            objdump: objdump
+          - arch: arm64
+            target: aarch64-unknown-linux-gnu
+            cache: core-Linux-aarch64
+            packages: gcc-aarch64-linux-gnu libc6-dev-arm64-cross binutils-aarch64-linux-gnu qemu-user
+            objdump: aarch64-linux-gnu-objdump
+            run: qemu-aarch64 -L /usr/aarch64-linux-gnu
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Кросс-gcc и qemu
+        if: matrix.packages
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.packages }}
+
+      - name: Rust
+        id: rust
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup target add ${{ matrix.target }}
+          rustc -V
+          echo "version=$(rustc -V | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            build/cargo
+          key: ${{ matrix.cache }}-rust-${{ steps.rust.outputs.version }}-${{ hashFiles('core/rust-client/Cargo.lock') }}
+          restore-keys: ${{ matrix.cache }}-rust-${{ steps.rust.outputs.version }}-
+
+      - name: buildcore
+        run: go run ./scripts/buildcore -target ${{ matrix.target }}
+
+      # Ни одного символа glibc новее 2.35 — как в linux.yml.
+      - name: glibc
+        run: |
+          max=$(${{ matrix.objdump }} -T build/out/csqtt-core | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+          echo "старший символ: $max"
+          [ "$(printf '%s\n' "$max" GLIBC_2.35 | sort -V | tail -1)" = GLIBC_2.35 ]
+
+      # Как проверка в конце scripts/release: неизвестный ключ — строка
+      # использования и код 2, в сеть ядро не ходит.
+      - name: Ядро запускается
+        run: |
+          set +e
+          out=$(${{ matrix.run }} build/out/csqtt-core --csqtt-cli-release-probe 2>&1)
+          code=$?
+          set -e
+          printf '%s\n' "$out" | head -5
+          [ "$code" = 2 ] && grep -q 'Usage:' <<<"$out"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: core-linux-${{ matrix.arch }}
+          path: build/out/csqtt-core
+          if-no-files-found: error
+          retention-days: 7
+
+  build:
+    needs: [test, test-linux, core-windows, core-linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CGO_ENABLED: '0'
+    steps:
+      # Вся история с тегами: без неё git describe в scripts/release
+      # не найдёт тег при сборке без тега.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # Уведомлениям нужен cargo metadata (лицензии crates ядра) и текст
+      # лицензии стандартной библиотеки из поставки rustc.
+      - name: Rust
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustc -V
+
+      # Вне репозитория: иначе scripts/release увидел бы их в git status и
+      # пометил коммит -dirty.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: core-*
+          path: ${{ runner.temp }}/core
+
+      # Ядро своей платформы scripts/release запускает, а артефакт права на
+      # исполнение не хранит.
+      - name: Сборка
+        run: |
+          core=$RUNNER_TEMP/core
+          chmod +x "$core"/core-linux-*/csqtt-core
+          args=(
+            -core "windows/amd64=$core/core-windows-amd64/csqtt-core.exe"
+            -core "linux/amd64=$core/core-linux-amd64/csqtt-core"
+            -core "linux/arm64=$core/core-linux-arm64/csqtt-core"
+          )
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            args+=(-version "$GITHUB_REF_NAME")
+          fi
+          go run ./scripts/release "${args[@]}"
+
+      # В архиве — всё, что нужно для запуска у пользователя: без ядра
+      # csqtt-cli не подключится, без wintun.dll не работает режим tun, без
+      # README не понять, с чего начать. Выпал файл — релиза нет.
+      - name: Состав архивов
+        run: go run ./scripts/distcheck -dir dist
+
+      - name: SHA256SUMS.txt
+        run: go run ./scripts/sha256sums -dir dist
+
+      # Начало описания релиза — ссылки в порядке Windows, Linux, исходники,
+      # суммы: список ассетов GitHub сортирует по алфавиту, и порядок
+      # задаётся только описанием над ним. Файл — вне dist, иначе он ушёл бы
+      # в релиз ассетом.
+      - name: Описание релиза
+        run: go run ./scripts/releasenotes -dir dist -repo "$GITHUB_REPOSITORY" -out release-notes.md
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: notes
+          path: release-notes.md
+          if-no-files-found: error
+
+  # Право на запись — только у этого задания: оно не запускает ни кода
+  # репозитория, ни скачанного, только выкладывает готовые архивы.
+  release:
+    needs: build
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: notes
+          path: notes
+
+      # Описание — блок «Скачать» из сборки, под ним — что изменилось
+      # (--generate-notes дописывает своё после --notes-file).
+      - name: Черновик релиза
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --verify-tag \
+            --title "$TAG" \
+            --notes-file notes/release-notes.md \
+            --generate-notes
