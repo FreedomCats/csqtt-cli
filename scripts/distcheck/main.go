@@ -3,17 +3,23 @@
 //
 //	go run ./scripts/distcheck [-dir dist]
 //
-// В архиве — всё, что нужно для запуска у пользователя: без wintun.dll
-// не работает режим tun, без README не понять, с чего начать. Список тот же,
-// что раскладывает scripts/release; выпал файл — релиза нет.
+// В архиве — всё, что нужно для запуска у пользователя: без ядра csqtt-cli
+// не подключится, без wintun.dll не работает режим tun, без README не понять,
+// с чего начать, без лицензий архив нельзя раздавать. Список тот же, что
+// раскладывает scripts/release, — пакет scripts/internal/dist; выпал файл —
+// релиза нет.
 //
 //   - zip: все записи — внутри каталога с именем архива, с разделителем «/»
-//     (с «\» архив на Linux и macOS распакуется в файлы с обратными слэшами в
-//     именах); есть csqtt-cli.exe, wintun.dll, wintun-LICENSE.txt и документы;
-//     на Windows csqtt-cli.exe из распакованного архива запускается
-//     (`csqtt-cli.exe version`);
-//   - tar.gz: есть csqtt-cli и документы, у csqtt-cli — право на исполнение
-//     (-rwxr-xr-x).
+//     (с «\» архив на Linux распакуется в файлы с обратными слэшами в именах);
+//     есть csqtt-cli.exe, csqtt-core.exe, wintun.dll, wintun-LICENSE.txt и
+//     документы (THIRD_PARTY_NOTICES.txt, csqtt-cli.example.toml, README.md,
+//     LICENSE-core.txt); на Windows csqtt-cli.exe из распакованного архива
+//     запускается (`csqtt-cli.exe version`);
+//   - tar.gz: все записи — внутри каталога с именем архива; есть csqtt-cli,
+//     csqtt-core и те же документы, у csqtt-cli и csqtt-core — право на
+//     исполнение (-rwxr-xr-x).
+//
+// Ни одного архива в каталоге — тоже ошибка: проверять было нечего.
 //
 // Ошибки печатаются аннотациями GitHub (::error::), код возврата — 1, если
 // была хоть одна.
@@ -36,12 +42,11 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/FreedomCats/csqtt-cli/scripts/internal/dist"
 	"github.com/FreedomCats/csqtt-cli/scripts/internal/script"
 )
 
 const self = "distcheck"
-
-var docs = []string{"THIRD_PARTY_NOTICES.txt", "csqtt-cli.example.toml", "LICENSE", "README.md"}
 
 func main() {
 	dir := flag.String("dir", "dist", "каталог с архивами")
@@ -120,6 +125,9 @@ func run(dir string) (bool, error) {
 			return false, err
 		}
 	}
+	if len(zips)+len(tgzs) == 0 {
+		c.errorf("%s — ни одного архива (.zip, .tar.gz)", dir)
+	}
 	return c.failed, nil
 }
 
@@ -181,7 +189,7 @@ func (c *checker) zipEntries(path, name string) error {
 	if len(outside) > 0 {
 		c.errorf("%s — вне каталога %s: %s", name, prefix, strings.Join(outside, ", "))
 	}
-	c.files(name, names, append([]string{"csqtt-cli.exe", "wintun.dll", "wintun-LICENSE.txt"}, docs...))
+	c.files(name, names, dist.Files("windows"))
 	return nil
 }
 
@@ -241,8 +249,9 @@ func (c *checker) tarGz(dir, name string) error {
 	tr := tar.NewReader(gz)
 
 	prefix := name[:len(name)-len(".tar.gz")] + "/"
-	var names []string
-	executable := false
+	var names, outside []string
+	executables := dist.Executables("linux")
+	var executable []string
 	for {
 		h, err := tr.Next()
 		if err == io.EOF {
@@ -252,21 +261,30 @@ func (c *checker) tarGz(dir, name string) error {
 			return fmt.Errorf("tar не прочитал %s: %w", name, err)
 		}
 		entry := h.Name
-		if len(entry) >= len(prefix) && strings.EqualFold(entry[:len(prefix)], prefix) {
-			entry = entry[len(prefix):]
+		// Запись вне каталога архива распакуется рядом с ним — как в zip,
+		// это ошибка, и в состав такая запись не идёт.
+		if len(entry) < len(prefix) || !strings.EqualFold(entry[:len(prefix)], prefix) {
+			outside = append(outside, entry)
+			continue
 		}
+		entry = entry[len(prefix):]
 		if entry != "" {
 			names = append(names, entry)
 		}
 		// То же, что строка «-rwxr-xr-x … /csqtt-cli» в tar -tv.
 		if h.Typeflag == tar.TypeReg && h.Mode&0o7777 == 0o755 &&
-			strings.HasSuffix(strings.ToLower(h.Name), "/csqtt-cli") {
-			executable = true
+			slices.ContainsFunc(executables, func(e string) bool { return strings.EqualFold(entry, e) }) {
+			executable = append(executable, strings.ToLower(entry))
 		}
 	}
-	c.files(name, names, append([]string{"csqtt-cli"}, docs...))
-	if !executable {
-		c.errorf("%s — у csqtt-cli нет права на исполнение", name)
+	if len(outside) > 0 {
+		c.errorf("%s — вне каталога %s: %s", name, prefix, strings.Join(outside, ", "))
+	}
+	c.files(name, names, dist.Files("linux"))
+	for _, e := range executables {
+		if !slices.Contains(executable, e) {
+			c.errorf("%s — у %s нет права на исполнение", name, e)
+		}
 	}
 	return nil
 }

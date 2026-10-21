@@ -84,6 +84,15 @@ go build -o build/out/csqtt-cli ./cmd/csqtt-cli
 этом до сборки. Ядро связано с glibc машины сборки и на системе со старой glibc может не
 запуститься — тогда собирайте на ней же.
 
+Под `aarch64` ядро собирается и на `x86_64` — кросс-сборкой. Нужны цель Rust
+(`rustup target add aarch64-unknown-linux-gnu`) и кросс-компилятор C: в Debian и Ubuntu —
+пакет `gcc-aarch64-linux-gnu`. Чего не хватает, `buildcore` скажет до сборки.
+
+```
+go run ./scripts/buildcore -target aarch64-unknown-linux-gnu -out build/out/linux-arm64
+GOARCH=arm64 go build -o build/out/linux-arm64/csqtt-cli ./cmd/csqtt-cli
+```
+
 Запуск — `build/out/csqtt-cli`; оба файла можно переложить вместе, например в
 `/usr/local/bin`. Права root (через `sudo`) нужны только режиму `tun`.
 
@@ -104,6 +113,9 @@ go build -o build\out\csqtt-cli.exe .\cmd\csqtt-cli
 
 Если по умолчанию у `rustup` стоит тулчейн `windows-gnu`, укажите MSVC явно:
 `go run ./scripts/buildcore -toolchain stable-x86_64-pc-windows-msvc`.
+
+Рантайм C `buildcore` вшивает в само ядро: `csqtt-core.exe` не зависит от VC++
+Redistributable, ставить его не нужно.
 
 На Windows сейчас работает только режим `socks`: в профиле нужен `datapath = "socks"`
 (мастер в меню выберет его сам). Окну капчи нужен WebView2 Runtime — он есть в Windows 11
