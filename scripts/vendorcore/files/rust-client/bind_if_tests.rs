@@ -150,6 +150,10 @@ fn configure_refuses_mark_without_bind_if() {
     assert!(error.contains("-mark") && error.contains("без -bind-if"), "{error}");
 }
 
+// IP_UNICAST_IF ставится с индексом в сетевом порядке, IPV6_UNICAST_IF — в
+// порядке хоста (csqtt_bind.rs). Читает getsockopt оба в порядке хоста: так
+// Windows отвечает на раннере CI, поэтому порядок при установке этим чтением
+// не проверить — его проверяет сам setsockopt, если отвергает чужой индекс.
 #[cfg(windows)]
 #[test]
 fn unicast_if_byte_order() {
@@ -179,7 +183,7 @@ fn unicast_if_byte_order() {
     let lo = loopback_index();
     let v4 = Socket::new(Domain::IPV4, Type::DGRAM, None).unwrap();
     csqtt_bind::bind_socket_to(SockRef::from(&v4), false, lo, 0).unwrap();
-    assert_eq!(unicast_if(&v4, false), lo.to_be(), "IPv4: индекс в сетевом порядке");
+    assert_eq!(unicast_if(&v4, false), lo, "IPv4: getsockopt отдаёт индекс в порядке хоста");
     let v6 = Socket::new(Domain::IPV6, Type::DGRAM, None).unwrap();
     csqtt_bind::bind_socket_to(SockRef::from(&v6), true, lo, 0).unwrap();
     assert_eq!(unicast_if(&v6, true), lo, "IPv6: индекс в порядке хоста");

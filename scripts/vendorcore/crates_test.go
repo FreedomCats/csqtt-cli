@@ -202,9 +202,10 @@ func TestRunCrateErrors(t *testing.T) {
 
 // Архив настоящего крейта в репозитории — тот, что записан в Cargo.lock
 // апстрима (до правила П3, которое снимает сумму, — см. CORE_VERSION).
+// Концы строк — как в -check: git на Windows выкладывает CORE_VERSION с CRLF.
 func TestCrateArchiveMatchesCoreVersion(t *testing.T) {
 	root := filepath.Join("..", "..")
-	version := read(t, filepath.Join(root, "core", "CORE_VERSION"))
+	version := string(normalize([]byte(read(t, filepath.Join(root, "core", "CORE_VERSION")))))
 	for _, c := range vendoredCrates {
 		matches, err := filepath.Glob(filepath.Join(root, filepath.FromSlash(cratesDir), c.Name+"-*.crate"))
 		if err != nil {

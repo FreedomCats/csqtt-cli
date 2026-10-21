@@ -43,6 +43,12 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      # Модули — до тестов: TestRealModule (scripts/notices) зовёт go list для
+      # Linux и докачал бы модули только для Linux, а тесты winsys в это же
+      # время закрывают сеть правилами WFP — загрузка падала.
+      - name: go mod download
+        run: go mod download
+
       - name: go test
         run: go test -count=1 ./...
 
