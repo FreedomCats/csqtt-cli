@@ -104,33 +104,15 @@ func runHashesCheck(ctx context.Context, e *env, args []string) error {
 	fmt.Fprintf(e.stdout, "Проверка звонков профиля %s: хешей %d, по одному — обычно несколько секунд на каждый, если VK тормозит — до полутора минут.\n",
 		p.Name, len(hashes))
 
-	check := e.hashCheck
-	if check == nil {
-		check = coreproc.CheckHashes
-	}
-	results, err := check(ctx, corePath, coreproc.Config{Hashes: hashes}, func(l coreproc.Log) {
-		out.message(l)
-	})
-	switch {
-	case err != nil && ctx.Err() != nil:
-		return ctx.Err()
-	case err != nil:
-		// В журнале ядра, который несёт ошибка, могут быть хеши.
-		return errors.New(out.mask.Replace(err.Error()))
+	results, err := e.checkHashes(ctx, corePath, hashes, out)
+	if err != nil {
+		return err
 	}
 
 	alive := 0
 	var dead []int
 	for i, r := range results {
-		n := hashNumber(hashes, r.Hash)
-		if n == 0 {
-			n = i + 1 // ядро свело хеш к другому виду; порядок у него тот же
-		}
-		status, detail := hashCheckText(r)
-		line := fmt.Sprintf("  №%d  %s", n, status)
-		if detail != "" {
-			line += " — " + out.mask.Replace(detail)
-		}
+		n, line := hashCheckLine(out, hashes, i, r)
 		fmt.Fprintln(e.stdout, line)
 		switch r.Status {
 		case coreproc.HashValid:
@@ -152,6 +134,43 @@ func runHashesCheck(ctx context.Context, e *env, args []string) error {
 	}
 	fmt.Fprintf(e.stdout, "Все звонки живы (%d).\n", alive)
 	return nil
+}
+
+// checkHashes проверяет хеши ядром (coreproc.CheckHashes). Журнал ядра идёт
+// в out — он печатает его при -v и прячет хеши. Общая для hashes check и
+// меню (menu_edit.go).
+func (e *env) checkHashes(ctx context.Context, corePath string, hashes []string, out *printer) ([]coreproc.HashCheck, error) {
+	check := e.hashCheck
+	if check == nil {
+		check = coreproc.CheckHashes
+	}
+	results, err := check(ctx, corePath, coreproc.Config{Hashes: hashes}, func(l coreproc.Log) {
+		out.message(l)
+	})
+	switch {
+	case err != nil && ctx.Err() != nil:
+		return nil, ctx.Err()
+	case err != nil:
+		// В журнале ядра, который несёт ошибка, могут быть хеши.
+		return nil, errors.New(out.mask.Replace(err.Error()))
+	}
+	return results, nil
+}
+
+// hashCheckLine — строка итога проверки i-го хеша: номер хеша в профиле,
+// итог словами и пояснение, в котором хеши заменены номерами. n — тот же
+// номер, для сводки.
+func hashCheckLine(out *printer, hashes []string, i int, r coreproc.HashCheck) (n int, line string) {
+	n = hashNumber(hashes, r.Hash)
+	if n == 0 {
+		n = i + 1 // ядро свело хеш к другому виду; порядок у него тот же
+	}
+	status, detail := hashCheckText(r)
+	line = fmt.Sprintf("  №%d  %s", n, status)
+	if detail != "" {
+		line += " — " + out.mask.Replace(detail)
+	}
+	return n, line
 }
 
 // hashCheckText — итог проверки хеша словами и пояснение.

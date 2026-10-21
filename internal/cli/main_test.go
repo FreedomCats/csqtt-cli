@@ -207,9 +207,18 @@ type syncBuffer struct {
 	b  bytes.Buffer
 }
 
+// maxTestOutput — больше вывода ни один тест не пишет. Перебор — почти
+// наверняка цикл, который не кончается на конце ввода (меню, мастер): такой
+// цикл копил бы вывод, пока не съест память машины. Паника роняет тестовый
+// бинарь сразу и с понятной причиной.
+const maxTestOutput = 16 << 20
+
 func (s *syncBuffer) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.b.Len()+len(p) > maxTestOutput {
+		panic(fmt.Sprintf("вывод теста больше %d байт: похоже, цикл не кончается на конце ввода", maxTestOutput))
+	}
 	return s.b.Write(p)
 }
 
@@ -218,6 +227,10 @@ func (s *syncBuffer) String() string {
 	defer s.mu.Unlock()
 	return s.b.String()
 }
+
+// maxTestQuestions — больше скрытых вопросов ни один тест не задаёт; см.
+// maxTestOutput.
+const maxTestQuestions = 1000
 
 // testEnv — окружение одного теста: свой каталог настроек, подставное
 // хранилище, заготовленные ответы на скрытый ввод и поддельное ядро.
@@ -233,6 +246,15 @@ type testEnv struct {
 	pipe bool
 	// core — режим поддельного ядра; пусто — ядра нет вовсе.
 	core string
+
+	// tty — притвориться терминалом: без аргументов и командой menu
+	// открывается меню (menu_test.go).
+	tty bool
+	// endOfInput — когда заготовленные ответы на скрытый ввод кончились,
+	// дальше конец ввода, а не лишний вопрос (отмена мастера).
+	endOfInput bool
+	// connectRun — env.connectRun: подъём туннеля в меню без ядра.
+	connectRun func(ctx context.Context, plan *connectPlan) error
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -260,9 +282,14 @@ func (te *testEnv) env(stdout, stderr io.Writer) *env {
 		build:       Build{Version: "1.2.3", Commit: "abcdef0"},
 		secretStore: func(string) config.SecretStore { return te.store },
 		secrets: func(prompt string) (string, error) {
+			if len(te.asked) >= maxTestQuestions {
+				panic(fmt.Sprintf("больше %d скрытых вопросов: похоже, вопрос повторяется на конце ввода", maxTestQuestions))
+			}
 			te.asked = append(te.asked, prompt)
 			if len(te.answers) == 0 {
-				te.t.Errorf("лишний вопрос: %q", prompt)
+				if !te.endOfInput {
+					te.t.Errorf("лишний вопрос: %q", prompt)
+				}
 				return "", errNoInput
 			}
 			value := te.answers[0]
@@ -279,6 +306,10 @@ func (te *testEnv) env(stdout, stderr io.Writer) *env {
 	if te.pipe {
 		e.secrets = nil
 	}
+	if te.tty {
+		e.tty = func() bool { return true }
+	}
+	e.connectRun = te.connectRun
 	return e
 }
 

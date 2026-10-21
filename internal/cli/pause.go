@@ -11,6 +11,8 @@
 // процесс навсегда — перезапуск после сбоя не сработал бы. Поэтому паузы нет
 // и тогда, когда stdin или stderr — не консоль (строку не увидеть или на неё не
 // ответить), и когда окно не может увидеть человек (ownsConsole на Windows).
+// Человек, который сам вышел из меню, тоже закрывает окно намеренно: ему
+// пауза не нужна (noPause).
 package cli
 
 import (
@@ -28,6 +30,9 @@ func pauseBeforeExit(e *env) {
 
 // shouldPause — ждать ли Enter перед выходом (см. начало файла).
 func shouldPause(e *env) bool {
+	if e.noPause {
+		return false
+	}
 	owns := ownsConsole
 	if e.ownsConsole != nil {
 		owns = e.ownsConsole

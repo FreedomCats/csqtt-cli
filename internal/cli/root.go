@@ -7,7 +7,8 @@
 // которую пришлось бы обновлять.
 //
 // Здесь только каркас: список команд, общие флаги, помощь и коды возврата.
-// Тела команд лежат рядом — connect.go, hashes.go, profile.go.
+// Тела команд лежат рядом — connect.go, hashes.go, profile.go, а меню для
+// тех, кто команд не набирает, — menu.go.
 package cli
 
 import (
@@ -74,7 +75,19 @@ type env struct {
 	secretStore func(configPath string) config.SecretStore
 	// hashCheck подменяет coreproc.CheckHashes. Пусто — настоящая проверка.
 	hashCheck func(ctx context.Context, corePath string, cfg coreproc.Config, onLog func(coreproc.Log)) ([]coreproc.HashCheck, error)
+	// connectRun подменяет подъём туннеля по готовому плану — для меню
+	// (menu.go). Пусто — plan.run; подменяют тесты, где сети нет.
+	connectRun func(ctx context.Context, plan *connectPlan) error
 
+	// tty подменяет проверку «stdin и stdout — терминал», от которой зависит,
+	// откроется ли меню (menu.go). Пусто — проверяются настоящие потоки.
+	tty func() bool
+	// signals — сигналы меню перехватывает оно само: так в настоящем
+	// процессе (Main), но не в тестах, где сигналов нет.
+	signals bool
+	// noPause — пауза перед закрытием окна не нужна: человек сам ушёл из
+	// меню (pause.go).
+	noPause bool
 	// ownsConsole подменяет проверку «csqtt-cli один в своей консоли, и её
 	// видит человек» (pause.go). Пусто — настоящая проверка.
 	ownsConsole func() bool
@@ -104,6 +117,7 @@ type command struct {
 func commands() []*command {
 	return []*command{
 		connectCommand(),
+		menuCommand(),
 		profileCommand(),
 		hashesCommand(),
 		versionCommand(),
@@ -123,7 +137,7 @@ func lookup(name string) *command {
 // Main — точка входа CLI. Возвращает код возврата; os.Exit зовёт cmd/csqtt-cli.
 func Main(args []string, build Build) int {
 	// Служебный запуск самого csqtt-cli от имени вызвавшего sudo — не
-	// команда человека: ни паузы перед выходом, ни обработки Ctrl+C
+	// команда человека: ни меню, ни паузы перед выходом, ни обработки Ctrl+C
 	// (secrethelper_linux.go).
 	if code, ok := runSecretHelper(args, os.Stdin, os.Stdout, os.Stderr); ok {
 		return code
@@ -135,8 +149,15 @@ func Main(args []string, build Build) int {
 		stdin:   os.Stdin,
 		build:   build,
 		openURL: captcha.OpenInBrowser,
+		signals: true,
 	}
 	defer pauseBeforeExit(e)
+
+	// Меню разбирает сигналы само: Ctrl+C во время подключения возвращает
+	// в него, а не завершает процесс (menu.go).
+	if wantsMenu(e, args) {
+		return run(context.Background(), e, args)
+	}
 
 	// Первый Ctrl+C, SIGTERM или SIGHUP (если он не игнорируется, как под
 	// nohup) отменяет контекст команды, второй Ctrl+C убивает процесс:
@@ -152,8 +173,13 @@ func Main(args []string, build Build) int {
 // run разделён с Main ради тестов: им нужны свои потоки и свой контекст.
 func run(ctx context.Context, e *env, args []string) int {
 	if len(args) == 0 {
-		// Запуск без аргументов — вопрос «что ты умеешь», а не ошибка,
-		// поэтому список команд уходит в stdout и код возврата нулевой.
+		// В терминале запуск без аргументов — это человек, которому нужно
+		// меню: на Windows так выглядит двойной щелчок по csqtt-cli.exe.
+		if e.console() {
+			return report(e, menuCommand(), runMenu(ctx, e, nil))
+		}
+		// Иначе — вопрос «что ты умеешь», а не ошибка, поэтому список
+		// команд уходит в stdout и код возврата нулевой.
 		printUsage(e.stdout)
 		return exitOK
 	}
@@ -396,6 +422,7 @@ func printUsage(w io.Writer) {
 		fmt.Fprintf(w, "  %-9s %s\n", cmd.name, cmd.summary)
 	}
 	fmt.Fprintln(w)
+	fmt.Fprintf(w, "Без команды в терминале открывается меню (%s menu): подключение и профили вопросами.\n", app.Name)
 	fmt.Fprintf(w, "Помощь по команде: %s help <команда> или %s <команда> -h\n", app.Name, app.Name)
 }
 

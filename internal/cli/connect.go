@@ -237,15 +237,28 @@ func tunRequirementsError(req datapath.Requirements, from, profile, configPath s
 	socks := fmt.Sprintf("%s connect -datapath socks %s (насовсем — %s profile set %s -datapath socks)",
 		app.Name, args, app.Name, args)
 	if req.Unsupported != nil {
-		return fmt.Errorf("%s: режим tun — весь трафик системы: %w; на этой системе есть только SOCKS5: %s",
-			from, req.Unsupported, socks)
+		return &tunRefusal{err: fmt.Errorf("%s: режим tun — весь трафик системы: %w; на этой системе есть только SOCKS5: %s",
+			from, req.Unsupported, socks)}
 	}
 	if req.Admin && !isRoot() {
-		return fmt.Errorf("%s: режиму tun — весь трафик системы — нужны права root: sudo %s connect %s; "+
-			"без прав работает только SOCKS5: %s", from, app.Name, tunArgs, socks)
+		return &tunRefusal{needsRoot: true, err: fmt.Errorf("%s: режиму tun — весь трафик системы — нужны права root: "+
+			"sudo %s connect %s; без прав работает только SOCKS5: %s", from, app.Name, tunArgs, socks)}
 	}
 	return nil
 }
+
+// tunRefusal — отказ режима tun до подключения: система его не умеет или
+// не хватает прав. Командной строке это обычная ошибка с подсказками, а меню
+// по типу узнаёт, что можно предложить socks (menu.go).
+type tunRefusal struct {
+	err error
+	// needsRoot — tun здесь работает, но нужны права root; иначе система его
+	// не умеет.
+	needsRoot bool
+}
+
+func (r *tunRefusal) Error() string { return r.err.Error() }
+func (r *tunRefusal) Unwrap() error { return r.err }
 
 // findCore — путь к csqtt-core рядом с csqtt-cli.
 func (e *env) findCore() (string, error) {
