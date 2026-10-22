@@ -57,7 +57,8 @@ IP-адреса, имена профилей, организация, где о�
 
 - фрагменты qwdtt-cli, перенесённые из Android-клиента qWDTT (GPL-3): `internal/core`,
   `supervisor/restart.go`, `captcha/token.go`, `captcha/solver.go` и их тесты;
-- Android-клиенты qWDTT и CSQTT на Kotlin (PolyForm NC), а также focsq.
+- Android-клиенты qWDTT и CSQTT на Kotlin (PolyForm NC), а также focsq;
+- оболочка стороннего клиента CSQTT-Windows на C# (`windows-client`, PolyForm NC).
 
 Код ядра в `core/` к этому не относится: это вендор, читать его можно.
 
