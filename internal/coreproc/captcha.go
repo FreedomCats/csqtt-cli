@@ -54,9 +54,10 @@ const captchaResultPrefix = "CAPTCHA_RESULT|"
 //
 // Заодно прячутся строки секретов stdin — SECRETS: и VK_JS_BOOTSTRAP: (с
 // токеном VK): ядро их не повторяет, если получило как надо, но строку,
-// попавшую читателю команд, оно повторило бы в журнал целиком.
+// попавшую читателю команд, оно повторило бы в журнал целиком, — и
+// временные ключи гостевого пути VK Calls в адресах запросов (maskGuestKeys).
 func maskLog(line string) string {
-	return maskStdinSecrets(maskSessionToken(maskCaptchaResult(line)))
+	return maskGuestKeys(maskStdinSecrets(maskSessionToken(maskCaptchaResult(line))))
 }
 
 func maskCaptchaResult(line string) string {
@@ -99,4 +100,30 @@ func maskSessionToken(line string) string {
 		return line[:start] + maskSessionToken(rest)
 	}
 	return line[:start] + "<скрыт, " + strconv.Itoa(end) + " зн.>" + maskSessionToken(rest[end:])
+}
+
+// guestKeyParams — параметры адресов гостевого пути VK Calls (auth.rs,
+// vk_calls_path) с временными ключами: anonymous_token и secret — шаги 2–3
+// (api.vk.me), anonymToken и session_key — шаг 5 (calls.okcdn.ru/fb.do). С
+// ними, пока они живы, можно войти в звонок. Адрес запроса целиком попадает
+// в текст ошибки HTTP-клиента («… for url (<адрес>)»), а с ним — в строки
+// журнала «[VK JS] Переход на Авто #N не выполнен: …» и «[КРЕД #N] Ошибка: …»
+// в любом режиме. Путь legacy и запросы auto_js (vk_js_calls.rs) шлют ключи
+// в теле запроса, а не в адресе.
+var guestKeyParams = []string{"anonymous_token", "secret", "anonymToken", "session_key"}
+
+// guestKeyEnd — на чём кончается значение параметра в адресе: следующий
+// параметр, фрагмент, конец слова или скобка вокруг адреса в тексте ошибки.
+const guestKeyEnd = "&# \t)"
+
+// maskGuestKeys прячет значения guestKeyParams в адресах. Параметр ищется
+// только в форме параметра адреса — после «?» или «&», со знаком «=»:
+// «secret (32 chars)» в строках шагов и client_secret не задеваются.
+func maskGuestKeys(line string) string {
+	for _, param := range guestKeyParams {
+		for _, sep := range []string{"?", "&"} {
+			line = maskAfter(line, sep+param+"=", guestKeyEnd, func(int) string { return "<скрыто>" })
+		}
+	}
+	return line
 }

@@ -408,11 +408,23 @@ func TestAutoJSStringsInCore(t *testing.T) {
 			`"[VK JS] Звонки завершены {finished}/{total}"`,
 			`"[VK JS] Создатель вышел из звонков {finished}/{total}"`,
 		},
-		"worker.rs": {`"[КРЕД #{}] Запрос (хеш: {short_hash}...)"`},
+		"worker.rs": {
+			`"[КРЕД #{}] Запрос (хеш: {short_hash}...)"`,
+			`"[КРЕД #{}] Ошибка: {error:#}. Повторяем через {delay:?}...",`,
+		},
 		"auth.rs": {
 			`query_escape(&format!("https://vk.com/call/join/{link}"))`,
 			`fb.do?joinLink={link}`,
 			`const HEX: &[u8; 16] = b"0123456789ABCDEF";`,
+			// Ключи гостевого пути в адресах (guestKeyParams): шаги 2–3,
+			// шаг 5 и проверка хешей. Новый ключ в адресе — дополнить список.
+			"&anonymous_token={anonymous_token_encoded}&",
+			"&secret={}&lang=en\",\n            query_escape(secret)",
+			"&anonymToken={ok_anonymous_token}&",
+			"&session_key={session_key}\"",
+			"&anonymous_token={anonymous_token}&",
+			// Сам HTTP-клиент: адрес попадает в текст ошибки.
+			"let response = client.post(endpoint).headers(headers).send().await?;",
 		},
 	}
 	for file, parts := range want {

@@ -128,6 +128,9 @@ func ParseLine(line string) Message {
 	case strings.HasPrefix(line, hashCheckPrefix):
 		var h HashCheck
 		if json.Unmarshal([]byte(line[len(hashCheckPrefix):]), &h) == nil && h.Hash != "" {
+			// Ошибка сети «недоступного» хеша несёт адрес шага 2 гостевого
+			// пути (auth.rs, check_vk_hash_attempt) с anonymous_token.
+			h.Message = maskGuestKeys(h.Message)
 			return h
 		}
 	}

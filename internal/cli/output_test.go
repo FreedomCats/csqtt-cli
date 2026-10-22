@@ -156,6 +156,26 @@ func TestHashesShownByNumber(t *testing.T) {
 	}
 }
 
+// Ошибка HTTP-клиента с адресом шага 5 гостевого пути в режиме с хешами:
+// хеш назван номером, временные ключи спрятаны ещё в coreproc.
+func TestGuestKeysHiddenInLog(t *testing.T) {
+	const anonToken, sessionKey = "$fakeOKtoken.0123-abcd", "fake-sess.key_0123"
+	p, buf, _ := testPrinter(true)
+	p.setHashes([]string{testHashA, testHashB})
+	p.message(coreproc.ParseLine("[КРЕД #1] Ошибка: error sending request for url (https://calls.okcdn.ru/fb.do?joinLink=" +
+		testHashA + "&isVideo=false&protocolVersion=5&anonymToken=" + anonToken +
+		"&method=vchat.joinConversationByLink&format=JSON&application_key=CGMMEJLGDIHBABABA&session_key=" + sessionKey +
+		"): operation timed out. Повторяем через 1.2s..."))
+	got := buf.String()
+	noSecrets(t, "вывод", got)
+	want := "ядро: [КРЕД #1] Ошибка: error sending request for url (https://calls.okcdn.ru/fb.do?joinLink=<хеш №1>" +
+		"&isVideo=false&protocolVersion=5&anonymToken=<скрыто>&method=vchat.joinConversationByLink&format=JSON" +
+		"&application_key=CGMMEJLGDIHBABABA&session_key=<скрыто>): operation timed out. Повторяем через 1.2s...\n"
+	if !strings.Contains(got, want) || strings.Contains(got, anonToken) || strings.Contains(got, sessionKey) {
+		t.Errorf("вывод:\n%s\nожидалась строка:\n%s", got, want)
+	}
+}
+
 // Номер недоступного хеша уходит в строку цикла, которая идёт следом, а не
 // отдельной строкой; не пришла — печатается сам.
 func TestDeadHashJoinsLoopLine(t *testing.T) {
