@@ -102,6 +102,7 @@ func render(f *File) string {
 		writeString(&b, "peer", p.Peer)
 		writeString(&b, "password_ref", p.PasswordRef)
 		writeString(&b, "vk_hashes_ref", p.VkHashesRef)
+		writeString(&b, "vk_hash_mode", p.VkHashMode)
 		writeString(&b, "device_id", p.DeviceID)
 		writeString(&b, "datapath", p.Datapath)
 		if p.Workers != 0 {

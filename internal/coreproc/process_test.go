@@ -91,6 +91,9 @@ func fakeCore(mode string) int {
 		for {
 			time.Sleep(time.Hour)
 		}
+	// autojs — ядро в auto_js (autojs_test.go).
+	case "autojs":
+		return fakeAutoJSCore()
 	// hashcheck — режим --validate-vk-hashes (hashcheck_test.go).
 	case "hashcheck":
 		return fakeHashCheck()
@@ -101,7 +104,7 @@ func fakeCore(mode string) int {
 	// shell — оболочка: запускает ядро deaf, печатает его pid, когда ядро
 	// поднялось (событие PROCESS), и живёт, пока её не убьют.
 	case "shell":
-		p, err := start(os.Args[0], nil, []string{fakeCoreEnv + "=deaf"})
+		p, err := start(os.Args[0], nil, []string{fakeCoreEnv + "=deaf"}, false)
 		if err != nil {
 			fmt.Println(err)
 			return 1

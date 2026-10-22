@@ -480,3 +480,105 @@ func TestProfileSetKillSwitch(t *testing.T) {
 }
 
 func boolPtr(v bool) *bool { return &v }
+
+// Профиль auto_js хешей не спрашивает и не требует; предупреждение о
+// воркерах считает по пределу auto_js, а входа VK нет — подсказка.
+func TestProfileAddAutoJS(t *testing.T) {
+	te := newTestEnv(t)
+	te.answer(testPassword, testPassword)
+	code, stdout, stderr := te.run("profile", "add", "js", "-peer", "203.0.113.10", "-vk-hash-mode", "auto_js", "-workers", "126")
+	if code != exitOK {
+		t.Fatalf("код %d, stderr:\n%s", code, stderr)
+	}
+	if len(te.asked) != 2 {
+		t.Errorf("вопросы: %q — хеши в auto_js не нужны", te.asked)
+	}
+	for _, want := range []string{"vk_hash_mode = auto_js", "в режиме auto_js ядро запустит 72", "vk login"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("в выводе нет %q:\n%s", want, stdout)
+		}
+	}
+	file, err := config.Load(te.configPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := file.Profiles["js"]; !p.AutoJS() || p.VkHashesRef != "" || p.Workers != 126 {
+		t.Errorf("профиль: %+v", p)
+	}
+}
+
+// Ссылка с хешами в auto_js: хеши записываются, но в работе не участвуют, и
+// об этом сказано.
+func TestProfileAddAutoJSFromLink(t *testing.T) {
+	te := newTestEnv(t)
+	te.answer(testLink)
+	code, stdout, stderr := te.run("profile", "add", "js", "-link", "-vk-hash-mode", "auto_js")
+	if code != exitOK {
+		t.Fatalf("код %d, stderr:\n%s", code, stderr)
+	}
+	noSecrets(t, "вывод", stdout+stderr)
+	if !strings.Contains(stdout, "auto_js не используются") {
+		t.Errorf("нет предупреждения о хешах:\n%s", stdout)
+	}
+	file, _ := config.Load(te.configPath())
+	if got, _ := te.store.Get(file.Profiles["js"].VkHashesRef); got != testHashA+","+testHashB {
+		t.Errorf("хеши из ссылки: %q", got)
+	}
+}
+
+// Переключение туда и обратно: хеши профиля остаются на месте; профиль без
+// хешей, вернувшийся к manual, спрашивает их сам.
+func TestProfileSetVKHashMode(t *testing.T) {
+	te := newTestEnv(t)
+	te.addHome()
+	te.asked = nil
+	if code, _, stderr := te.run("profile", "set", "home", "-vk-hash-mode", "auto_js"); code != exitOK {
+		t.Fatalf("код %d, stderr:\n%s", code, stderr)
+	}
+	if code, _, stderr := te.run("profile", "set", "home", "-vk-hash-mode", "manual"); code != exitOK {
+		t.Fatalf("код %d, stderr:\n%s", code, stderr)
+	}
+	if len(te.asked) != 0 {
+		t.Errorf("вопросы: %q — хеши в профиле есть", te.asked)
+	}
+	file, _ := config.Load(te.configPath())
+	if p := file.Profiles["home"]; p.AutoJS() || p.VkHashMode != "manual" || p.VkHashesRef == "" {
+		t.Errorf("профиль: %+v", p)
+	}
+
+	te.answer(testPassword, testPassword)
+	if code, _, stderr := te.run("profile", "add", "js", "-peer", "203.0.113.10", "-vk-hash-mode", "auto_js"); code != exitOK {
+		t.Fatalf("код %d, stderr:\n%s", code, stderr)
+	}
+	te.asked = nil
+	te.answer(testHashC)
+	if code, _, stderr := te.run("profile", "set", "js", "-vk-hash-mode", ""); code != exitOK {
+		t.Fatalf("код %d, stderr:\n%s", code, stderr)
+	}
+	if len(te.asked) != 1 || !strings.Contains(te.asked[0], "Хеши") {
+		t.Errorf("вопросы: %q", te.asked)
+	}
+	file, _ = config.Load(te.configPath())
+	if got, _ := te.store.Get(file.Profiles["js"].VkHashesRef); got != testHashC {
+		t.Errorf("хеши: %q", got)
+	}
+
+	if code, _, stderr := te.run("profile", "set", "js", "-vk-hash-mode", "auto_api"); code != exitUsage && code != exitError || !strings.Contains(stderr, `"manual", "auto_js"`) {
+		t.Errorf("auto_api: код %d, stderr:\n%s", code, stderr)
+	}
+}
+
+func TestProfileShowAutoJS(t *testing.T) {
+	te := newTestEnv(t)
+	te.addHome("-vk-hash-mode", "auto_js", "-workers", "81")
+	code, stdout, stderr := te.run("profile", "show", "home")
+	if code != exitOK {
+		t.Fatalf("код %d, stderr:\n%s", code, stderr)
+	}
+	noSecrets(t, "show", stdout+stderr)
+	for _, want := range []string{"vk_hash_mode   auto_js", "в режиме auto_js не нужны", "запустит 72"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("в show нет %q:\n%s", want, stdout)
+		}
+	}
+}

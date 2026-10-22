@@ -51,6 +51,18 @@ func TestCoreIgnoresDatapath(t *testing.T) {
 	}
 }
 
+// vk_hash_mode = "auto_js" включает режим ядра; manual и пусто — хеши.
+func TestCoreAutoJS(t *testing.T) {
+	for mode, want := range map[string]string{
+		"": "", VKHashModeManual: "", VKHashModeAutoJS: coreproc.VKHashModeAutoJS, " auto_js ": coreproc.VKHashModeAutoJS,
+	} {
+		p := &Profile{Peer: "203.0.113.10", VkHashMode: mode}
+		if got := p.Core().VKHashMode; got != want || p.AutoJS() != (want != "") {
+			t.Errorf("vk_hash_mode %q: Core().VKHashMode = %q, AutoJS = %v", mode, got, p.AutoJS())
+		}
+	}
+}
+
 func TestPeerWithPort(t *testing.T) {
 	cases := map[string]string{
 		"":                    "",

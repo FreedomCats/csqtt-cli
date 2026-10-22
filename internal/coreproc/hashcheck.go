@@ -47,7 +47,7 @@ func (c Config) HashCheckArgs() []string {
 // Команд stdin ядро в этом режиме не читает, поэтому отмена ctx не просит его
 // выйти, а сразу завершает процесс.
 func CheckHashes(ctx context.Context, path string, cfg Config, onLog func(Log)) ([]HashCheck, error) {
-	p, err := start(path, cfg.HashCheckArgs(), nil)
+	p, err := start(path, cfg.HashCheckArgs(), nil, false)
 	if err != nil {
 		return nil, err
 	}

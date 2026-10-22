@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -78,7 +79,7 @@ func TestRealCore(t *testing.T) {
 // Перед STOP — ответ на капчу: ядро повторяет его в журнал, и токена там быть
 // не должно.
 func TestRealCoreSecretsThenStop(t *testing.T) {
-	p, err := start(realCorePath(t), realCoreConfig.Args(), nil)
+	p, err := start(realCorePath(t), realCoreConfig.Args(), nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,5 +219,63 @@ func TestRealCoreBindIfRefused(t *testing.T) {
 	}
 	if len(fatal) != 1 || !strings.Contains(fatal[0], "-bind-if 2147483632") || !strings.Contains(fatal[0], "нет интерфейса") {
 		t.Errorf("фатальные строки журнала: %q", fatal)
+	}
+}
+
+// auto_js на настоящем ядре без VK: сокеты ядра привязаны к loopback, и до VK
+// оно не дойдёт. Секреты и токен одной записью ядро читает целиком: оно
+// падает уже на запросе к VK, ошибкой сети, а не на данных auto_js. Первая
+// строка вывода — о привязке сокетов, сразу после чтения секретов (по ней
+// остановка шлёт команды); токена в выводе нет.
+func TestRealCoreAutoJSBootstrap(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("только Linux: здесь привязка к loopback не выпускает ядро в сеть")
+	}
+	cfg := realCoreConfig
+	cfg.VKHashMode, cfg.VKToken = VKHashModeAutoJS, "real-core-vk-token"
+	cfg.BindIf = loopbackIndex(t)
+	p, err := Start(realCorePath(t), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.stop(0) })
+	input, err := cfg.startInput()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrap := strings.Split(input, "\n")[1][len(bootstrapPrefix):]
+
+	var msgs []Message
+	timeout := time.AfterFunc(2*time.Minute, func() { _ = p.cmd.Process.Kill() })
+	defer timeout.Stop()
+	for m := range p.Messages() {
+		msgs = append(msgs, m)
+		if testing.Verbose() {
+			t.Logf("%#v", m)
+		}
+	}
+	if err := p.Wait(); err == nil {
+		t.Error("ядро без VK вышло без ошибки")
+	}
+	if len(msgs) == 0 || msgs[0] != (Log{Text: fmt.Sprintf("[П3] Сокеты ядра — через интерфейс %d", cfg.BindIf)}) {
+		t.Errorf("первая строка ядра: %#v", msgs)
+	}
+	var fatal *FatalError
+	for _, m := range msgs {
+		text := fmt.Sprintf("%+v", m)
+		if strings.Contains(text, cfg.VKToken) || strings.Contains(text, bootstrap) {
+			t.Errorf("токен в выводе ядра: %s", text)
+		}
+		if _, ok := m.(PIDEvent); ok {
+			t.Error("ядро без VK дошло до PROCESS")
+		}
+		if l, ok := m.(Log); ok {
+			if f, ok := ParseFatal(l.Text); ok {
+				fatal = f
+			}
+		}
+	}
+	if fatal == nil || fatal.Kind != FatalNetwork || !strings.HasPrefix(fatal.Text, "messages.getCallToken: ") {
+		t.Errorf("фатальная ошибка ядра: %+v", fatal)
 	}
 }

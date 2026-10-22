@@ -77,6 +77,32 @@ func sameProfile(a, b *Profile) bool {
 
 func boolPtr(v bool) *bool { return &v }
 
+// Профиль auto_js без хешей записывается и читается обратно; режим — после
+// ссылки на хеши, как в csqtt-cli.example.toml.
+func TestSaveAutoJS(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	want := &Profile{Name: "home", Peer: "203.0.113.10", PasswordRef: "dpapi:8f2a1c",
+		VkHashMode: VKHashModeAutoJS, DeviceID: "3f9c2a71d04be658"}
+	if err := Save(path, &File{Profiles: map[string]*Profile{"home": want}}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	text, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(text), "password_ref = \"dpapi:8f2a1c\"\nvk_hash_mode = \"auto_js\"\n") ||
+		strings.Contains(string(text), "vk_hashes_ref") {
+		t.Errorf("файл:\n%s", text)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !sameProfile(got.Profiles["home"], want) {
+		t.Errorf("после записи и чтения = %+v,\nожидалось %+v", *got.Profiles["home"], *want)
+	}
+}
+
 // kill_switch пишется, только если задан, и тем значением, что задано:
 // пропуск — «включён» (KillSwitchOn).
 func TestSaveKillSwitch(t *testing.T) {

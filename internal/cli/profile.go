@@ -103,19 +103,22 @@ type profileFlags struct {
 	datapath      *string
 	socksListen   *string
 	killSwitch    *bool
+	vkHashMode    *string
 	makeDefault   *bool
 }
 
 func addProfileFlags(fs *flag.FlagSet) *profileFlags {
 	return &profileFlags{
 		peer:          fs.String("peer", "", "сервер CSQTT: host или host:port (порт по умолчанию "+config.DefaultPeerPort+")"),
-		workers:       fs.Int("workers", 0, "число воркеров: кратно 9, от 9 до 126, не больше 27 на хеш"),
+		workers:       fs.Int("workers", 0, "число воркеров: кратно 9, от 9 до 126, не больше 27 на хеш (в auto_js — не больше 72)"),
 		obfs:          fs.String("obfs", "", "маскировка RTP: audio или video"),
 		turnTransport: fs.String("turn-transport", "", "до TURN по udp или tcp_tls"),
 		datapath:      fs.String("datapath", "", "как отдавать трафик: tun (весь трафик системы, нужен root; пока только Linux) или socks"),
 		socksListen:   fs.String("socks-listen", "", "адрес SOCKS5 при datapath = socks, только loopback (по умолчанию "+datapath.DefaultSocksListen+")"),
 		killSwitch:    fs.Bool("kill-switch", true, "kill-switch: "+killSwitchUsage+"; -kill-switch=false — выключить"),
-		makeDefault:   fs.Bool("default", false, "сделать профиль профилем по умолчанию"),
+		vkHashMode: fs.String("vk-hash-mode", "", "откуда звонок VK: manual — хеши профиля (по умолчанию) или auto_js — звонок создаёт ядро "+
+			"по входу VK ("+app.Name+" vk login), хеши не нужны"),
+		makeDefault: fs.Bool("default", false, "сделать профиль профилем по умолчанию"),
 	}
 }
 
@@ -142,6 +145,9 @@ func (f *profileFlags) apply(p *config.Profile, named map[string]bool) {
 	if named["kill-switch"] {
 		value := *f.killSwitch
 		p.KillSwitch = &value
+	}
+	if named["vk-hash-mode"] {
+		p.VkHashMode = strings.TrimSpace(*f.vkHashMode)
 	}
 }
 
@@ -171,6 +177,10 @@ func profileAddCommand() *command {
 
 Без -link профиль заводится по полям: адрес сервера — флагом -peer, пароль
 и хеши звонков VK спрашиваются скрытым вводом.
+
+С -vk-hash-mode auto_js хеши не спрашиваются: звонок создаёт ядро по входу
+VK (` + app.Name + ` vk login). Хеши из ссылки всё равно записываются — на случай
+возврата к manual.
 
 Остальные флаги задают поля профиля. Профиль с таким именем уже есть —
 отказ: меняет профиль ` + app.Name + ` profile set.`,
@@ -238,7 +248,7 @@ func runProfileAdd(ctx context.Context, e *env, args []string) error {
 		}
 		secrets.password = link.Password
 		secrets.hashes = link.Hashes
-		if len(secrets.hashes) == 0 {
+		if len(secrets.hashes) == 0 && !p.AutoJS() {
 			fmt.Fprintln(e.stderr, "В ссылке нет хешей звонков VK.")
 		}
 	} else {
@@ -249,7 +259,7 @@ func runProfileAdd(ctx context.Context, e *env, args []string) error {
 			return err
 		}
 	}
-	if len(secrets.hashes) == 0 {
+	if len(secrets.hashes) == 0 && !p.AutoJS() {
 		if secrets.hashes, err = e.askHashes(ctx, name); err != nil {
 			return err
 		}
@@ -363,7 +373,9 @@ func runProfileSet(ctx context.Context, e *env, args []string) error {
 			return err
 		}
 	}
-	if *askHashes {
+	// Профиль, который возвращается из auto_js без хешей, без них не
+	// запишется: хеши спрашиваются и без -hashes.
+	if *askHashes || !p.AutoJS() && strings.TrimSpace(p.VkHashesRef) == "" {
 		if secrets.hashes, err = e.askHashes(ctx, name); err != nil {
 			return err
 		}
@@ -423,6 +435,17 @@ func storeProfile(e *env, path string, file *config.File, p *config.Profile, exi
 	}
 	if len(secrets.hashes) > 0 {
 		fmt.Fprintf(e.stdout, "  хешей:  %d (%s)\n", len(secrets.hashes), config.SecretRefKind(p.VkHashesRef))
+	}
+	if p.AutoJS() {
+		fmt.Fprintln(e.stdout, "  звонок: создаёт ядро по входу VK (vk_hash_mode = auto_js)")
+		if strings.TrimSpace(p.VkHashesRef) != "" {
+			fmt.Fprintln(e.stdout, "Хеши профиля в режиме auto_js не используются: звонок создаёт ядро.")
+		}
+		if !file.VK.LoggedIn() {
+			fmt.Fprintf(e.stdout, "Входа VK нет, а без него профиль не подключится: %s vk login\n", app.Name)
+		}
+		warnWorkers(e.stdout, p, 0)
+	} else if len(secrets.hashes) > 0 {
 		warnWorkers(e.stdout, p, len(secrets.hashes))
 	}
 	if file.DefaultProfile == p.Name {
@@ -432,10 +455,19 @@ func storeProfile(e *env, path string, file *config.File, p *config.Profile, exi
 }
 
 // warnWorkers предупреждает, если воркеров в профиле больше, чем ядро
-// запустит на этих хешах (27 на хеш, coreproc.NormalizeWorkers). Ядро урежет
-// само; предупреждение — чтобы число в профиле не вводило в заблуждение.
+// запустит на этих хешах (27 на хеш, coreproc.NormalizeWorkers), а в auto_js
+// — больше 72 (coreproc.NormalizeWorkersAutoJS; хеши тогда не считаются).
+// Урежет число coreproc сам; предупреждение — чтобы число в профиле не
+// вводило в заблуждение.
 func warnWorkers(w io.Writer, p *config.Profile, hashes int) {
 	want := p.Core().Workers
+	if p.AutoJS() {
+		if got := coreproc.NormalizeWorkersAutoJS(want); got < want {
+			fmt.Fprintf(w, "Предупреждение: воркеров в профиле %d, а в режиме auto_js ядро запустит %d (не больше %d).\n",
+				want, got, coreproc.MaxWorkersAutoJS)
+		}
+		return
+	}
 	if got := coreproc.NormalizeWorkers(want, hashes); got < want {
 		fmt.Fprintf(w, "Предупреждение: воркеров в профиле %d, а на %d хеш(ах) ядро запустит %d (не больше 27 на хеш).\n",
 			want, hashes, got)
@@ -508,6 +540,7 @@ func runProfileShow(_ context.Context, e *env, args []string) error {
 	printSetting(e.stdout, "workers", numberOrEmpty(p.Workers), strconv.Itoa(config.DefaultWorkers))
 	printSetting(e.stdout, "obfs", p.Obfs, "audio")
 	printSetting(e.stdout, "turn_transport", p.TurnTransport, "udp")
+	printSetting(e.stdout, "vk_hash_mode", p.VkHashMode, config.VKHashModeManual)
 	if p.KillSwitch == nil {
 		printSetting(e.stdout, "kill_switch", "", "true")
 	} else {
@@ -523,8 +556,12 @@ func runProfileShow(_ context.Context, e *env, args []string) error {
 	fmt.Fprintln(e.stdout)
 	printField(e.stdout, "password", passwordNote(store, p.PasswordRef), "")
 	hashesText, hashes := hashesNote(store, p.VkHashesRef)
-	printField(e.stdout, "vk_hashes", hashesText, "")
-	if hashes > 0 {
+	note := ""
+	if p.AutoJS() {
+		note = "(в режиме auto_js не нужны)"
+	}
+	printField(e.stdout, "vk_hashes", hashesText, note)
+	if hashes > 0 || p.AutoJS() {
 		warnWorkers(e.stdout, p, hashes)
 	}
 	return nil

@@ -30,6 +30,9 @@ func TestValidateAccepts(t *testing.T) {
 		"device_id как UUID":        func(p *Profile) { p.DeviceID = "123e4567-e89b-12d3-a456-426614174000" },
 		"ссылки на секреты Linux":   func(p *Profile) { p.PasswordRef, p.VkHashesRef = "secretservice:a1", "file:b2" },
 		"пробелы по краям значений": func(p *Profile) { p.Obfs, p.Peer = " audio ", " 203.0.113.10 " },
+		"auto_js без хешей":         func(p *Profile) { p.VkHashMode, p.VkHashesRef = VKHashModeAutoJS, "" },
+		"auto_js с хешами":          func(p *Profile) { p.VkHashMode = VKHashModeAutoJS },
+		"vk_hash_mode manual":       func(p *Profile) { p.VkHashMode = VKHashModeManual },
 	}
 	for name, change := range cases {
 		p := validProfile()
@@ -56,6 +59,9 @@ func TestValidateRejects(t *testing.T) {
 		{"имя в скобках", func(p *Profile) { p.Peer = "[vps.example]:46000" }, "не IPv6"},
 		{"нет password_ref", func(p *Profile) { p.PasswordRef = "" }, "не задан password_ref"},
 		{"нет vk_hashes_ref", func(p *Profile) { p.VkHashesRef = "" }, "не задан vk_hashes_ref"},
+		{"manual без хешей", func(p *Profile) { p.VkHashMode, p.VkHashesRef = VKHashModeManual, "" }, "не задан vk_hashes_ref"},
+		{"auto_js и хеши не ссылкой", func(p *Profile) { p.VkHashMode, p.VkHashesRef = VKHashModeAutoJS, "abcdef" }, "<хранилище>:<идентификатор>"},
+		{"vk_hash_mode", func(p *Profile) { p.VkHashMode = "auto_api" }, `"manual", "auto_js"`},
 		{"пароль вместо ссылки", func(p *Profile) { p.PasswordRef = "хорошийпароль" }, "<хранилище>:<идентификатор>"},
 		{"workers не кратно 9", func(p *Profile) { p.Workers = 20 }, "группами по 9"},
 		{"workers мало", func(p *Profile) { p.Workers = 3 }, "группами по 9"},

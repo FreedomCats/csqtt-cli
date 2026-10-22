@@ -67,6 +67,14 @@ type VKSection struct {
 // LoggedIn — вход VK выполнен: ссылка на токен есть.
 func (v VKSection) LoggedIn() bool { return strings.TrimSpace(v.TokenRef) != "" }
 
+// Значения vk_hash_mode — те же слова, что у флага -vk-hash-mode ядра.
+const (
+	// VKHashModeManual — хеши звонков из профиля; то же, что пустое поле.
+	VKHashModeManual = "manual"
+	// VKHashModeAutoJS — звонок создаёт ядро по токену аккаунта VK.
+	VKHashModeAutoJS = coreproc.VKHashModeAutoJS
+)
+
 // Profile — одна секция [profile.<имя>] (§10 doc/architecture.md).
 //
 // Пустое поле означает «не задано»: умолчание подставляет Core или ядро.
@@ -79,16 +87,20 @@ type Profile struct {
 	// PasswordRef — ссылка на пароль подключения в хранилище секретов. Из
 	// пароля ядро выводит и WRAP-ключ маскировки.
 	PasswordRef string `toml:"password_ref"`
-	// VkHashesRef — ссылка на хеши звонков VK.
+	// VkHashesRef — ссылка на хеши звонков VK. В auto_js не нужна.
 	VkHashesRef string `toml:"vk_hashes_ref"`
+	// VkHashMode — откуда звонок VK: пусто или VKHashModeManual — хеши
+	// профиля; VKHashModeAutoJS — звонок создаёт ядро по входу VK
+	// (`csqtt-cli vk login`, §08а), хеши не нужны. Читать — AutoJS.
+	VkHashMode string `toml:"vk_hash_mode"`
 	// DeviceID — идентификатор устройства для сервера. Save заводит его при
 	// первой записи профиля и потом не трогает: сервер может закрепить
 	// главный пароль за первым подключившимся устройством, и новый id
 	// выглядел бы как чужое устройство.
 	DeviceID string `toml:"device_id"`
 
-	// Workers — число воркеров: кратно 9, от 9 до 126. Не больше 27 на хеш —
-	// это ядро урезает само (coreproc.NormalizeWorkers).
+	// Workers — число воркеров: кратно 9, от 9 до 126. Не больше 27 на хеш,
+	// а в auto_js — не больше 72: это урезает coreproc.Config.NormalizedWorkers.
 	Workers int `toml:"workers"`
 	// Obfs — маскировка RTP: audio или video.
 	Obfs string `toml:"obfs"`
@@ -136,9 +148,10 @@ func PeerWithPort(peer string) string {
 
 // Core переводит профиль в параметры запуска ядра.
 //
-// Секреты не подставляются: Password и Hashes остаются пустыми, их заполняет
-// вызывающий, развернув PasswordRef и VkHashesRef через хранилище. Адреса
-// канала пакетов (Listen, ListenPeer, TunUDS) — дело datapath.
+// Секреты не подставляются: Password, Hashes и VKToken остаются пустыми, их
+// заполняет вызывающий, развернув PasswordRef, VkHashesRef и токен входа VK
+// ([vk] token_ref) через хранилище. Адреса канала пакетов (Listen,
+// ListenPeer, TunUDS) — дело datapath.
 func (p *Profile) Core() coreproc.Config {
 	cfg := coreproc.Config{
 		Peer:          PeerWithPort(p.Peer),
@@ -147,10 +160,19 @@ func (p *Profile) Core() coreproc.Config {
 		TurnTransport: strings.TrimSpace(p.TurnTransport),
 		DeviceID:      strings.TrimSpace(p.DeviceID),
 	}
+	if p.AutoJS() {
+		cfg.VKHashMode = coreproc.VKHashModeAutoJS
+	}
 	if cfg.Workers == 0 {
 		cfg.Workers = DefaultWorkers
 	}
 	return cfg
+}
+
+// AutoJS — звонок VK создаёт ядро (vk_hash_mode = "auto_js"), хеши профиля
+// не нужны.
+func (p *Profile) AutoJS() bool {
+	return strings.TrimSpace(p.VkHashMode) == VKHashModeAutoJS
 }
 
 // KillSwitchOn — включён ли kill-switch: да, если в профиле не сказано

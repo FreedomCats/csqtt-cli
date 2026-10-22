@@ -51,8 +51,12 @@ const captchaResultPrefix = "CAPTCHA_RESULT|"
 // CAPTCHA_RESULT|<токен>», а адрес капчи со session_token печатает строкой
 // «[КАПЧА] solveOnce URL: …»; журнал идёт на экран и в файл. Отказы (error:…)
 // остаются как есть — в них токена нет, а причина нужна.
+//
+// Заодно прячутся строки секретов stdin — SECRETS: и VK_JS_BOOTSTRAP: (с
+// токеном VK): ядро их не повторяет, если получило как надо, но строку,
+// попавшую читателю команд, оно повторило бы в журнал целиком.
 func maskLog(line string) string {
-	return maskSessionToken(maskCaptchaResult(line))
+	return maskStdinSecrets(maskSessionToken(maskCaptchaResult(line)))
 }
 
 func maskCaptchaResult(line string) string {

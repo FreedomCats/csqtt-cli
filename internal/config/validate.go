@@ -159,7 +159,13 @@ func profileProblems(p *Profile) []string {
 		add(peerProblem("peer", p.Peer))
 	}
 	add(secretRefProblem("password_ref", p.PasswordRef, "пароль подключения"))
-	add(secretRefProblem("vk_hashes_ref", p.VkHashesRef, "хеши звонков VK"))
+	// В auto_js хеши не нужны, но и не мешают: ядро их не получит, а
+	// профиль, переключённый обратно, найдёт их на месте. Форма ссылки
+	// проверяется и тут — на месте ссылки может оказаться сам секрет.
+	if !p.AutoJS() || strings.TrimSpace(p.VkHashesRef) != "" {
+		add(secretRefProblem("vk_hashes_ref", p.VkHashesRef, "хеши звонков VK"))
+	}
+	add(oneOfProblem("vk_hash_mode", p.VkHashMode, VKHashModeManual, VKHashModeAutoJS))
 	add(deviceIDProblem(p.DeviceID))
 	add(workersProblem(p.Workers))
 	add(oneOfProblem("obfs", p.Obfs, "audio", "video"))
