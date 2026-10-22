@@ -79,9 +79,11 @@ type Browser struct {
 	exe  string
 
 	// Только для тестов: extraArgs дописываются к командной строке браузера,
-	// started зовётся с PID запущенного браузера.
+	// started зовётся с PID запущенного браузера, authURL заменяет VKAuthURL
+	// у окна входа.
 	extraArgs []string
 	started   func(pid int)
+	authURL   string
 }
 
 // NewBrowser находит браузер на Chromium и собирает решатель. Браузер до
@@ -133,7 +135,9 @@ func findBrowser(lookPath func(string) (string, error)) (string, error) {
 // --password-store=basic — без него Chromium на Linux лезет в связку ключей
 // сеанса и может спросить у человека её пароль поверх капчи; паролей в
 // профиле капчи нет и не будет.
-func browserArgs(profile, proxy string) []string {
+//
+// size — размер окна «ширина,высота»: у капчи и у входа VK он свой.
+func browserArgs(profile, proxy, size string) []string {
 	args := []string{
 		"--remote-debugging-pipe",
 		"--disable-blink-features=AutomationControlled",
@@ -144,13 +148,16 @@ func browserArgs(profile, proxy string) []string {
 		"--disable-background-networking",
 		"--disable-extensions",
 		"--password-store=basic",
-		"--window-size=520,760",
+		"--window-size=" + size,
 	}
 	if proxy != "" {
 		args = append(args, "--proxy-server=http://"+proxy)
 	}
 	return append(args, "about:blank")
 }
+
+// captchaWindowSize — окно капчи: страница VK узкая.
+const captchaWindowSize = "520,760"
 
 // Solve запускает браузер со страницей капчи и ждёт токена.
 //
@@ -172,7 +179,7 @@ func (b *Browser) Solve(ctx context.Context, req Request) (string, error) {
 		}
 	}
 
-	profile, err := newProfile()
+	profile, err := newProfile(profilePrefix)
 	if err != nil {
 		closeProxy()
 		return "", fmt.Errorf("%w: каталог профиля: %v", ErrBrowser, err)
@@ -182,7 +189,7 @@ func (b *Browser) Solve(ctx context.Context, req Request) (string, error) {
 	if proxy != nil {
 		proxyAddr = proxy.Addr()
 	}
-	browser, err := b.start(profile, proxyAddr)
+	browser, err := b.start(browserArgs(profile, proxyAddr, captchaWindowSize))
 	if err != nil {
 		closeProxy()
 		removeProfile(profile)
@@ -218,7 +225,7 @@ type runningBrowser struct {
 // start запускает браузер. Под sudo — от имени вызвавшего пользователя с
 // окружением его сеанса (prepareCommand), в своей группе процессов: Ctrl+C
 // в терминале её не задевает, а при уборке её можно убить целиком.
-func (b *Browser) start(profile, proxy string) (*runningBrowser, error) {
+func (b *Browser) start(args []string) (*runningBrowser, error) {
 	cmdR, cmdW, err := os.Pipe()
 	if err != nil {
 		return nil, err
@@ -230,7 +237,6 @@ func (b *Browser) start(profile, proxy string) (*runningBrowser, error) {
 		return nil, err
 	}
 
-	args := browserArgs(profile, proxy)
 	if len(b.extraArgs) > 0 {
 		// Перед about:blank: после адреса Chromium флагов уже не ждёт.
 		args = append(append(args[:len(args)-1:len(args)-1], b.extraArgs...), args[len(args)-1])
@@ -280,11 +286,12 @@ func (r *runningBrowser) stop() {
 	r.out.Close()
 }
 
-// newProfile заводит пустой временный профиль. Под sudo он отдаётся
+// newProfile заводит пустой временный профиль; prefix — начало имени его
+// каталога (profile.go). Под sudo он отдаётся
 // вызвавшему пользователю: браузер работает от его имени, и в каталог root'а
 // писать не смог бы.
-func newProfile() (string, error) {
-	dir, err := os.MkdirTemp("", profilePrefix+"*")
+func newProfile(prefix string) (string, error) {
+	dir, err := os.MkdirTemp("", prefix+"*")
 	if err != nil {
 		return "", err
 	}

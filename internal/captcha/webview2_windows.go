@@ -77,6 +77,10 @@ type WebView2 struct {
 	// opened — зовётся с ручкой окна, как только оно создано. Только для
 	// тестов: через неё они закрывают окно так же, как крестик.
 	opened func(webview2.WebView)
+	// Только для тестов окна входа: authURL заменяет VKAuthURL, extraArgs —
+	// аргументы браузера окна.
+	authURL   string
+	extraArgs string
 }
 
 // NewWebView2 проверяет, что WebView2 Runtime установлен, и собирает решатель.
@@ -291,6 +295,18 @@ func (h *windowHandle) close() {
 	if h.w != nil {
 		h.w.Destroy()
 	}
+}
+
+// dispatch выполняет f на нити окна, если окно ещё живо. Для таймеров,
+// которые срабатывают на чужой нити.
+func (h *windowHandle) dispatch(f func(w webview2.WebView)) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed || h.w == nil {
+		return
+	}
+	w := h.w
+	w.Dispatch(func() { f(w) })
 }
 
 // initCOM заводит однопоточный апартамент COM на текущей нити. S_FALSE —

@@ -74,7 +74,40 @@ func validateFile(f *File) []string {
 		}
 	}
 
+	problems = append(problems, vkProblems(f.VK)...)
 	return problems
+}
+
+// vkProblems проверяет секцию [vk]. Её пишет `csqtt-cli vk login`; пустая
+// секция — входа нет.
+func vkProblems(v VKSection) []string {
+	var problems []string
+	if ref := strings.TrimSpace(v.TokenRef); ref != "" {
+		scheme, id, found := strings.Cut(ref, ":")
+		if !found || strings.TrimSpace(scheme) == "" || strings.TrimSpace(id) == "" {
+			// Значение не печатается: раз это не ссылка, это, скорее всего, сам токен.
+			problems = append(problems, "[vk] token_ref: ожидается ссылка вида <хранилище>:<идентификатор>; "+
+				"сам токен VK в файле не хранится — войдите заново: `csqtt-cli vk login`")
+		}
+	}
+	if id := strings.TrimSpace(v.UserID); id != "" && !isDigits(id, 20) {
+		// Значение не печатается: что бы туда ни попало, id это не похоже.
+		problems = append(problems, "[vk] user_id: id аккаунта VK — только цифры")
+	}
+	return problems
+}
+
+// isDigits — непустая строка из одних цифр, не длиннее limit.
+func isDigits(s string, limit int) bool {
+	if s == "" || len(s) > limit {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // CheckProfileName проверяет имя профиля по тем же правилам, что и файл. Нужна

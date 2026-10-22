@@ -7,7 +7,7 @@
 // которую пришлось бы обновлять.
 //
 // Здесь только каркас: список команд, общие флаги, помощь и коды возврата.
-// Тела команд лежат рядом — connect.go, hashes.go, profile.go, а меню для
+// Тела команд лежат рядом — connect.go, hashes.go, profile.go, vk.go, а меню для
 // тех, кто команд не набирает, — menu.go.
 package cli
 
@@ -70,6 +70,9 @@ type env struct {
 	// captchaBridge подменяет мост капчи (captcha.NewBridge): тесты смотрят,
 	// с чем его собрали. Пусто — настоящий.
 	captchaBridge func(opts captcha.Options) supervisor.CaptchaFunc
+	// vkLogin подменяет окно входа VK (captcha.NewLoginWindow): тесты не
+	// открывают браузер. Пусто — окно этой системы.
+	vkLogin func(opts captcha.LoginOptions) (captcha.LoginWindow, error)
 	// secretStore подменяет хранилище секретов рядом с файлом настроек.
 	// Пусто — config.NewSecretStoreFor; подменяют тесты.
 	secretStore func(configPath string) config.SecretStore
@@ -123,6 +126,7 @@ func commands() []*command {
 		menuCommand(),
 		profileCommand(),
 		hashesCommand(),
+		vkCommand(),
 		versionCommand(),
 		helpCommand(),
 	}

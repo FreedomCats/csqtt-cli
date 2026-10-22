@@ -64,6 +64,10 @@ func unknownKeyProblems(md toml.MetaData) []string {
 	for _, key := range md.Undecoded() {
 		full := key.String()
 		switch last(key) {
+		case "token", "access_token", "vk_token":
+			problems = append(problems, fmt.Sprintf(
+				"неизвестный ключ %s: токен VK в файле не хранится — `csqtt-cli vk login` кладёт его в хранилище "+
+					"секретов, а в секцию [vk] — ссылку token_ref", full))
 		case "password", "vk_hashes", "hashes", "vk":
 			problems = append(problems, fmt.Sprintf(
 				"неизвестный ключ %s: секреты в файле не хранятся — запишите значение через `csqtt-cli profile set`, "+

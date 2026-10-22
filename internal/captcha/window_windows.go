@@ -8,3 +8,12 @@ func platformWindow(opts Options) (Window, error) {
 	}
 	return w, nil
 }
+
+// platformLoginWindow — окно входа VK на Windows: WebView2.
+func platformLoginWindow(opts LoginOptions) (LoginWindow, error) {
+	w, err := NewWebView2(WebView2Options{Out: opts.Out, Logf: opts.Logf})
+	if err != nil {
+		return nil, err
+	}
+	return w, nil
+}

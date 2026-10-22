@@ -44,7 +44,28 @@ type File struct {
 	DefaultProfile string `toml:"default_profile"`
 	// Profiles — секции [profile.<имя>].
 	Profiles map[string]*Profile `toml:"profile"`
+	// VK — секция [vk]: вход в аккаунт VK для режима auto_js. Один на файл
+	// настроек, а не на профиль; пишет её `csqtt-cli vk login`.
+	VK VKSection `toml:"vk"`
 }
+
+// VKTokenSecret — имя access token VK в хранилище секретов. С точкой, как
+// <профиль>.password: имя профиля точки не содержит, и записи не спутать.
+const VKTokenSecret = "vk.token"
+
+// VKSection — секция [vk] (§08а, §10 doc/architecture.md). Самого токена
+// здесь нет, только ссылка на него в хранилище секретов — как у пароля
+// профиля.
+type VKSection struct {
+	// TokenRef — ссылка на access token VK в хранилище секретов.
+	TokenRef string `toml:"token_ref"`
+	// UserID — id аккаунта VK, которому выдан токен. Не секрет: его
+	// показывает `csqtt-cli vk status`.
+	UserID string `toml:"user_id"`
+}
+
+// LoggedIn — вход VK выполнен: ссылка на токен есть.
+func (v VKSection) LoggedIn() bool { return strings.TrimSpace(v.TokenRef) != "" }
 
 // Profile — одна секция [profile.<имя>] (§10 doc/architecture.md).
 //

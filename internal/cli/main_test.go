@@ -16,6 +16,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/FreedomCats/csqtt-cli/internal/captcha"
 	"github.com/FreedomCats/csqtt-cli/internal/config"
 )
 
@@ -258,6 +259,9 @@ type testEnv struct {
 	// elevate — env.elevate: перезапуск с правами. Пусто — перезапуск
 	// считается ошибкой теста: настоящий sudo тесты не зовут никогда.
 	elevate func(args []string) (detached bool, err error)
+	// vkLogin — env.vkLogin: окно входа VK. Пусто — открыть окно считается
+	// ошибкой теста: настоящий браузер тесты CLI не открывают.
+	vkLogin func(opts captcha.LoginOptions) (captcha.LoginWindow, error)
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -313,6 +317,13 @@ func (te *testEnv) env(stdout, stderr io.Writer) *env {
 		e.tty = func() bool { return true }
 	}
 	e.connectRun = te.connectRun
+	e.vkLogin = te.vkLogin
+	if e.vkLogin == nil {
+		e.vkLogin = func(captcha.LoginOptions) (captcha.LoginWindow, error) {
+			te.t.Errorf("окно входа VK не подставлено")
+			return nil, errors.New("окно входа VK в тесте не подставлено")
+		}
+	}
 	e.elevate = te.elevate
 	if e.elevate == nil {
 		e.elevate = func(args []string) (bool, error) {

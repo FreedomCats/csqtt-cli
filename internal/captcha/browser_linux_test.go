@@ -57,7 +57,7 @@ func TestFindBrowser(t *testing.T) {
 }
 
 func TestBrowserArgs(t *testing.T) {
-	args := browserArgs("/tmp/profile", "")
+	args := browserArgs("/tmp/profile", "", "520,760")
 	for _, want := range []string{"--remote-debugging-pipe", "--disable-blink-features=AutomationControlled",
 		"--test-type", "--user-data-dir=/tmp/profile", "--disable-extensions", "--password-store=basic"} {
 		if !slices.Contains(args, want) {
@@ -75,7 +75,7 @@ func TestBrowserArgs(t *testing.T) {
 		t.Errorf("последним должен идти адрес: %q", args)
 	}
 
-	args = browserArgs("/tmp/profile", "127.0.0.1:8080")
+	args = browserArgs("/tmp/profile", "127.0.0.1:8080", "520,760")
 	if !slices.Contains(args, "--proxy-server=http://127.0.0.1:8080") {
 		t.Errorf("нет прокси: %q", args)
 	}

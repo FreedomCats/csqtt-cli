@@ -1,6 +1,6 @@
-// profile.go — временные профили браузеров капчи: окна WebView2 и браузера
-// под управлением по CDP. Профиль у каждой капчи свой и пустой: чистая сессия
-// по построению, без cookie прошлых капч.
+// profile.go — временные профили браузеров капчи и входа VK: окна WebView2 и
+// браузера под управлением по CDP. Профиль у каждой капчи и каждого входа
+// свой и пустой: чистая сессия по построению, без cookie прошлых окон.
 package captcha
 
 import (
@@ -15,9 +15,15 @@ import (
 // каталоге системы.
 const profilePrefix = app.Name + "-captcha-"
 
+// loginProfilePrefix — то же для окна входа VK (vklogin.go). В его профиле
+// после входа — cookie сессии VK, поэтому он убирается до того, как вход
+// вернёт токен.
+const loginProfilePrefix = app.Name + "-vklogin-"
+
 // staleProfileAge — каталог профиля старше этого считается брошенным и
 // убирается при следующем запуске. Окно капчи живёт не дольше трёх минут,
-// так что час — с большим запасом: чужой живой профиль под руку не попадёт.
+// окно входа — пяти, так что час — с большим запасом: чужой живой профиль под
+// руку не попадёт.
 const staleProfileAge = time.Hour
 
 // removeProfile удаляет временный профиль.
@@ -38,7 +44,11 @@ func removeProfile(dir string) {
 // sweepStaleProfiles убирает профили, брошенные прошлыми запусками: те, что
 // removeProfile не успел удалить до конца процесса.
 func sweepStaleProfiles() {
-	matches, _ := filepath.Glob(filepath.Join(os.TempDir(), profilePrefix+"*"))
+	var matches []string
+	for _, prefix := range []string{profilePrefix, loginProfilePrefix} {
+		found, _ := filepath.Glob(filepath.Join(os.TempDir(), prefix+"*"))
+		matches = append(matches, found...)
+	}
 	for _, dir := range matches {
 		info, err := os.Stat(dir)
 		if err != nil || !info.IsDir() || time.Since(info.ModTime()) < staleProfileAge {

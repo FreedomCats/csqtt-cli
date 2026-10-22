@@ -6,7 +6,8 @@
 // заканчивается нулевым байтом. Ни порта, ни WebSocket: подключиться к такому
 // браузеру чужой процесс не может. Запуск браузера — browser_linux.go; здесь
 // только протокол, без ОС, поэтому и тесты его идут на записанных сообщениях
-// где угодно.
+// где угодно. Сам разговор по трубе (converse) общий у окна капчи и окна
+// входа VK (vklogin_cdp.go); различаются только автоматы.
 //
 // Ответы API страницы снимаются на сетевом уровне, а не перехватчиком JS, как
 // в окне WebView2: Network.responseReceived для captchaNotRobot.* →
@@ -54,7 +55,31 @@ type cdpCommand struct {
 	Method    string `json:"method"`
 	Params    any    `json:"params,omitempty"`
 	SessionID string `json:"sessionId,omitempty"`
+
+	// after — отправить не сразу, а через столько (converse). Браузеру не
+	// уходит.
+	after time.Duration
 }
+
+// cdpConversation — автомат разговора с браузером: окно капчи (cdpCapture)
+// или окно входа VK (cdpLogin, vklogin_cdp.go). Ничего не читает и не пишет
+// сам: получает сообщения браузера и отвечает командами, которые ему
+// отправить, — или исходом, когда разговор кончен. Ведёт разговор converse.
+type cdpConversation interface {
+	start() []cdpCommand
+	handle(m cdpMessage) ([]cdpCommand, *outcome)
+	// opened — страница открывается: пропажа браузера после этого значит,
+	// что окно закрыл человек, а до — что браузер не запустился.
+	opened() bool
+}
+
+// browserLost — браузер пропал или за срок запуска не начал открывать
+// страницу: окна человек, скорее всего, так и не увидел. Каждое окно
+// называет это по-своему (ErrBrowser у капчи).
+type browserLost struct{ cause error }
+
+func (e *browserLost) Error() string { return e.cause.Error() }
+func (e *browserLost) Unwrap() error { return e.cause }
 
 // callKind — зачем отправлена команда: от этого зависит, что делать с ответом.
 type callKind int
@@ -131,6 +156,9 @@ func newCDPCapture(url string, logf func(string, ...any)) *cdpCapture {
 	return &cdpCapture{url: url, logf: logf, watch: pageWatch{logf: logf}, pending: map[int64]pendingCall{},
 		children: map[string]int{}, watched: map[requestKey]string{}}
 }
+
+// opened — страница капчи открывается.
+func (c *cdpCapture) opened() bool { return c.ready }
 
 // start — первые команды разговора.
 func (c *cdpCapture) start() []cdpCommand {
@@ -394,17 +422,33 @@ func requestID(params json.RawMessage) string {
 	return p.RequestID
 }
 
-// captureToken ведёт разговор по трубе: r — то, что пишет браузер, w — то, что
-// он читает. Возвращается с токеном, ErrLimit, ErrWindowClosed, ErrBrowser
-// или ошибкой ctx.
+// captureToken ведёт разговор с окном капчи по трубе: r — то, что пишет
+// браузер, w — то, что он читает. Возвращается с токеном, ErrLimit,
+// ErrWindowClosed, ErrBrowser или ошибкой ctx.
 //
 // startup — сколько ждать, пока браузер начнёт открывать страницу капчи.
 // Не уложился — ErrBrowser: окна человек, скорее всего, так и не увидел.
 func captureToken(ctx context.Context, r io.Reader, w io.Writer, url string, startup time.Duration,
 	logf func(string, ...any)) (string, error) {
 
-	c := newCDPCapture(url, logf)
+	token, err := converse(ctx, r, w, newCDPCapture(url, logf), startup)
+	var lost *browserLost
+	switch {
+	case errors.As(err, &lost):
+		return "", fmt.Errorf("%w: %v", ErrBrowser, lost.cause)
+	case err == nil && strings.TrimSpace(token) == "":
+		return "", ErrNoToken
+	}
+	return token, err
+}
 
+// converse ведёт разговор conv по трубе: r — то, что пишет браузер, w — то,
+// что он читает. Возвращается с исходом разговора — токеном или его
+// ошибкой, — с ErrWindowClosed (окно закрыто после того, как страница начала
+// открываться), *browserLost или ошибкой ctx.
+//
+// startup — сколько ждать, пока браузер начнёт открывать страницу (opened).
+func converse(ctx context.Context, r io.Reader, w io.Writer, conv cdpConversation, startup time.Duration) (string, error) {
 	msgs := make(chan cdpMessage)
 	readErr := make(chan error, 1)
 	stop := make(chan struct{})
@@ -451,13 +495,39 @@ func captureToken(ctx context.Context, r io.Reader, w io.Writer, url string, sta
 			}
 		}
 	}()
-	queue := c.start()
 
-	// gone — браузер пропал: до страницы капчи это сбой запуска, после — окно
+	// Команды с after ждут своего часа в своей горутине и встают в очередь
+	// через delayed.
+	delayed := make(chan cdpCommand)
+	enqueue := func(queue, cmds []cdpCommand) []cdpCommand {
+		for _, cmd := range cmds {
+			if cmd.after <= 0 {
+				queue = append(queue, cmd)
+				continue
+			}
+			go func(cmd cdpCommand) {
+				t := time.NewTimer(cmd.after)
+				defer t.Stop()
+				cmd.after = 0
+				select {
+				case <-t.C:
+					select {
+					case delayed <- cmd:
+					case <-stop:
+					}
+				case <-stop:
+				}
+			}(cmd)
+		}
+		return queue
+	}
+	queue := enqueue(nil, conv.start())
+
+	// gone — браузер пропал: до страницы это сбой запуска, после — окно
 	// закрыл человек (Chromium выходит с последним окном).
 	gone := func(cause error) error {
-		if !c.ready {
-			return fmt.Errorf("%w: %v", ErrBrowser, cause)
+		if !conv.opened() {
+			return &browserLost{cause}
 		}
 		return ErrWindowClosed
 	}
@@ -478,27 +548,26 @@ func captureToken(ctx context.Context, r io.Reader, w io.Writer, url string, sta
 			return "", ctx.Err()
 		case <-starting:
 			starting = nil
-			if !c.ready {
-				return "", fmt.Errorf("%w: за %s страница капчи не открылась", ErrBrowser, startup)
+			if !conv.opened() {
+				return "", &browserLost{fmt.Errorf("за %s страница не открылась", startup)}
 			}
 		case next <- head:
 			queue = queue[1:]
+		case cmd := <-delayed:
+			queue = append(queue, cmd)
 		case err := <-writeErr:
 			return "", gone(err)
 		case err := <-readErr:
 			return "", gone(err)
 		case m := <-msgs:
-			cmds, out := c.handle(m)
+			cmds, out := conv.handle(m)
 			if out != nil {
 				if errors.Is(out.err, ErrWindowClosed) {
 					out.err = gone(out.err)
 				}
-				if out.err == nil && strings.TrimSpace(out.token) == "" {
-					out.err = ErrNoToken
-				}
 				return out.token, out.err
 			}
-			queue = append(queue, cmds...)
+			queue = enqueue(queue, cmds)
 		}
 	}
 }

@@ -89,6 +89,12 @@ func render(f *File) string {
 		b.WriteString("\ndefault_profile = " + quote(def) + "\n")
 	}
 
+	if vk := f.VK; strings.TrimSpace(vk.TokenRef) != "" || strings.TrimSpace(vk.UserID) != "" {
+		b.WriteString("\n[vk]\n")
+		writeString(&b, "token_ref", vk.TokenRef)
+		writeString(&b, "user_id", vk.UserID)
+	}
+
 	for _, name := range f.Names() {
 		p := f.Profiles[name]
 
@@ -128,7 +134,7 @@ func writeString(b *strings.Builder, key, value string) {
 //
 // strconv.Quote годится потому, что писать сюда попадают только проверенные
 // значения: адреса host:port, ссылки вида <хранилище>:<идентификатор>,
-// идентификатор устройства и слова из закрытых списков. Экранирование Go и
+// идентификатор устройства, id аккаунта VK и слова из закрытых списков. Экранирование Go и
 // TOML на таком наборе совпадает.
 func quote(value string) string {
 	return strconv.Quote(value)
