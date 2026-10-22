@@ -55,6 +55,10 @@ type WebView2Options struct {
 	// Logf — строки прокси (отказы) и страницы капчи (pageWatch); nil —
 	// молчать.
 	Logf func(format string, args ...any)
+
+	// Net — только у окна входа: диагностический режим сети (netfilter.go).
+	// Прокси этого режима соединяется через Dial, если он задан.
+	Net *NetFilter
 }
 
 // browserArgsEnv — переменная окружения с аргументами браузера WebView2.

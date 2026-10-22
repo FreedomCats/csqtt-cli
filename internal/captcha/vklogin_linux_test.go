@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"net"
 	"strings"
 	"syscall"
 	"testing"
@@ -163,4 +165,79 @@ func TestBrowserLoginStartFailure(t *testing.T) {
 		t.Fatalf("ошибка %v, ожидалась ErrLoginBrowser", err)
 	}
 	noLoginProfileLeft(t, before)
+}
+
+// Диагностический режим сети (-net-allow): окно ходит только через прокси
+// csqtt-cli с фильтром, а диалер прокси ведёт адрес входа на стенд. Пропущенный
+// домен — вход проходит, отказ — страница входа не грузится; оба видны в
+// журнале и сводке, адресов с путями и токена в них нет.
+func TestBrowserLoginNetFilter(t *testing.T) {
+	for _, tc := range []struct {
+		filter  string
+		verdict string
+		ok      bool
+	}{
+		{"vk.invalid", "пропущен", true},
+		{"all", "пропущен", true},
+		{"vk", "отказ", false},
+	} {
+		t.Run(tc.filter, func(t *testing.T) {
+			s := newLoginStand(t)
+			b := newBrowserStand(t)
+			out := &syncBuffer{}
+			log := &logBuffer{t: t}
+			b.opts.Out = out
+			b.opts.Logf = log.logf
+			filter, err := ParseNetFilter(tc.filter)
+			if err != nil {
+				t.Fatal(err)
+			}
+			b.opts.Net = filter
+			// Свои запросы браузера (сервисы Google) — мимо стенда: им отказ
+			// соединения, и в журнале они «не соединились».
+			b.opts.Dial = func(ctx context.Context, network, address string) (net.Conn, error) {
+				if address != "oauth.vk.invalid:443" {
+					return nil, errors.New("стенд: только oauth.vk.invalid")
+				}
+				var d net.Dialer
+				return d.DialContext(ctx, network, s.Listener.Addr().String())
+			}
+			// Прокси стенда здесь нет: его место занимает прокси csqtt-cli.
+			b.extraArgs = append(b.extraArgs, "--ignore-certificate-errors", "--host-resolver-rules="+standResolverRules)
+			b.authURL = s.authURL("redirect")
+			before := loginProfilesNow()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			tok, err := b.Login(ctx)
+			authorized, _ := s.hits("redirect")
+			if tc.ok {
+				if err != nil || tok.AccessToken != standVKToken("redirect", 1) || authorized != 1 {
+					t.Fatalf("Login: %v, токен ожидаемый: %v, входов на стенде %d",
+						err, tok.AccessToken == standVKToken("redirect", 1), authorized)
+				}
+			} else if err == nil || authorized != 0 {
+				t.Fatalf("Login при отказе: %v, входов на стенде %d", err, authorized)
+			}
+
+			text := out.String()
+			t.Logf("вывод:\n%s", text)
+			for _, want := range []string{
+				"через прокси csqtt-cli 127.0.0.1:",
+				"[VK] окно входа, сеть: oauth.vk.invalid:443 — " + tc.verdict + "\n",
+				"Сводка сети окна входа (-net-allow " + tc.filter + ")",
+				fmt.Sprintf("  %-8s  oauth.vk.invalid:443  ×", tc.verdict),
+			} {
+				if !strings.Contains(text, want) {
+					t.Errorf("в выводе нет %q:\n%s", want, text)
+				}
+			}
+			for _, secret := range []string{"stand-vk-token", "authorize", "scenario", "client_id", "blank.html"} {
+				if strings.Contains(text, secret) {
+					t.Errorf("в выводе %q:\n%s", secret, text)
+				}
+			}
+			noLoginProfileLeft(t, before)
+		})
+	}
 }

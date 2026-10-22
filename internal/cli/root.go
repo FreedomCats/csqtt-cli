@@ -19,6 +19,7 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
 
 	"github.com/FreedomCats/csqtt-cli/internal/app"
@@ -114,6 +115,9 @@ type command struct {
 	// description — абзац между строкой синтаксиса и списком флагов.
 	// Необязателен.
 	description string
+	// hiddenFlags — флаги, которых нет в помощи: диагностические, их
+	// описывает doc/architecture.md.
+	hiddenFlags []string
 	// run разбирает свои аргументы и делает работу.
 	run func(ctx context.Context, e *env, args []string) error
 }
@@ -452,10 +456,30 @@ func writeUsage(cmd *command, fs *flag.FlagSet) {
 		fmt.Fprintf(w, "\n%s\n", strings.TrimRight(cmd.description, "\n"))
 	}
 
-	if hasFlags(fs) {
+	shown := visibleFlags(cmd, fs)
+	if hasFlags(shown) {
 		fmt.Fprintln(w, "\nФлаги:")
-		fs.PrintDefaults()
+		shown.SetOutput(w)
+		shown.PrintDefaults()
 	}
+}
+
+// visibleFlags — флаги команды для помощи: без cmd.hiddenFlags. Копия
+// набора, а не он сам: пакет flag прятать флаги не умеет.
+func visibleFlags(cmd *command, fs *flag.FlagSet) *flag.FlagSet {
+	if len(cmd.hiddenFlags) == 0 {
+		return fs
+	}
+	shown := flag.NewFlagSet(fs.Name(), flag.ContinueOnError)
+	fs.VisitAll(func(f *flag.Flag) {
+		if slices.Contains(cmd.hiddenFlags, f.Name) {
+			return
+		}
+		shown.Var(f.Value, f.Name, f.Usage)
+		// Умолчание — прежнее: значение к этому времени мог задать разбор.
+		shown.Lookup(f.Name).DefValue = f.DefValue
+	})
+	return shown
 }
 
 func hasFlags(fs *flag.FlagSet) bool {

@@ -11,7 +11,7 @@ func platformWindow(opts Options) (Window, error) {
 
 // platformLoginWindow — окно входа VK на Linux: тот же браузер на Chromium.
 func platformLoginWindow(opts LoginOptions) (LoginWindow, error) {
-	b, err := NewBrowser(BrowserOptions{Out: opts.Out, Logf: opts.Logf})
+	b, err := NewBrowser(BrowserOptions{Out: opts.Out, Logf: opts.Logf, Net: opts.Net})
 	if err != nil {
 		return nil, err
 	}

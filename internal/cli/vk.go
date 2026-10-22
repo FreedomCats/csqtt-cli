@@ -111,7 +111,10 @@ cookie VK. Токен ложится в хранилище секретов, к�
 прежний вход заменяется. На вход — ` + loginTimeoutText + `.
 
 Нужен терминал: согласие спрашивается у человека.`,
-		run: runVKLogin,
+		// -net-allow — диагностика сети окна (§08а doc/architecture.md,
+		// «Окно входа»): в обычной помощи его нет.
+		hiddenFlags: []string{"net-allow"},
+		run:         runVKLogin,
 	}
 }
 
@@ -120,12 +123,21 @@ func runVKLogin(ctx context.Context, e *env, args []string) error {
 	fs := newFlagSet(cmd)
 	configPath := addConfigFlag(fs)
 	verbose := fs.Bool("v", false, "подробно: что видит окно входа (без адресов и токена)")
+	netAllow := fs.String("net-allow", "", "диагностика: окно ходит в сеть через локальный прокси, который "+
+		"пускает только эти домены и их поддомены (через запятую; "+captcha.NetAllowVK+" — домены VK, "+
+		captcha.NetAllowAll+" — всё), и пишет каждое соединение")
 	rest, err := parseWithArgs(e, fs, args)
 	if err != nil {
 		return err
 	}
 	if len(rest) > 0 {
 		return subUsagef(cmd, "лишний аргумент: вход один на все профили, имя профиля не нужно (аргумент не печатается)")
+	}
+	var netFilter *captcha.NetFilter
+	if setFlags(fs)["net-allow"] {
+		if netFilter, err = captcha.ParseNetFilter(*netAllow); err != nil {
+			return subUsagef(cmd, "-net-allow: %v", err)
+		}
 	}
 	if !e.stdinTerminal() {
 		return errors.New("вход в VK спрашивает согласие у человека — запустите команду в терминале")
@@ -147,7 +159,7 @@ func runVKLogin(ctx context.Context, e *env, args []string) error {
 		return nil
 	}
 
-	opts := captcha.LoginOptions{Out: e.stderr}
+	opts := captcha.LoginOptions{Out: e.stderr, Net: netFilter}
 	if *verbose {
 		opts.Logf = func(format string, args ...any) { fmt.Fprintf(e.stderr, format+"\n", args...) }
 	}

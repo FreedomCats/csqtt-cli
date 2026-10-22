@@ -21,22 +21,29 @@ func (b *Browser) Login(ctx context.Context) (VKToken, error) {
 		authURL = VKAuthURL
 	}
 
+	netw, err := startLoginNet(b.opts.Net, b.opts.Dial, b.opts.Out, b.opts.Logf)
+	if err != nil {
+		return VKToken{}, fmt.Errorf("%w: %v", ErrLoginBrowser, err)
+	}
 	profile, err := newProfile(loginProfilePrefix)
 	if err != nil {
+		netw.close()
 		return VKToken{}, fmt.Errorf("%w: каталог профиля: %v", ErrLoginBrowser, err)
 	}
-	browser, err := b.start(browserArgs(profile, "", loginWindowSize))
+	browser, err := b.start(insertArgs(browserArgs(profile, "", loginWindowSize), netw.browserArgs()...))
 	if err != nil {
+		netw.close()
 		removeProfile(profile)
 		return VKToken{}, fmt.Errorf("%w: %v", ErrLoginBrowser, err)
 	}
 
-	fmt.Fprintf(b.opts.Out, "Открыто окно браузера %s со страницей входа VK.\n", filepath.Base(b.exe))
+	fmt.Fprintf(netw.writer(b.opts.Out), "Открыто окно браузера %s со страницей входа VK.\n", filepath.Base(b.exe))
 
 	conv := newCDPLogin(authURL, b.opts.Logf)
 	_, err = converse(ctx, browser.out, browser.in, conv, browserStartup)
 
 	browser.stop()
+	netw.close()
 	removeProfile(profile)
 	warnProfileLeft(b.opts.Out, profile)
 

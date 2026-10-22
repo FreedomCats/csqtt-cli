@@ -71,6 +71,10 @@ type BrowserOptions struct {
 	// Logf — строки прокси, разговора с браузером и страницы капчи
 	// (pageWatch); nil — молчать.
 	Logf func(format string, args ...any)
+
+	// Net — только у окна входа: диагностический режим сети (netfilter.go).
+	// Прокси этого режима соединяется через Dial, если он задан.
+	Net *NetFilter
 }
 
 // Browser — решатель в браузере под управлением.
@@ -156,6 +160,15 @@ func browserArgs(profile, proxy, size string) []string {
 	return append(args, "about:blank")
 }
 
+// insertArgs дописывает extra к командной строке browserArgs — перед
+// about:blank: после адреса Chromium флагов уже не ждёт.
+func insertArgs(args []string, extra ...string) []string {
+	if len(extra) == 0 {
+		return args
+	}
+	return append(append(args[:len(args)-1:len(args)-1], extra...), args[len(args)-1])
+}
+
 // captchaWindowSize — окно капчи: страница VK узкая.
 const captchaWindowSize = "520,760"
 
@@ -237,11 +250,7 @@ func (b *Browser) start(args []string) (*runningBrowser, error) {
 		return nil, err
 	}
 
-	if len(b.extraArgs) > 0 {
-		// Перед about:blank: после адреса Chromium флагов уже не ждёт.
-		args = append(append(args[:len(args)-1:len(args)-1], b.extraArgs...), args[len(args)-1])
-	}
-	cmd := exec.Command(b.exe, args...)
+	cmd := exec.Command(b.exe, insertArgs(args, b.extraArgs...)...)
 	cmd.ExtraFiles = []*os.File{cmdR, resW}
 	err = prepareCommand(cmd)
 	if err == nil {

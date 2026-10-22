@@ -342,3 +342,74 @@ func TestVKUsage(t *testing.T) {
 		}
 	}
 }
+
+// -net-allow — диагностика сети окна: фильтр доходит до окна, без флага
+// его нет; в помощи флаг не показывается.
+func TestVKLoginNetAllow(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		spec string // пусто — фильтра нет
+	}{
+		{nil, ""},
+		{[]string{"-net-allow", "vk,mail.ru"}, "vk,mail.ru"},
+		{[]string{"-net-allow=all", "-v"}, "all"},
+	} {
+		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
+			window := goodWindow()
+			te := vkEnv(t, "да\n", window)
+			var got *captcha.NetFilter
+			te.vkLogin = func(opts captcha.LoginOptions) (captcha.LoginWindow, error) {
+				window.opened++
+				got = opts.Net
+				return window, nil
+			}
+			code, _, stderr := te.run(append([]string{"vk", "login"}, tc.args...)...)
+			if code != exitOK || window.opened != 1 {
+				t.Fatalf("код %d, окон %d, stderr:\n%s", code, window.opened, stderr)
+			}
+			switch {
+			case tc.spec == "" && got != nil:
+				t.Errorf("без флага окну дан фильтр %q", got)
+			case tc.spec != "" && (got == nil || got.String() != tc.spec):
+				t.Errorf("фильтр окна %v, ожидался %q", got, tc.spec)
+			}
+		})
+	}
+}
+
+// Негодное значение — ошибка командной строки до вопроса о согласии.
+func TestVKLoginNetAllowInvalid(t *testing.T) {
+	for _, value := range []string{"", "https://vk.com", "all,vk", "203.0.113.1"} {
+		t.Run(value, func(t *testing.T) {
+			window := goodWindow()
+			te := vkEnv(t, "да\n", window)
+			code, _, stderr := te.run("vk", "login", "-net-allow", value)
+			if code != exitUsage || window.opened != 0 {
+				t.Fatalf("код %d, окон %d, stderr:\n%s", code, window.opened, stderr)
+			}
+			if !strings.Contains(stderr, "-net-allow:") || strings.Contains(stderr, "[y/N]") {
+				t.Errorf("stderr:\n%s", stderr)
+			}
+		})
+	}
+}
+
+func TestVKLoginHelpHidesNetAllow(t *testing.T) {
+	te := newTestEnv(t)
+	code, stdout, _ := te.run("vk", "login", "-h")
+	if code != exitOK {
+		t.Fatalf("код %d", code)
+	}
+	if strings.Contains(stdout, "net-allow") {
+		t.Errorf("в помощи скрытый флаг:\n%s", stdout)
+	}
+	for _, want := range []string{"-config", "-v\t", "подробно"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("в помощи нет %q:\n%s", want, stdout)
+		}
+	}
+	// -v -h: умолчание -v — прежнее, а не то, что задал разбор.
+	if _, stdout, _ = te.run("vk", "login", "-v", "-h"); strings.Contains(stdout, "(default true)") {
+		t.Errorf("умолчание -v после разбора:\n%s", stdout)
+	}
+}

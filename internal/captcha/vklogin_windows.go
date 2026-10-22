@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 	"time"
 
 	webview2 "github.com/jchv/go-webview2"
@@ -60,8 +61,17 @@ func (s *WebView2) Login(ctx context.Context) (VKToken, error) {
 		authURL = VKAuthURL
 	}
 
+	netw, err := startLoginNet(s.opts.Net, s.opts.Dial, s.opts.Out, s.opts.Logf)
+	if err != nil {
+		return VKToken{}, fmt.Errorf("%w: %v", ErrLoginBrowser, err)
+	}
+	// Аргументы браузера окна: тестовые и прокси диагностического режима.
+	// Значений с пробелами у прокси нет, кавычки не нужны.
+	extraArgs := strings.TrimSpace(s.extraArgs + " " + strings.Join(netw.browserArgs(), " "))
+
 	profile, err := os.MkdirTemp("", loginProfilePrefix+"*")
 	if err != nil {
+		netw.close()
 		return VKToken{}, fmt.Errorf("%w: каталог профиля WebView2: %v", ErrLoginBrowser, err)
 	}
 
@@ -89,8 +99,8 @@ func (s *WebView2) Login(ctx context.Context) (VKToken, error) {
 
 		var browserArgs string
 		var restoreArgs func()
-		if s.extraArgs != "" {
-			browserArgs, restoreArgs = setBrowserArgs(s.extraArgs)
+		if extraArgs != "" {
+			browserArgs, restoreArgs = setBrowserArgs(extraArgs)
 		}
 		w := webview2.NewWithOptions(webview2.WebViewOptions{
 			DataPath:                   profile,
@@ -143,7 +153,7 @@ func (s *WebView2) Login(ctx context.Context) (VKToken, error) {
 	stop := context.AfterFunc(ctx, win.close)
 	defer stop()
 
-	fmt.Fprint(s.opts.Out, "Открыто окно со страницей входа VK.\n"+
+	fmt.Fprint(netw.writer(s.opts.Out), "Открыто окно со страницей входа VK.\n"+
 		"Если окна не видно, оно может оказаться за консолью: поищите его на панели задач.\n")
 
 	var st loginStep
@@ -168,6 +178,7 @@ func (s *WebView2) Login(ctx context.Context) (VKToken, error) {
 	// держит msedgewebview2.exe.
 	win.close()
 	<-done
+	netw.close()
 	removeProfile(profile)
 	warnProfileLeft(s.opts.Out, profile)
 
