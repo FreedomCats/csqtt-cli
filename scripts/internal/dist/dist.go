@@ -2,10 +2,11 @@
 // что проверяет scripts/distcheck. Список один, чтобы они не разошлись.
 package dist
 
-// Docs — документы в каждом архиве. LICENSE-core.txt — лицензия ядра
-// (core/LICENSE). Лицензия оболочки (LICENSE) добавится, когда она будет
-// выбрана (задача I4).
-var Docs = []string{"THIRD_PARTY_NOTICES.txt", "csqtt-cli.example.toml", "README.md", "LICENSE-core.txt"}
+// Docs — документы в каждом архиве. LICENSE.txt — лицензия оболочки (LICENSE
+// в корне, MIT), LICENSE-core.txt — лицензия ядра (core/LICENSE). Обе — с
+// .txt, как и wintun-LICENSE.txt: на Windows файл без расширения не
+// открывается двойным щелчком.
+var Docs = []string{"THIRD_PARTY_NOTICES.txt", "csqtt-cli.example.toml", "README.md", "LICENSE.txt", "LICENSE-core.txt"}
 
 // Wintun — файлы Wintun в архиве Windows (scripts/internal/wintun).
 var Wintun = []string{"wintun.dll", "wintun-LICENSE.txt"}

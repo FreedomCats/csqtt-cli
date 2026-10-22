@@ -305,7 +305,7 @@ func TestRender(t *testing.T) {
 	if strings.Count(win, "\n") != strings.Count(win, "\r\n") {
 		t.Error("для windows все переводы строк должны быть CRLF")
 	}
-	for _, want := range []string{"wintun-LICENSE.txt", "LICENSE-core.txt", "csqtt-core.exe:", "c 1.0.0 — MIT OR Apache-2.0 (csqtt-core.exe)", "m v1 — MIT (csqtt-cli.exe)"} {
+	for _, want := range []string{"csqtt-cli.exe распространяется под лицензией MIT", "LICENSE.txt рядом", "wintun-LICENSE.txt", "LICENSE-core.txt", "csqtt-core.exe:", "c 1.0.0 — MIT OR Apache-2.0 (csqtt-core.exe)", "m v1 — MIT (csqtt-cli.exe)"} {
 		if !strings.Contains(win, want) {
 			t.Errorf("для windows нет %q", want)
 		}
@@ -314,8 +314,10 @@ func TestRender(t *testing.T) {
 	if strings.Contains(linux, "\r") || strings.Contains(linux, "wintun") || strings.Contains(linux, ".exe") {
 		t.Error("для linux — LF, без wintun и .exe")
 	}
-	if !strings.Contains(linux, "aarch64-unknown-linux-gnu") || !strings.Contains(linux, "LICENSE-core.txt") {
-		t.Error("для linux — цель ядра и ссылка на LICENSE-core.txt")
+	for _, want := range []string{"aarch64-unknown-linux-gnu", "csqtt-cli распространяется под лицензией MIT", "LICENSE.txt рядом", "LICENSE-core.txt"} {
+		if !strings.Contains(linux, want) {
+			t.Errorf("для linux нет %q", want)
+		}
 	}
 }
 

@@ -36,15 +36,16 @@
 //	dist/csqtt-cli_<версия>_windows_amd64.zip
 //	    каталог csqtt-cli_<версия>_windows_amd64/ с csqtt-cli.exe, csqtt-core.exe,
 //	    wintun.dll, wintun-LICENSE.txt, THIRD_PARTY_NOTICES.txt,
-//	    csqtt-cli.example.toml, README.md, LICENSE-core.txt
+//	    csqtt-cli.example.toml, README.md, LICENSE.txt, LICENSE-core.txt
 //	dist/csqtt-cli_<версия>_linux_amd64.tar.gz
 //	dist/csqtt-cli_<версия>_linux_arm64.tar.gz
 //	    каталог csqtt-cli_<версия>_linux_<arch>/ с csqtt-cli, csqtt-core,
 //	    THIRD_PARTY_NOTICES.txt, csqtt-cli.example.toml, README.md,
-//	    LICENSE-core.txt
+//	    LICENSE.txt, LICENSE-core.txt
 //
 // Состав — пакет scripts/internal/dist, общий с distcheck; перед упаковкой
-// каталог сверяется с ним. LICENSE-core.txt — core/LICENSE, лицензия ядра.
+// каталог сверяется с ним. LICENSE.txt — LICENSE из корня, лицензия оболочки
+// (MIT); LICENSE-core.txt — core/LICENSE, лицензия ядра.
 // wintun.dll (режим -datapath tun) кладётся в zip пакетом
 // scripts/internal/wintun — тем же, что у команды wintun: фиксированная
 // версия, проверка SHA256 архива и, на Windows, подписи DLL. В репозитории её
@@ -53,8 +54,8 @@
 //
 // Архивы воспроизводимы: одинаковые входные файлы дают одинаковые байты, на
 // какой бы системе и когда бы ни шла сборка. Документы (README.md, пример
-// настроек, core/LICENSE) копируются как есть: в клоне с autocrlf=true они в
-// CRLF, и архив из такого клона будет другим. Внутри и zip, и tar.gz файлы лежат в
+// настроек, LICENSE, core/LICENSE) копируются как есть: в клоне с
+// autocrlf=true они в CRLF, и архив из такого клона будет другим. Внутри и zip, и tar.gz файлы лежат в
 // каталоге с именем архива (распакованное не смешается с соседними файлами),
 // в порядке имён, у всех записей одно и то же время (archiveTime), владелец в
 // tar.gz — 0:0 без имён. В tar.gz у csqtt-cli и csqtt-core право на
@@ -593,6 +594,7 @@ func addDocs(root string, b build) error {
 	for dst, src := range map[string]string{
 		"csqtt-cli.example.toml": "csqtt-cli.example.toml",
 		"README.md":              "README.md",
+		"LICENSE.txt":            "LICENSE",
 		"LICENSE-core.txt":       filepath.Join("core", "LICENSE"),
 	} {
 		if err := script.CopyFile(filepath.Join(root, src), filepath.Join(b.Dir, dst)); err != nil {

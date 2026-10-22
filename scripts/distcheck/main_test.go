@@ -127,6 +127,7 @@ func TestZipComposition(t *testing.T) {
 		{"без wintun.dll и с файлом вне каталога", append(zipNames("r_windows/", "wintun.dll"), "stray.txt"), true},
 		{"без csqtt-core.exe", zipNames("r_windows/", "csqtt-core.exe"), true},
 		{"без LICENSE-core.txt", zipNames("r_windows/", "LICENSE-core.txt"), true},
+		{"без LICENSE.txt", zipNames("r_windows/", "LICENSE.txt"), true},
 	} {
 		writeZip(t, path, c.names...)
 		ch := &checker{}

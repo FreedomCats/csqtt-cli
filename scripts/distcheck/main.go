@@ -13,7 +13,7 @@
 //     (с «\» архив на Linux распакуется в файлы с обратными слэшами в именах);
 //     есть csqtt-cli.exe, csqtt-core.exe, wintun.dll, wintun-LICENSE.txt и
 //     документы (THIRD_PARTY_NOTICES.txt, csqtt-cli.example.toml, README.md,
-//     LICENSE-core.txt); на Windows csqtt-cli.exe из распакованного архива
+//     LICENSE.txt, LICENSE-core.txt); на Windows csqtt-cli.exe из распакованного архива
 //     запускается (`csqtt-cli.exe version`);
 //   - tar.gz: все записи — внутри каталога с именем архива; есть csqtt-cli,
 //     csqtt-core и те же документы, у csqtt-cli и csqtt-core — право на

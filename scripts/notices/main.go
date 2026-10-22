@@ -43,10 +43,11 @@
 // через человека, а не тихо уехать в релиз. Текст лицензии там, где его нет в
 // исходниках, не придумывается.
 //
-// Ядро CSQTT само по себе (PolyForm Noncommercial) сюда не входит: его
-// лицензия лежит в архиве отдельным файлом LICENSE-core.txt. wintun.dll —
-// тоже: её лицензия — wintun-LICENSE.txt (scripts/internal/wintun). В
-// уведомлениях — ссылки на оба файла.
+// Собственный код csqtt-cli (MIT) и ядро CSQTT само по себе (PolyForm
+// Noncommercial) сюда не входят: их лицензии лежат в архиве отдельными
+// файлами LICENSE.txt и LICENSE-core.txt. wintun.dll — тоже: её лицензия —
+// wintun-LICENSE.txt (scripts/internal/wintun). В уведомлениях — ссылки на
+// эти файлы.
 //
 // Путей машины в файле нет: только имена, версии и тексты лицензий.
 // Файл пишется в UTF-8 без BOM; для Windows — с переводами строк CRLF.
@@ -625,6 +626,8 @@ func render(goSections, rustSections []section, goos, goarch, target string) str
 	line("по Cargo.lock для этой цели и с запасом: в нём могут быть и crates, код")
 	line("которых в csqtt-core не вошёл.")
 	line("")
+	line(fmt.Sprintf("Собственный код csqtt-cli%s распространяется под лицензией MIT —", exe))
+	line("в файле LICENSE.txt рядом.")
 	line("Ядро CSQTT распространяется под PolyForm Noncommercial 1.0.0; текст и")
 	line("обязательные уведомления его автора — в файле LICENSE-core.txt рядом.")
 	line("Поэтому сборка целиком — некоммерческая.")

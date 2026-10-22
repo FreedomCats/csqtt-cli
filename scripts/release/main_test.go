@@ -120,7 +120,7 @@ func TestTarGzReproducible(t *testing.T) {
 		}
 	}
 	want := []string{name + "/", name + "/csqtt-cli", name + "/csqtt-cli.example.toml", name + "/csqtt-core",
-		name + "/LICENSE-core.txt", name + "/README.md", name + "/THIRD_PARTY_NOTICES.txt"}
+		name + "/LICENSE-core.txt", name + "/LICENSE.txt", name + "/README.md", name + "/THIRD_PARTY_NOTICES.txt"}
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("записи %v, ожидались %v", got, want)
 	}
@@ -153,7 +153,7 @@ func TestZipReproducible(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{"csqtt-cli.example.toml", "csqtt-cli.exe", "csqtt-core.exe", "LICENSE-core.txt",
-		"README.md", "THIRD_PARTY_NOTICES.txt", "wintun-LICENSE.txt", "wintun.dll"}
+		"LICENSE.txt", "README.md", "THIRD_PARTY_NOTICES.txt", "wintun-LICENSE.txt", "wintun.dll"}
 	if len(z.File) != len(want) {
 		t.Fatalf("записей %d, ожидалось %d", len(z.File), len(want))
 	}
