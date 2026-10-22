@@ -66,10 +66,16 @@ func connectCommand() *command {
 требует: трафик отдаётся через локальный SOCKS5, и через туннель ходят
 программы, настроенные на этот прокси.
 
+В режиме auto_js (vk_hash_mode = "auto_js" в профиле) хеши не нужны: звонок
+VK создаёт ядро от имени аккаунта, в который вошли командой ` + app.Name + ` vk login.
+При остановке и перед каждым переподключением звонок завершается.
+
 Ход подключения печатается строками в stdout, под ними в терминале — строка
 состояния: воркеры, трафик, скорость, аптайм. Капча VK открывается в окне
 браузера, а нет окна — решается вручную, вопросы уходят в stderr. Первый
-Ctrl+C останавливает туннель, второй убивает процесс.
+Ctrl+C останавливает туннель. Второй, пока ядро ещё останавливается, убивает
+ядро, не дожидаясь его уборки (в auto_js звонок тогда может остаться), а
+следующий — сам ` + app.Name + `.
 
 Недоступный звонок исключается из подключения, но профиль не меняется:
 заменить хеши — ` + app.Name + ` profile set <профиль> -hashes.`,
@@ -160,6 +166,13 @@ func (e *env) planConnect(f connectFlags) (*connectPlan, error) {
 		return nil, err
 	}
 
+	// Вход VK — до прав root: без него подключения не будет и под sudo, а
+	// входят без sudo.
+	if p.AutoJS() && !file.VK.LoggedIn() {
+		return nil, fmt.Errorf("профиль %s в режиме auto_js: звонок VK создаётся от имени вашего аккаунта, "+
+			"а входа в VK нет — войдите: %s vk login", p.Name, app.Name)
+	}
+
 	mode := strings.TrimSpace(f.mode)
 	if !f.modeNamed {
 		mode = config.EffectiveDatapath(p.Datapath)
@@ -194,12 +207,19 @@ func (e *env) planConnect(f connectFlags) (*connectPlan, error) {
 	if cfg.Password, err = store.Get(p.PasswordRef); err != nil {
 		return nil, fmt.Errorf("пароль профиля %s: %w", p.Name, err)
 	}
-	raw, err := store.Get(p.VkHashesRef)
-	if err != nil {
-		return nil, fmt.Errorf("хеши профиля %s: %w", p.Name, err)
-	}
-	if cfg.Hashes = config.ParseHashes(raw); len(cfg.Hashes) == 0 {
-		return nil, fmt.Errorf("в профиле %s нет хешей звонков VK: %s profile set %s -hashes", p.Name, app.Name, p.Name)
+	if p.AutoJS() {
+		// Хешей в auto_js не нужно, даже если они в профиле остались.
+		if cfg.VKToken, err = vkToken(store, file.VK); err != nil {
+			return nil, err
+		}
+	} else {
+		raw, err := store.Get(p.VkHashesRef)
+		if err != nil {
+			return nil, fmt.Errorf("хеши профиля %s: %w", p.Name, err)
+		}
+		if cfg.Hashes = config.ParseHashes(raw); len(cfg.Hashes) == 0 {
+			return nil, fmt.Errorf("в профиле %s нет хешей звонков VK: %s profile set %s -hashes", p.Name, app.Name, p.Name)
+		}
 	}
 
 	corePath, err := e.findCore()
@@ -214,6 +234,19 @@ func (e *env) planConnect(f connectFlags) (*connectPlan, error) {
 		plan.killSwitchOff = "kill_switch = false в профиле"
 	}
 	return plan, nil
+}
+
+// vkToken читает токен входа VK для auto_js. Не читается или пуст — ошибка
+// с подсказкой войти заново; самого токена в ней нет.
+func vkToken(store config.SecretStore, vk config.VKSection) (string, error) {
+	token, err := store.Get(vk.TokenRef)
+	switch {
+	case err != nil:
+		return "", fmt.Errorf("токен входа VK не читается: %w; если он потерян — войдите заново: %s vk login", err, app.Name)
+	case strings.TrimSpace(token) == "":
+		return "", fmt.Errorf("токен входа VK пуст — войдите заново: %s vk login", app.Name)
+	}
+	return strings.TrimSpace(token), nil
 }
 
 // isRoot — запущен ли csqtt-cli с правами root, на Windows — администратора
@@ -286,7 +319,7 @@ func (plan *connectPlan) run(ctx context.Context, e *env, verbose bool) error {
 		out.enableStatus(width)
 	}
 	out.setHashes(cfg.Hashes)
-	workers := coreproc.NormalizeWorkers(cfg.Workers, len(cfg.Hashes))
+	workers := cfg.NormalizedWorkers()
 	out.header(workers)
 
 	var dp *sessionDatapath
@@ -336,9 +369,17 @@ func (plan *connectPlan) run(ctx context.Context, e *env, verbose bool) error {
 	out.setWorkers(tunnel.Workers)
 	out.setConnectedNote(dp.note)
 
-	out.line("профиль %s: сервер %s, хешей %d, воркеров %d, %s",
-		p.Name, cfg.Peer, len(cfg.Hashes), workers, dp.describe)
-	if workers < cfg.Workers {
+	calls := fmt.Sprintf("хешей %d", len(cfg.Hashes))
+	if cfg.AutoJS() {
+		calls = "звонок VK создаёт ядро (auto_js)"
+	}
+	out.line("профиль %s: сервер %s, %s, воркеров %d, %s", p.Name, cfg.Peer, calls, workers, dp.describe)
+	switch {
+	case workers >= cfg.Workers:
+	case cfg.AutoJS():
+		out.line("предупреждение: воркеров в профиле %d, а ядро запустит %d (в auto_js не больше %d)",
+			cfg.Workers, workers, coreproc.MaxWorkersAutoJS)
+	default:
 		out.line("предупреждение: воркеров в профиле %d, а на %d хеш(ах) ядро запустит %d (не больше 27 на хеш)",
 			cfg.Workers, len(cfg.Hashes), workers)
 	}
@@ -410,9 +451,17 @@ func explainConnectError(err error, profile string, dead []int) error {
 	var server *supervisor.ServerError
 	var exhausted *supervisor.HashesExhaustedError
 	var startup *supervisor.StartupError
+	var token *supervisor.TokenRejectedError
+	var vk *supervisor.VKError
 	switch {
 	case err == nil:
 		return nil
+
+	case errors.As(err, &token):
+		return fmt.Errorf("%w\n  токен отозван, просрочен или не тот — войдите заново: %s vk login", err, app.Name)
+
+	case errors.As(err, &vk):
+		return fmt.Errorf("%w\n  попробуйте позже, а если повторяется — войдите заново: %s vk login", err, app.Name)
 
 	case errors.As(err, &exhausted):
 		which := ""
@@ -426,9 +475,24 @@ func explainConnectError(err error, profile string, dead []int) error {
 		return fmt.Errorf("%w\n  %s", err, rejectHint(server.Message, profile))
 
 	case errors.As(err, &startup):
-		return fmt.Errorf("%w\n  ядро %s должно быть из той же сборки, что и %s", err, coreName, app.Name)
+		return fmt.Errorf("%w%s", err, startupHint(startup.Fatal))
 	}
 	return err
+}
+
+// startupHint — подсказка к выходу ядра до PROCESS. О сборке — только когда
+// ядро не приняло то, что ему дала оболочка, или причины в журнале нет
+// (ошибка разбора аргументов, падение): в режиме с хешами Fatal не
+// разбирается и всегда nil. В auto_js ответ VK не того вида — не сборка
+// виновата; имя сервера ядро называет само.
+func startupHint(fatal *coreproc.FatalError) string {
+	switch {
+	case fatal == nil || fatal.Kind == coreproc.FatalClient:
+		return fmt.Sprintf("\n  ядро %s должно быть из той же сборки, что и %s", coreName, app.Name)
+	case fatal.Kind == coreproc.FatalOther:
+		return "\n  VK ответил не так, как ждёт ядро, создавая звонок; попробуйте позже"
+	}
+	return ""
 }
 
 // rejectHint — что делать, когда сервер отказал. Причину отказа сервера

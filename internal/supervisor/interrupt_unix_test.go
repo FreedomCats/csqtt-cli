@@ -51,3 +51,40 @@ func TestInterruptKeepsIgnoredHangup(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 	}
 }
+
+// Второй Ctrl+C, пока туннель останавливается (OnAbort), не убивает процесс,
+// а прерывает остановку. Тест сам подписан на SIGINT: сломанный разбор дал
+// бы провал, а не смерть процесса тестов.
+func TestInterruptSecondSignalAborts(t *testing.T) {
+	guard := make(chan os.Signal, 4)
+	signal.Notify(guard, os.Interrupt)
+	defer signal.Stop(guard)
+
+	ctx, stop := Interrupt(context.Background())
+	defer stop()
+	aborted := make(chan struct{})
+	release := OnAbort(ctx, func() { close(aborted) })
+	defer release()
+
+	if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("первый Ctrl+C не остановил контекст")
+	}
+	select {
+	case <-aborted:
+		t.Fatal("первый Ctrl+C прервал остановку")
+	default:
+	}
+	if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-aborted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("второй Ctrl+C не прервал остановку")
+	}
+}

@@ -308,13 +308,19 @@ func TestParseFatal(t *testing.T) {
 		{"[ФАТАЛ] system.getInfo: чтение HTTP-ответа: error decoding response body", FatalError{Kind: FatalNetwork}, false},
 		{"[ФАТАЛ] auth.anonymLogin: некорректный JSON-ответ: expected value at line 1 column 1", FatalError{Kind: FatalNetwork}, false},
 		{"[ФАТАЛ] vchat.startConversation: слишком большой HTTP-ответ", FatalError{Kind: FatalNetwork}, false},
-		{"[ФАТАЛ] ошибка разбора пира: пустой DNS-ответ для пира", FatalError{Kind: FatalNetwork}, false},
-		// Наше и прочее.
-		{"[ФАТАЛ] тайм-аут передачи данных Auto JS: deadline has elapsed", FatalError{Kind: FatalOther}, false},
+		// Имя сервера — до VK, не сеть до VK.
+		{"[ФАТАЛ] ошибка разбора пира: пустой DNS-ответ для пира", FatalError{Kind: FatalPeer}, false},
+		// То, что ядру дала оболочка.
+		{"[ФАТАЛ] тайм-аут передачи данных Auto JS: deadline has elapsed", FatalError{Kind: FatalClient}, false},
+		{"[ФАТАЛ] некорректные данные Auto JS: missing field `token`", FatalError{Kind: FatalClient}, false},
+		{"[ФАТАЛ] слишком большие данные Auto JS", FatalError{Kind: FatalClient}, false},
+		{"[ФАТАЛ] [П3] -bind-if 7: нет интерфейса с таким индексом", FatalError{Kind: FatalClient}, false},
+		{"[ФАТАЛ] [КЛИЕНТ] Нужен -password: WRAP ключ выводится из пароля подключения", FatalError{Kind: FatalClient}, false},
+		{"[ФАТАЛ] [КЛИЕНТ] Первая строка stdin — не SECRETS:", FatalError{Kind: FatalClient}, false},
+		// Прочее.
 		{"[ФАТАЛ] VK access token отсутствует", FatalError{Kind: FatalOther}, false},
-		{"[ФАТАЛ] [П3] -bind-if 7: нет интерфейса с таким индексом", FatalError{Kind: FatalOther}, false},
 		{"[ФАТАЛ] небезопасный api_base_url: host=example.com, path=/", FatalError{Kind: FatalOther}, false},
-		{"[ФАТАЛ] [КЛИЕНТ] Нужен -password: WRAP ключ выводится из пароля подключения", FatalError{Kind: FatalOther}, false},
+		{"[ФАТАЛ] messages.getCallToken: нет response", FatalError{Kind: FatalOther}, false},
 	}
 	for _, c := range cases {
 		got, ok := ParseFatal(c.line)
@@ -375,10 +381,20 @@ func TestAutoJSStringsInCore(t *testing.T) {
 		"main.rs": {
 			`crate::log_error!("[ФАТАЛ] {failure}")`,
 			`.context("ошибка разбора пира")`,
+			"let peer = resolve_peer(&arguments.peer).await?;",
+			`.context("тайм-аут передачи данных Auto JS")?`,
+			`.context("чтение данных Auto JS")?`,
+			`.context("неверный формат данных Auto JS")?`,
+			`bail!("слишком большие данные Auto JS")`,
+			`.context("повреждены данные Auto JS")?`,
+			`.context("некорректные данные Auto JS")?`,
+			`bail!("[КЛИЕНТ] Нужны -peer и хеши VK")`,
 			`.strip_prefix("VK_JS_BOOTSTRAP:")`,
 			`"FINISH_VK_CALLS" => finish_js_calls.store(true`,
 			`line != "FINISH_VK_CALLS"`,
 		},
+		"secrets_stdin.rs": {`bail!("[КЛИЕНТ] stdin закрыт до строки SECRETS")`},
+		"bind_if.rs":       {`anyhow!("[П3] -bind-if {index}: {}"`},
 		"vk_js_calls.rs": {
 			`bail!("API {code}: {message}")`,
 			`.context("HTTP-запрос")`,
@@ -674,4 +690,37 @@ func TestNoBootstrapWithoutAutoJS(t *testing.T) {
 	}) {
 		t.Errorf("журнал = %q", logs)
 	}
+}
+
+// Kill прерывает идущую остановку: ядро, которое создаёт звонок вечно, убито
+// сразу, а не через StopProcessTimeoutAutoJS, и звонок назван оставшимся.
+// Вышедшее ядро Kill не трогает.
+func TestKillInterruptsStop(t *testing.T) {
+	p := startAutoJS(t, "CSQTT_FAKE_HANG=1")
+	_, _, drained := collect(p, func(Message) bool { return false })
+	stopped := make(chan error, 1)
+	go func() { stopped <- p.StopFinishingCalls() }()
+	time.Sleep(300 * time.Millisecond)
+	select {
+	case err := <-stopped:
+		t.Fatalf("остановка кончилась до Kill: %v", err)
+	default:
+	}
+	start := time.Now()
+	p.Kill()
+	var err error
+	select {
+	case err = <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("остановка не вернулась после Kill")
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("после Kill остановка шла ещё %v", d)
+	}
+	var left *CallLeftError
+	if !errors.As(err, &left) || !left.Killed {
+		t.Errorf("StopFinishingCalls = %v, want *CallLeftError с Killed", err)
+	}
+	waitFor(t, drained, "закрытие Messages")
+	p.Kill()
 }

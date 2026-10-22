@@ -81,6 +81,11 @@ func runHashesCheck(ctx context.Context, e *env, args []string) error {
 	if err != nil {
 		return err
 	}
+	if p.AutoJS() {
+		return fmt.Errorf("профиль %s в режиме auto_js: звонок VK создаёт ядро при подключении, и проверять "+
+			"нечего — хеши в этом режиме не используются (вернуть хеши: %s profile set %s -vk-hash-mode manual)",
+			p.Name, app.Name, p.Name)
+	}
 	raw, err := e.secretsFor(path).Get(p.VkHashesRef)
 	if err != nil {
 		return fmt.Errorf("хеши профиля %s: %w", p.Name, err)

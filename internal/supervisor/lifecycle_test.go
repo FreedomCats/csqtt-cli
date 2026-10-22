@@ -1028,4 +1028,28 @@ type handCore struct {
 func (c *handCore) Messages() <-chan coreproc.Message { return c.msgs }
 func (c *handCore) Send(string) error                 { return nil }
 func (c *handCore) Stop() error                       { c.once.Do(func() { close(c.stopped) }); return nil }
+func (c *handCore) StopFinishingCalls() error         { return c.Stop() }
+func (c *handCore) Kill()                             {}
 func (c *handCore) Wait() error                       { return nil }
+
+// OnAbort без WithAbort выше по контексту ничего не делает, а снятый — больше
+// не зовётся.
+func TestOnAbort(t *testing.T) {
+	OnAbort(context.Background(), func() { t.Error("позван без WithAbort") })()
+	if hasAbort(context.Background()) {
+		t.Error("hasAbort без WithAbort")
+	}
+	ctx, abort := WithAbort(context.Background())
+	if abort() {
+		t.Error("abort без OnAbort: прерывать нечего")
+	}
+	called := 0
+	release := OnAbort(ctx, func() { called++ })
+	if !abort() || called != 1 {
+		t.Errorf("abort: позван %d раз", called)
+	}
+	release()
+	if abort() || called != 1 {
+		t.Errorf("abort после снятия: позван %d раз", called)
+	}
+}

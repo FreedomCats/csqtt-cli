@@ -16,15 +16,22 @@ import (
 // stdin — канал, в который тест пишет ответы по ходу.
 func menuSession(t *testing.T) (in *os.File, out, errOut *syncBuffer, done chan int) {
 	t.Helper()
+	te := newMenuEnv(t)
+	socksHome(t, te)
+	te.core = "connected"
+	return menuSessionWith(t, te)
+}
+
+// menuSessionWith — menuSession с заранее собранным окружением: профиль и
+// режим поддельного ядра задал тест.
+func menuSessionWith(t *testing.T, te *testEnv) (in *os.File, out, errOut *syncBuffer, done chan int) {
+	t.Helper()
 	// Тест сам подписан на сигналы, чтобы без обработчика меню они не
 	// убили процесс тестов, а дали понятный провал.
 	guard := make(chan os.Signal, 1)
 	signal.Notify(guard, os.Interrupt, syscall.SIGHUP)
 	t.Cleanup(func() { signal.Stop(guard) })
 
-	te := newMenuEnv(t)
-	socksHome(t, te)
-	te.core = "connected"
 	t.Setenv(fakeCoreEnv, te.core)
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -82,6 +89,48 @@ func TestMenuInterruptReturnsToMenu(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "До свидания") {
 		t.Errorf("меню закрылось не по выбору:\n%s", out.String())
+	}
+}
+
+// Второй Ctrl+C, пока ядро не выходит (в auto_js оно ещё создаёт звонок или
+// ждёт VK), убивает ядро, а не меню: туннель снимается, о звонке сказано, и
+// меню возвращается. Третий Ctrl+C в меню закрыл бы его — как и раньше.
+func TestMenuSecondInterruptKillsCore(t *testing.T) {
+	te := newMenuEnv(t)
+	autoJSHome(t, te, true)
+	te.core = "autojs-hold"
+	in, out, errOut, done := menuSessionWith(t, te)
+
+	if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, out, errOut, "завершаем звонок VK")
+	time.Sleep(200 * time.Millisecond)
+	if strings.Contains(out.String(), "остановлено") {
+		t.Fatalf("ядро вышло по STOP — проверять нечего:\n%s", out.String())
+	}
+	if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, out, errOut, "остановлено")
+	deadline := time.Now().Add(10 * time.Second)
+	for strings.Count(out.String(), "1. Подключиться") < 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("меню не вернулось:\n%s\nstderr:\n%s", out.String(), errOut.String())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	for _, want := range []string{"Ctrl+C ещё раз", "мог остаться в аккаунте"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("нет %q:\n%s", want, out.String())
+		}
+	}
+
+	if _, err := in.WriteString("0\n"); err != nil {
+		t.Fatal(err)
+	}
+	if code := waitExit(t, done, out, errOut); code != exitOK {
+		t.Errorf("код %d, stderr:\n%s", code, errOut.String())
 	}
 }
 

@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"strings"
@@ -71,6 +72,8 @@ func (e exitError) Error() string { return fmt.Sprintf("exit status %d", int(e))
 //	"wait <префикс>"   — ждать команду в stdin с этим префиксом;
 //	"on stop"          — ждать Stop; остаток записи ядро доигрывает уже
 //	                     остановленным, как настоящее, закрывающее сессии;
+//	"hold"             — не выходить и по Stop, пока не убьют (Kill): так
+//	                     ядро в auto_js создаёт звонок или застряло в уборке;
 //	"exit <код>"       — выйти самому, 0 — без ошибки.
 //
 // Кончилась запись — ядро живёт до Stop, как настоящее: тогда шлёт STOPPED и
@@ -82,12 +85,19 @@ type fakeCore struct {
 
 	stopOnce sync.Once
 	stopReq  chan struct{}
+	killOnce sync.Once
+	killReq  chan struct{}
 	done     chan struct{}
 	err      error
 
-	mu      sync.Mutex
-	sent    []string
-	stopped bool // звали Stop
+	mu        sync.Mutex
+	sent      []string
+	stopped   bool // звали Stop или StopFinishingCalls
+	finishing bool // звали StopFinishingCalls
+	killed    bool // звали Kill
+	// stopErr — что вернуть из остановки вместо ошибки выхода: так
+	// coreproc сообщает, что звонок мог остаться (*coreproc.CallLeftError).
+	stopErr error
 }
 
 func newFakeCore(cfg coreproc.Config, script []string) *fakeCore {
@@ -96,6 +106,7 @@ func newFakeCore(cfg coreproc.Config, script []string) *fakeCore {
 		msgs:    make(chan coreproc.Message),
 		cmds:    make(chan string, 16),
 		stopReq: make(chan struct{}),
+		killReq: make(chan struct{}),
 		done:    make(chan struct{}),
 	}
 	go c.play(script)
@@ -111,6 +122,11 @@ func (c *fakeCore) play(script []string) {
 			<-c.stopReq
 			stopped = true
 			continue
+		}
+		if step == "hold" {
+			<-c.killReq
+			c.err = errors.New("signal: killed")
+			return
 		}
 		if stopped {
 			c.msgs <- coreproc.ParseLine(step)
@@ -170,12 +186,33 @@ func (c *fakeCore) Send(cmd string) error {
 	return nil
 }
 
-func (c *fakeCore) Stop() error {
+func (c *fakeCore) Stop() error { return c.stop(false) }
+
+func (c *fakeCore) StopFinishingCalls() error { return c.stop(true) }
+
+func (c *fakeCore) stop(finish bool) error {
 	c.mu.Lock()
 	c.stopped = true
+	c.finishing = c.finishing || finish
 	c.mu.Unlock()
 	c.stopOnce.Do(func() { close(c.stopReq) })
-	return c.Wait()
+	err := c.Wait()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	switch {
+	case c.killed && c.cfg.AutoJS():
+		return &coreproc.CallLeftError{Killed: true, Err: err}
+	case c.stopErr != nil:
+		return c.stopErr
+	}
+	return err
+}
+
+func (c *fakeCore) Kill() {
+	c.mu.Lock()
+	c.killed = true
+	c.mu.Unlock()
+	c.killOnce.Do(func() { close(c.killReq) })
 }
 
 func (c *fakeCore) Wait() error {
@@ -187,6 +224,24 @@ func (c *fakeCore) wasStopped() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.stopped
+}
+
+// stopKind — как ядро останавливали: "" — никак, "stop" — Stop,
+// "finish" — StopFinishingCalls; убитое — с припиской "+kill".
+func (c *fakeCore) stopKind() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	kind := ""
+	switch {
+	case c.finishing:
+		kind = "finish"
+	case c.stopped:
+		kind = "stop"
+	}
+	if c.killed {
+		kind += "+kill"
+	}
+	return kind
 }
 
 func (c *fakeCore) commands() []string {
@@ -310,6 +365,8 @@ type harness struct {
 	dp     *fakeDatapath
 	ctx    context.Context
 	cancel context.CancelFunc
+	// abort — второй Ctrl+C (WithAbort): прервать идущую остановку.
+	abort func() bool
 
 	transitions chan Transition
 
@@ -334,10 +391,11 @@ func newHarness(t *testing.T, opts Options, scripts ...[]string) *harness {
 		scripts:     scripts,
 	}
 	h.ctx, h.cancel = context.WithCancel(context.Background())
+	h.ctx, h.abort = WithAbort(h.ctx)
 	t.Cleanup(h.cancel)
 
 	opts.CorePath = "csqtt-core"
-	if opts.Config.Hashes == nil {
+	if opts.Config.Hashes == nil && !opts.Config.AutoJS() {
 		opts.Config.Hashes = []string{"hash-one-0123456789"}
 	}
 	opts.Config.Peer = "203.0.113.10:46000"

@@ -63,6 +63,9 @@ type Process struct {
 	// call — что ядро в auto_js сказало о созданном звонке.
 	callMu sync.Mutex
 	call   callState
+	// killed — ядро убито Kill: остановка не дождалась уборки.
+	killMu sync.Mutex
+	killed bool
 
 	done chan struct{}
 	err  error
@@ -353,6 +356,25 @@ func (p *Process) stopAutoJS(finish bool, processTimeout, cleanupTimeout time.Du
 	}
 }
 
+// Kill убивает ядро сразу, не дожидаясь уборки, — когда ждать остановку
+// человек не хочет (второй Ctrl+C): в auto_js она длится до
+// StopProcessTimeoutAutoJS + StopCleanupTimeoutAutoJS. Идущая остановка
+// (Stop, StopFinishingCalls) тогда возвращается сразу, в auto_js — с
+// *CallLeftError, если ядро не успело подтвердить уборку звонка. Вышедшее
+// ядро Kill не трогает.
+func (p *Process) Kill() {
+	p.killMu.Lock()
+	defer p.killMu.Unlock()
+	select {
+	case <-p.done:
+		return
+	default:
+	}
+	if p.cmd.Process.Kill() == nil {
+		p.killed = true
+	}
+}
+
 // kill убивает ядро в auto_js, не дождавшись уборки.
 func (p *Process) kill(finish bool) error {
 	// Ядро уже могло выйти само — тогда Kill вернёт ошибку, и она не важна.
@@ -364,10 +386,17 @@ func (p *Process) kill(finish bool) error {
 // остаться, — она внутри *CallLeftError.
 func (p *Process) stopped(finish, killed bool) error {
 	err := p.Wait()
+	// Kill держит замок, пока шлёт сигнал: ядро, убитое им, выходит не
+	// раньше, и отметка к этому месту уже стоит.
+	p.killMu.Lock()
+	killed = killed || p.killed
+	p.killMu.Unlock()
 	p.callMu.Lock()
 	unclean := p.call.unclean(finish)
+	confirmed := p.call.confirmed(finish)
 	p.callMu.Unlock()
-	if killed || unclean {
+	// Убитое ядро, успевшее подтвердить уборку, звонка не оставило.
+	if killed && !confirmed || unclean {
 		return &CallLeftError{Killed: killed, Err: err}
 	}
 	return err

@@ -47,7 +47,8 @@ func menuCommand() *command {
 socks.
 
 Ctrl+C во время подключения останавливает туннель и возвращает в меню,
-в самом меню — закрывает его.
+в самом меню — закрывает его. Второй Ctrl+C, пока ядро ещё
+останавливается, убивает ядро, не дожидаясь его уборки.
 
 С -connect меню не показывается: сразу подключение к профилю, а если ссылки
 на звонки перестали работать — вопрос о новых. После остановки — выход. Так
@@ -140,7 +141,7 @@ func (m *menu) loop(ctx context.Context) error {
 		}
 
 		name := m.selected(file)
-		items := m.items(name)
+		items := m.items(file, name)
 		m.show(file, name, items)
 
 		choice, err := m.choose(ctx, len(items))
@@ -209,18 +210,25 @@ func (m *menu) selected(file *config.File) string {
 
 // items — пункты меню. Номера постоянные, чтобы подсказка «пункт 1»
 // оставалась верной при любом числе профилей.
-func (m *menu) items(name string) []menuItem {
+//
+// Профилю в auto_js ссылки на звонки не нужны — звонок создаёт ядро, — и
+// пункта о них нет. Подключение — первым, как у всех.
+func (m *menu) items(file *config.File, name string) []menuItem {
 	if name == "" {
 		return []menuItem{{label: "Создать профиль (по ссылке csqtt:// или вручную)", run: m.create}}
 	}
-	return []menuItem{
+	items := []menuItem{
 		{label: fmt.Sprintf("Подключиться (%s)", name), run: m.connect},
 		{label: "Выбрать другой профиль", run: m.pick},
 		{label: "Создать новый профиль (по ссылке csqtt:// или вручную)", run: m.create},
-		{label: "Обновить ссылки на звонки VK", run: m.updateHashes},
-		{label: "Заменить пароль или адрес сервера", run: m.replacePasswordOrPeer},
-		{label: fmt.Sprintf("Удалить профиль %s", name), run: m.remove},
 	}
+	if p := file.Profiles[name]; p == nil || !p.AutoJS() {
+		items = append(items, menuItem{label: "Обновить ссылки на звонки VK", run: m.updateHashes})
+	}
+	return append(items,
+		menuItem{label: "Заменить пароль или адрес сервера", run: m.replacePasswordOrPeer},
+		menuItem{label: fmt.Sprintf("Удалить профиль %s", name), run: m.remove},
+	)
 }
 
 func (m *menu) show(file *config.File, name string, items []menuItem) {
@@ -244,8 +252,11 @@ func (m *menu) show(file *config.File, name string, items []menuItem) {
 				marker = ">"
 			}
 			note := ""
+			if p.AutoJS() {
+				note = "  звонок VK — auto_js"
+			}
 			if isDefaultProfile(file, n) {
-				note = "  (по умолчанию)"
+				note += "  (по умолчанию)"
 			}
 			fmt.Fprintf(w, "  %s %-*s  %-*s  %s%s\n", marker, width, n, peerWidth, config.PeerWithPort(p.Peer),
 				modeText(p.Datapath), note)
@@ -514,12 +525,16 @@ func (m *menu) remove(ctx context.Context, name string) error {
 // туннель снимается, и человек возвращается в меню. SIGTERM и SIGHUP тоже
 // сначала дают снять туннель, но потом меню закрывается: возвращаться
 // некуда. Вне подключения любой из них закрывает меню сразу. Второй сигнал
-// во время остановки — выход сразу, как у csqtt-cli connect: ждать зависшую
-// уборку человек не обязан.
+// во время остановки, как у csqtt-cli connect, убивает ядро, не дожидаясь
+// его уборки (supervisor.WithAbort), а следующий — выход сразу: ждать
+// зависшую уборку человек не обязан.
 type menuSignals struct {
 	mu sync.Mutex
 	// cancel — отменить идущее подключение; nil — подключения нет.
 	cancel context.CancelFunc
+	// abort — прервать остановку идущего подключения (второй сигнал); nil —
+	// прерывать нечего.
+	abort func() bool
 	// closing — во время подключения пришёл SIGTERM или SIGHUP: после
 	// остановки туннеля меню закрывается.
 	closing bool
@@ -589,35 +604,43 @@ func (s *menuSignals) handle(sig os.Signal) {
 		s.mu.Unlock()
 		return
 	}
-	cancel := s.cancel
+	cancel, abort := s.cancel, s.abort
 	s.cancel = nil
+	if cancel == nil {
+		// Прерывают один раз: следующий сигнал — выход.
+		s.abort = nil
+	}
 	if cancel != nil && sig != os.Interrupt {
 		s.closing = true
 	}
 	s.mu.Unlock()
 
-	if cancel != nil {
+	switch {
+	case cancel != nil:
 		cancel()
-		return
+	case abort != nil && abort():
+	default:
+		s.exit()
 	}
-	s.exit()
 }
 
-// connecting заводит контекст подключения, который отменит Ctrl+C. Вторая
-// функция — подключение кончилось, Ctrl+C снова закрывает меню.
+// connecting заводит контекст подключения, который отменит Ctrl+C, а
+// второй Ctrl+C прервёт его остановку. Вторая функция — подключение
+// кончилось, Ctrl+C снова закрывает меню.
 func (m *menu) connecting(ctx context.Context) (context.Context, func()) {
 	ctx, cancel := context.WithCancel(ctx)
+	ctx, abort := supervisor.WithAbort(ctx)
 	s := m.signals
 	if s == nil {
 		return ctx, cancel
 	}
 
 	s.mu.Lock()
-	s.cancel = cancel
+	s.cancel, s.abort = cancel, abort
 	s.mu.Unlock()
 	return ctx, func() {
 		s.mu.Lock()
-		s.cancel = nil
+		s.cancel, s.abort = nil, nil
 		s.mu.Unlock()
 		cancel()
 	}

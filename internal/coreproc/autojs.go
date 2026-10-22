@@ -2,6 +2,7 @@ package coreproc
 
 import (
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -153,13 +154,23 @@ func (s callState) unclean(finish bool) bool {
 	return !s.left
 }
 
+// confirmed — ядро подтвердило уборку, которую просили: звонок завершён
+// (finish) или создатель из него вышел.
+func (s callState) confirmed(finish bool) bool {
+	if finish {
+		return s.finished
+	}
+	return s.left
+}
+
 // CallLeftError — ядро в auto_js остановлено, а уборка созданного им звонка
-// не подтверждена: ядро не вышло в срок и убито или само сказало, что звонок
-// не завершило (создатель не вышел). Звонок мог остаться в аккаунте VK, пока
-// VK не закроет его сам.
+// не подтверждена: ядро убито (не вышло в срок или Kill) или само сказало,
+// что звонок не завершило (создатель не вышел). Звонок мог остаться в
+// аккаунте VK, пока VK не закроет его сам.
 type CallLeftError struct {
-	// Killed — ядро убито по сроку. Тогда звонок мог остаться, даже если
-	// ядро о нём ещё ничего не сказало: запрос на создание мог уйти.
+	// Killed — ядро убито до того, как подтвердило уборку: по сроку или
+	// Kill. Тогда звонок мог остаться, даже если ядро о нём ещё ничего не
+	// сказало: запрос на создание мог уйти.
 	Killed bool
 	// Err — ошибка выхода ядра, как у Wait.
 	Err error
@@ -167,9 +178,9 @@ type CallLeftError struct {
 
 func (e *CallLeftError) Error() string {
 	if e.Killed {
-		return "ядро не вышло в срок и убито — созданный им звонок VK мог остаться"
+		return "ядро убито, не закончив уборку: созданный им звонок VK мог остаться в аккаунте"
 	}
-	return "ядро не подтвердило, что созданный им звонок VK закрыт, — звонок мог остаться"
+	return "ядро не подтвердило, что созданный им звонок VK закрыт: звонок мог остаться в аккаунте"
 }
 
 func (e *CallLeftError) Unwrap() error { return e.Err }
@@ -184,16 +195,22 @@ const fatalPrefix = "[ФАТАЛ] "
 type FatalKind int
 
 const (
-	// FatalOther — всё прочее: негодные аргументы или интерфейс -bind-if,
-	// ошибка в данных auto_js, ответ VK не того вида. Повтор с теми же
+	// FatalOther — всё прочее: ответ VK не того вида (нет нужного поля),
+	// нет токена, негодный адрес API из ответа VK. Повтор с теми же
 	// настройками вряд ли поможет.
 	FatalOther FatalKind = iota
-	// FatalNetwork — сеть: не разрешилось имя сервера, запрос к VK не ушёл
-	// или ответ не дочитан, HTTP-ответ не 2xx или не JSON. Повтор может
-	// помочь.
+	// FatalNetwork — сеть до VK: запрос не ушёл или ответ не дочитан,
+	// HTTP-ответ не 2xx или не JSON. Повтор может помочь.
 	FatalNetwork
 	// FatalAPI — VK или OK Calls ответили ошибкой API (FatalError.APICode).
 	FatalAPI
+	// FatalPeer — не разрешилось имя сервера CSQTT (main.rs, resolve_peer):
+	// сеть или неверное имя. Ядро ещё не ходило в VK.
+	FatalPeer
+	// FatalClient — ядро не приняло то, что ему дала оболочка: аргументы
+	// («[КЛИЕНТ] …», «[П3] …»), строки секретов или данные auto_js в stdin.
+	// Похоже на ядро не из той сборки.
+	FatalClient
 )
 
 // FatalError — причина выхода ядра из его строки «[ФАТАЛ] …». В auto_js до
@@ -237,15 +254,24 @@ var apiError = regexp.MustCompile(`(?:^|: )API ([^\s:]+): `)
 var httpStatus = regexp.MustCompile(`\bHTTP [1-5][0-9][0-9]\b`)
 
 // networkMarkers — части текста ошибок сети и HTTP ядра: запрос не ушёл,
-// ответ не дочитан или не тот (vk_js_calls.rs, post_form), не разрешилось
-// имя сервера (main.rs, resolve_peer).
+// ответ не дочитан или не тот (vk_js_calls.rs, post_form).
 var networkMarkers = []string{
 	"HTTP-запрос",
 	"чтение HTTP-ответа",
 	"слишком большой HTTP-ответ",
 	"некорректный JSON-ответ",
-	"ошибка разбора пира",
 }
+
+// peerMarker — начало ошибки разбора имени сервера (main.rs, resolve_peer).
+const peerMarker = "ошибка разбора пира"
+
+// clientPrefixes — начала ошибок аргументов и строки секретов (main.rs,
+// listen_peer.rs, secrets_stdin.rs, bind_if.rs); clientMarkers — части
+// ошибок чтения данных auto_js из stdin (main.rs, read_vk_js_bootstrap).
+var (
+	clientPrefixes = []string{"[КЛИЕНТ] ", "[П3] "}
+	clientMarkers  = []string{"данных Auto JS", "данные Auto JS"}
+)
 
 // ParseFatal разбирает строку журнала ядра «[ФАТАЛ] …»; ok = false — строка
 // не такая. Строки ядро пишет по-русски и без кодов, поэтому разбор — по
@@ -262,15 +288,15 @@ func ParseFatal(line string) (e *FatalError, ok bool) {
 		e.APICode, _ = strconv.Atoi(text[m[2]:m[3]])
 		return e, true
 	}
-	if httpStatus.MatchString(text) {
+	has := func(marker string) bool { return strings.Contains(text, marker) }
+	switch {
+	case strings.HasPrefix(text, peerMarker):
+		e.Kind = FatalPeer
+	case slices.ContainsFunc(clientPrefixes, func(p string) bool { return strings.HasPrefix(text, p) }),
+		slices.ContainsFunc(clientMarkers, has):
+		e.Kind = FatalClient
+	case httpStatus.MatchString(text), slices.ContainsFunc(networkMarkers, has):
 		e.Kind = FatalNetwork
-		return e, true
-	}
-	for _, marker := range networkMarkers {
-		if strings.Contains(text, marker) {
-			e.Kind = FatalNetwork
-			break
-		}
 	}
 	return e, true
 }

@@ -44,6 +44,12 @@ type Core interface {
 	Messages() <-chan coreproc.Message
 	Send(cmd string) error
 	Stop() error
+	// StopFinishingCalls — остановка в auto_js: созданный ядром звонок
+	// завершается, а не только покидается (§08а).
+	StopFinishingCalls() error
+	// Kill убивает ядро, не дожидаясь уборки: идущая остановка
+	// возвращается сразу.
+	Kill()
 	Wait() error
 }
 
@@ -95,7 +101,8 @@ type Options struct {
 
 	// Config — настройки ядра с паролем и хешами (config.Profile.Core и
 	// секреты). Hashes перед каждой попыткой заменяются годными, Listen и
-	// ListenPeer ставит цикл по Link, TunUDS — по TunFD.
+	// ListenPeer ставит цикл по Link, TunUDS — по TunFD. В auto_js
+	// (Config.AutoJS) хешей нет, вместо них — токен VK: звонок создаёт ядро.
 	Config coreproc.Config
 
 	// Link или TunFD — канал пакетов с ядром, ровно один из двух: Link —
@@ -173,10 +180,17 @@ func (e *ServerError) Error() string {
 // ещё ни разу не работало: негодные аргументы или ядро не той версии.
 // Перезапуск ничего не изменит. Если ядро уже доходило до PROCESS, такой выход
 // — обычная неудача попытки (сеть до PROCESS ядру тоже нужна).
+//
+// В auto_js до PROCESS ядро ещё и создаёт звонок в VK: тогда Fatal —
+// разобранная строка «[ФАТАЛ] …». Ошибки API VK сюда не попадают — это
+// *TokenRejectedError и *VKError.
 type StartupError struct {
 	Err error
 	// Log — последние строки журнала ядра: в них причина.
 	Log []string
+	// Fatal — причина из журнала ядра в auto_js; nil — строки «[ФАТАЛ]»
+	// нет или режим с хешами.
+	Fatal *coreproc.FatalError
 }
 
 func (e *StartupError) Error() string {
@@ -204,6 +218,31 @@ func (e *StartupError) retryable() error {
 		return errors.New(msg)
 	}
 	return fmt.Errorf("%s: %w", msg, e.Err)
+}
+
+// TokenRejectedError — VK отверг токен входа (auto_js): ядро вышло до
+// PROCESS с ошибкой API, по которой поможет только новый вход
+// (coreproc.FatalError.TokenRejected). Повтор не поможет, и цикл кончается на
+// любой попытке. Токена в тексте нет: VK его в ошибке не повторяет.
+type TokenRejectedError struct {
+	Fatal *coreproc.FatalError
+}
+
+func (e *TokenRejectedError) Error() string {
+	return "VK не принял токен входа: " + e.Fatal.Text
+}
+
+// VKError — VK или OK Calls ответили ошибкой API (auto_js), пока ядро до
+// PROCESS открывало сессию аккаунта или создавало звонок, и это не отказ
+// токена (тот — *TokenRejectedError). Цикл кончается на любой попытке:
+// каждая попытка — новые сессии и запросы под аккаунтом, а повтор вслепую
+// (Flood control) только добавит следов и риска для аккаунта.
+type VKError struct {
+	Fatal *coreproc.FatalError
+}
+
+func (e *VKError) Error() string {
+	return "VK отказал: " + e.Fatal.Text
 }
 
 // Tunnel — цикл подключения: ядро, datapath, автомат и политика перезапуска,
@@ -241,6 +280,12 @@ type Tunnel struct {
 	// restart — просьба о перезапуске (Restart), ещё не исполненная. Одной
 	// достаточно: перезапуск, попрошенный дважды, — всё равно один.
 	restart chan error
+
+	// abort — второй Ctrl+C (OnAbort): убить ядро, не дожидаясь уборки.
+	// abortable — контекст Run его передаёт (WithAbort), и об этом можно
+	// сказать человеку. Только горутина цикла.
+	abort     chan struct{}
+	abortable bool
 }
 
 // NewTunnel собирает цикл. Ошибку возвращает только на неполных настройках:
@@ -252,9 +297,19 @@ func NewTunnel(opts Options) (*Tunnel, error) {
 	case (opts.Link == nil) == (opts.TunFD == nil) || opts.Datapath == nil:
 		return nil, errors.New("супервизор: нужны datapath и один канал пакетов — Link или TunFD")
 	}
-	hashes := NewHashPool(opts.Config.Hashes)
-	if len(hashes.Alive()) == 0 {
-		return nil, errors.New("супервизор: нет хешей звонков")
+	// В auto_js звонок создаёт ядро, хешей нет, и пул пуст: исключать из
+	// него нечего (CALL_UNAVAILABLE в этом режиме не приходит, §08а).
+	hashes := NewHashPool(nil)
+	switch {
+	case opts.Config.AutoJS():
+		if opts.Config.VKToken == "" {
+			return nil, errors.New("супервизор: в auto_js нужен токен VK")
+		}
+	default:
+		hashes = NewHashPool(opts.Config.Hashes)
+		if len(hashes.Alive()) == 0 {
+			return nil, errors.New("супервизор: нет хешей звонков")
+		}
 	}
 	if opts.DegradedRestart <= 0 {
 		opts.DegradedRestart = DefaultDegradedRestart
@@ -270,6 +325,7 @@ func NewTunnel(opts Options) (*Tunnel, error) {
 		sleep:     sleepCtx,
 		fdTimeout: defaultFDTimeout,
 		restart:   make(chan error, 1),
+		abort:     make(chan struct{}, 1),
 	}, nil
 }
 
@@ -303,14 +359,26 @@ func (t *Tunnel) Hashes() *HashPool { return t.hashes }
 //
 // Остановка по ctx ошибкой не считается и даёт nil. Ошибка — только когда цикл
 // кончился сам: годных хешей не осталось (*HashesExhaustedError), сервер
-// отказал (*ServerError с Rejected), ядро не запускается (*StartupError и
-// ошибка запуска). Прочие отказы попытки ведут к следующей попытке.
+// отказал (*ServerError с Rejected), VK не принял токен или отказал иначе
+// (*TokenRejectedError, *VKError; auto_js), ядро не запускается
+// (*StartupError и ошибка запуска). Прочие
+// отказы попытки ведут к следующей попытке.
+//
+// Если ctx получен от WithAbort (Interrupt), второй Ctrl+C во время
+// остановки убивает ядро, не дожидаясь уборки (OnAbort).
 //
 // К возврату ядро вышло, горутины цикла закончились, автомат стоит в
 // StateStopping.
 func (t *Tunnel) Run(ctx context.Context) error {
 	var final error
 	defer func() { t.report(t.machine.Stop(final)) }()
+	t.abortable = hasAbort(ctx)
+	defer OnAbort(ctx, func() {
+		select {
+		case t.abort <- struct{}{}:
+		default:
+		}
+	})()
 
 	for {
 		if ctx.Err() != nil {
@@ -504,6 +572,7 @@ type attempt struct {
 
 	started  bool   // пришёл PROCESS: ядро разобрало аргументы и работает
 	stopping bool   // ядру послан Stop
+	byUser   bool   // Stop — по отмене Run (Ctrl+C)
 	res      result // почему послан Stop
 
 	dpUp bool             // datapath поднят в этой попытке
@@ -542,6 +611,7 @@ func (a *attempt) run(cancelled <-chan struct{}) result {
 			a.fdHandedOff(err)
 		case <-cancelled:
 			cancelled = nil
+			a.byUser = true
 			a.stop(result{})
 		case reason := <-a.tunnel.restart:
 			if a.stopping {
@@ -554,6 +624,11 @@ func (a *attempt) run(cancelled <-chan struct{}) result {
 			a.stopDegradedTimer()
 			a.stop(result{err: fmt.Errorf("туннель без связи дольше %s — ядро перезапускается",
 				a.tunnel.opts.DegradedRestart)})
+		case <-a.tunnel.abort:
+			// Ждать уборку человек не хочет: ядро убивается, а остановка,
+			// если шла, возвращается сразу.
+			a.stop(result{})
+			a.core.Kill()
 		}
 	}
 
@@ -563,6 +638,11 @@ func (a *attempt) run(cancelled <-chan struct{}) result {
 		return a.res
 	case !a.started:
 		startup := &StartupError{Err: exitErr, Log: a.lastLog}
+		if a.tunnel.opts.Config.AutoJS() {
+			if res, ok := a.autoJSStartup(startup); ok {
+				return res
+			}
+		}
 		if a.tunnel.coreStarted {
 			// До PROCESS ядро уже ходит в сеть: проверяет интерфейс -bind-if и
 			// разрешает имя сервера. В новой сети, которая ещё не пропускает
@@ -575,6 +655,35 @@ func (a *attempt) run(cancelled <-chan struct{}) result {
 	default:
 		return result{err: errors.New("ядро завершилось само")}
 	}
+}
+
+// autoJSStartup — выход до PROCESS в auto_js: до него ядро открывает сессию
+// аккаунта и создаёт звонок в VK, и причину говорит строка «[ФАТАЛ] …».
+// Ошибка API VK — конец на любой попытке: отказ токена (поможет только новый
+// вход) или прочий отказ VK — каждая попытка создаёт звонок и сессии под
+// аккаунтом, и повторять их без конца нельзя. Сбой сети до VK — повтор и на
+// первой попытке: запрос до VK не дошёл, сессий нет. Прочее (имя сервера,
+// аргументы, данные auto_js, ответ VK не того вида) — как в режиме с хешами:
+// на первой попытке конец, после работавшего ядра — повтор. ok = false —
+// решает общее правило.
+func (a *attempt) autoJSStartup(startup *StartupError) (res result, ok bool) {
+	for _, line := range slices.Backward(a.lastLog) {
+		if fatal, ok := coreproc.ParseFatal(line); ok {
+			startup.Fatal = fatal
+			break
+		}
+	}
+	switch {
+	case startup.Fatal == nil:
+		return result{}, false
+	case startup.Fatal.TokenRejected():
+		return result{err: &TokenRejectedError{Fatal: startup.Fatal}, final: true}, true
+	case startup.Fatal.Kind == coreproc.FatalAPI:
+		return result{err: &VKError{Fatal: startup.Fatal}, final: true}, true
+	case startup.Fatal.Kind == coreproc.FatalNetwork:
+		return result{err: startup.retryable()}, true
+	}
+	return result{}, false
 }
 
 // handle разбирает одно сообщение ядра.
@@ -725,6 +834,11 @@ func (a *attempt) fdHandedOff(err error) {
 // туннель останавливается.
 func (a *attempt) callUnavailable(e coreproc.CallUnavailableEvent) {
 	t := a.tunnel
+	if t.opts.Config.AutoJS() {
+		// Звонок создало ядро, и исключать нечего: новая попытка создаст
+		// новый. Ядро в auto_js этого события и не шлёт (§08а).
+		return
+	}
 	if !t.hashes.Exclude(e.Hash, e.Code) {
 		return
 	}
@@ -773,15 +887,41 @@ func (a *attempt) captcha(req coreproc.CaptchaRequest) {
 // Закрывая сессии, ядро отчитывается об уходе воркеров. Это не «туннель без
 // связи», а наша же остановка: автомат с этого момента состояния не меняет
 // (Drain), таймер деградации снимается.
+//
+// В auto_js созданный ядром звонок завершается при любой остановке — и по
+// Ctrl+C, и перед следующей попыткой: та всё равно создаст новый, а
+// брошенный звонок — лишний след в аккаунте. Остановка с уборкой звонка
+// длится до autoJSStopLimit, и об этом сказано строкой. Звонок мог остаться
+// (*coreproc.CallLeftError) — тоже строка.
 func (a *attempt) stop(res result) {
 	if a.stopping {
 		return
 	}
+	t := a.tunnel
 	a.stopping, a.res = true, res
-	a.tunnel.machine.Drain()
+	t.machine.Drain()
 	a.stopDegradedTimer()
-	a.wg.Go(func() { _ = a.core.Stop() })
+	if !t.opts.Config.AutoJS() {
+		a.wg.Go(func() { _ = a.core.Stop() })
+		return
+	}
+	note := ""
+	if a.byUser && t.abortable {
+		note = "; не ждать — Ctrl+C ещё раз, но звонок тогда может остаться в аккаунте"
+	}
+	t.logf("завершаем звонок VK… (до %d с%s)", int(autoJSStopLimit/time.Second), note)
+	a.wg.Go(func() {
+		var left *coreproc.CallLeftError
+		if err := a.core.StopFinishingCalls(); errors.As(err, &left) {
+			t.logf("%v, пока VK не закроет его сам", err)
+		}
+	})
 }
+
+// autoJSStopLimit — дольше остановка ядра в auto_js не идёт: PROCESS ждётся
+// не дольше StopProcessTimeoutAutoJS с начала остановки, уборка — не дольше
+// StopCleanupTimeoutAutoJS после него.
+const autoJSStopLimit = coreproc.StopProcessTimeoutAutoJS + coreproc.StopCleanupTimeoutAutoJS
 
 // ──────────────────────────── Ctrl+C ────────────────────────────
 
@@ -796,15 +936,21 @@ func (a *attempt) stop(res result) {
 // Notify снял бы игнорирование, и connect, запущенный под nohup, умирал бы с
 // терминалом или сеансом SSH. Проверка — на момент вызова, до Notify.
 //
-// Второй Ctrl+C убивает процесс немедленно: по первому сигналу обработчик
-// снимается, и следующий уходит системе, у которой поведение по умолчанию —
-// завершить процесс. Ждать корректной остановки дважды пользователь не обязан.
-// Ядро при этом не осиротеет: его держат Job Object и Pdeathsig (coreproc).
+// Второй сигнал во время остановки туннеля (Run с этим контекстом) убивает
+// ядро, не дожидаясь его уборки (WithAbort, OnAbort): в auto_js она ждёт
+// звонок VK до 38 с. Уборка самого csqtt-cli — маршруты, DNS, kill-switch —
+// после этого идёт как обычно. Следующий сигнал, как и второй, когда
+// прерывать нечего, убивает процесс немедленно: обработчик снимается, и
+// сигнал уходит системе, у которой поведение по умолчанию — завершить
+// процесс. Ждать корректной остановки дважды пользователь не обязан. Ядро
+// при этом не осиротеет: его держат Job Object и Pdeathsig (coreproc).
 //
 // Возвращённую функцию нужно вызвать при выходе: она снимает обработчик
 // и отменяет контекст.
 func Interrupt(parent context.Context) (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(parent)
+	ctx, abort := WithAbort(ctx)
+	hook := ctx.Value(abortKey{}).(*abortHook)
 
 	signals := make(chan os.Signal, 1)
 	stopOn := []os.Signal{os.Interrupt, syscall.SIGTERM}
@@ -813,20 +959,94 @@ func Interrupt(parent context.Context) (context.Context, context.CancelFunc) {
 	}
 	signal.Notify(signals, stopOn...)
 
+	released := make(chan struct{})
 	go func() {
+		defer signal.Stop(signals)
 		select {
 		case <-signals:
-			signal.Stop(signals)
 			cancel()
 		case <-ctx.Done():
-			signal.Stop(signals)
+			return
+		}
+		// Прерывать нечего — второй сигнал уйдёт системе.
+		if !hook.armed() {
+			return
+		}
+		select {
+		case <-signals:
+			if !abort() {
+				// Run кончился между сигналами — прерывать уже нечего, и
+				// сигнал значит то же, что без обработчика: выход сразу. Код —
+				// 128 + SIGINT, как у оболочек.
+				os.Exit(130)
+			}
+		case <-released:
 		}
 	}()
 
+	var once sync.Once
 	return ctx, func() {
+		once.Do(func() { close(released) })
 		signal.Stop(signals)
 		cancel()
 	}
+}
+
+// abortKey — ключ контекста, в котором лежит *abortHook.
+type abortKey struct{}
+
+// abortHook — чем прервать идущую остановку (OnAbort); nil — нечем.
+type abortHook struct {
+	mu sync.Mutex
+	f  func()
+}
+
+func (h *abortHook) armed() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.f != nil
+}
+
+// WithAbort возвращает контекст, через который долгая остановка оставляет,
+// чем её прервать (OnAbort), и функцию abort для обработчика сигналов:
+// второй Ctrl+C зовёт её, а не убивает процесс сразу. abort прерывает
+// остановку и говорит, было ли что прерывать: false — обработчик поступает
+// по-старому. Так устроены Interrupt и меню.
+func WithAbort(parent context.Context) (ctx context.Context, abort func() bool) {
+	hook := &abortHook{}
+	return context.WithValue(parent, abortKey{}, hook), func() bool {
+		hook.mu.Lock()
+		f := hook.f
+		hook.mu.Unlock()
+		if f == nil {
+			return false
+		}
+		f()
+		return true
+	}
+}
+
+// OnAbort — пока не снято, abort контекста ctx (WithAbort) зовёт f. Без
+// WithAbort выше по ctx — ничего: прерывать некому.
+func OnAbort(ctx context.Context, f func()) (release func()) {
+	hook, ok := ctx.Value(abortKey{}).(*abortHook)
+	if !ok {
+		return func() {}
+	}
+	hook.mu.Lock()
+	hook.f = f
+	hook.mu.Unlock()
+	return func() {
+		hook.mu.Lock()
+		hook.f = nil
+		hook.mu.Unlock()
+	}
+}
+
+// hasAbort — у ctx есть WithAbort: второй Ctrl+C дойдёт до OnAbort.
+func hasAbort(ctx context.Context) bool {
+	_, ok := ctx.Value(abortKey{}).(*abortHook)
+	return ok
 }
 
 // sleepCtx ждёт d или отмены ctx. Возвращает false, если ждать перестали.

@@ -145,12 +145,80 @@ func fakeCore(mode string) int {
 		fmt.Fprintln(os.Stderr, "[PANIC] сеть недоступна")
 		return 1
 
+	// autojs — ядро в auto_js: второй строкой stdin — токен VK, его нет в
+	// аргументах. Журнал повторяет строку токена (так поступило бы ядро без
+	// auto_js — проверка маскировки) и начало хеша созданного звонка;
+	// туннель поднимается и работает до STOP, а с FINISH_VK_CALLS звонок
+	// завершается. autojs-hold по STOP не выходит вовсе — как ядро, которое
+	// ещё создаёт звонок или ждёт VK; autojs-rejected — VK отверг токен.
+	case "autojs", "autojs-hold", "autojs-rejected":
+		token, ok := fakeBootstrap(in)
+		if !ok || slices.ContainsFunc(os.Args, func(a string) bool { return strings.Contains(a, token) }) {
+			fmt.Fprintln(os.Stderr, "[ФАТАЛ] неверный формат данных Auto JS или токен в аргументах")
+			return 3
+		}
+		fmt.Fprintf(os.Stderr, "[ТЕСТ] аргументы ядра: %s\n", strings.Join(os.Args[1:], " "))
+		fmt.Fprintf(os.Stderr, "[STDIN] %s\n", fakeBootstrapLine)
+		fmt.Fprintln(os.Stderr, "[VK JS] Сессия Calls подтверждена")
+		if mode == "autojs-rejected" {
+			fmt.Fprintln(os.Stderr, "[ФАТАЛ] API 5: User authorization failed: invalid access_token (4).")
+			return 1
+		}
+		fmt.Fprintln(os.Stderr, "[VK JS] Звонок создан")
+		event("PROCESS", fmt.Sprintf(`{"pid":%d}`, os.Getpid()))
+		event("LISTEN", `{"port":9}`)
+		fmt.Fprintf(os.Stderr, "[КРЕД #1] Запрос (хеш: %s...)\n", fakeCallHash[:8])
+		event("PROGRESS", `{"kind":"credentials"}`)
+		event("CONFIG", `{"config":"TUNCONF:192.0.2.2:198.51.100.53"}`)
+		event("READY", `{"worker":1}`)
+		finish := false
+		for in.Scan() {
+			if in.Text() == "FINISH_VK_CALLS" {
+				finish = true
+				continue
+			}
+			if in.Text() == "STOP" {
+				break
+			}
+		}
+		if mode == "autojs-hold" {
+			select {}
+		}
+		if finish {
+			fmt.Fprintln(os.Stderr, "[VK JS] Звонки завершены 1/1")
+		} else {
+			fmt.Fprintln(os.Stderr, "[VK JS] Создатель вышел из звонков 1/1")
+		}
+		event("STOPPED", "{}")
+		return 0
+
 	// startup — ядро падает, не начав работу.
 	case "startup":
 		fmt.Fprintln(os.Stderr, "[ФАТАЛ] [КЛИЕНТ] Нужны -peer и хеши VK")
 		return 1
 	}
 	return 2
+}
+
+// fakeCallHash — хеш звонка, «созданного» поддельным ядром в auto_js.
+const fakeCallHash = "createdcallDDDDDDDDDDDDDDDDDDDDDD"
+
+// fakeBootstrapLine — строка токена, как её прочло поддельное ядро.
+var fakeBootstrapLine string
+
+// fakeBootstrap читает вторую строку stdin ядра в auto_js —
+// VK_JS_BOOTSTRAP:<base64 {"token": …}> — и возвращает токен.
+func fakeBootstrap(in *bufio.Scanner) (string, bool) {
+	if !in.Scan() {
+		return "", false
+	}
+	fakeBootstrapLine = in.Text()
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(fakeBootstrapLine, "VK_JS_BOOTSTRAP:"))
+	var data struct{ Token string }
+	if err != nil || json.Unmarshal(raw, &data) != nil || data.Token == "" {
+		return "", false
+	}
+	return data.Token, true
 }
 
 // ──────────────────────────── окружение тестов ────────────────────────────
