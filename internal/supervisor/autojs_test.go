@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -124,9 +125,9 @@ func TestAutoJSNetworkRetries(t *testing.T) {
 	}
 }
 
-// Прочие ошибки API VK до PROCESS в auto_js — тоже конец на любой попытке
-// (*VKError): каждая попытка открывает сессии под аккаунтом, и повтор вслепую
-// (Flood control) только добавит следов.
+// Прочие ошибки API VK до PROCESS в auto_js, кроме временных, — тоже конец
+// на любой попытке (*VKError): каждая попытка открывает сессии под аккаунтом,
+// и повтор вслепую (Flood control) только добавит следов.
 func TestAutoJSVKErrorFinal(t *testing.T) {
 	flood := []string{"[ФАТАЛ] vchat.startConversation: API 9: Flood control", "exit 1"}
 	for name, scripts := range map[string][][]string{
@@ -147,6 +148,90 @@ func TestAutoJSVKErrorFinal(t *testing.T) {
 				t.Errorf("попыток %d, ожидалось %d — после отказа VK повторов нет", n, len(scripts))
 			}
 		})
+	}
+}
+
+var (
+	// Временные ошибки API VK (коды 1, 6, 10): с припиской метода и без.
+	recVKUnknown  = []string{"[ФАТАЛ] API 1: Unknown error occurred", "exit 1"}
+	recVKTooMany  = []string{"[ФАТАЛ] vchat.startConversation: API 6: Too many requests per second", "exit 1"}
+	recVKInternal = []string{"[ФАТАЛ] API 10: Internal server error", "exit 1"}
+	// vkRetryDelays — паузы повторов: 2, 4, 8, 16, 32 с.
+	vkRetryDelays = []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 32 * time.Second}
+)
+
+// Временная ошибка VK до PROCESS повторяется с паузами 2, 4, 8, 16, 32 с, а
+// шестая подряд — конец (*VKError), и в тексте видно, что повторы исчерпаны.
+// Строка переподключения называет ответ VK и номер повтора.
+func TestAutoJSTransientExhausted(t *testing.T) {
+	h := newHarness(t, autoJSOptions(), recVKTooMany, recVKTooMany, recVKTooMany, recVKTooMany, recVKTooMany, recVKTooMany, recConnect)
+	err := h.result(h.run())
+	var ve *VKError
+	if !errors.As(err, &ve) || ve.Fatal.APICode != 6 || ve.Retries != 5 {
+		t.Fatalf("Run() = %v, ожидался отказ VK после повторов", err)
+	}
+	if got, want := err.Error(), "VK отказал 6 раз подряд, повторы исчерпаны: vchat.startConversation: API 6: Too many requests per second"; got != want {
+		t.Errorf("текст %q, ожидался %q", got, want)
+	}
+	if n := len(h.attempts()); n != 6 {
+		t.Errorf("попыток %d, ожидалось 6", n)
+	}
+	if got := h.sleeps(); !slices.Equal(got, vkRetryDelays) {
+		t.Errorf("задержки %v, ожидались %v", got, vkRetryDelays)
+	}
+	recs := h.transitionsTo(StateReconnecting)
+	if len(recs) != 5 {
+		t.Fatalf("переподключений %d: %+v", len(recs), recs)
+	}
+	for i, tr := range recs {
+		want := fmt.Sprintf("VK отказал: vchat.startConversation: API 6: Too many requests per second (повтор %d из 5)", i+1)
+		if errors.As(tr.Cause, &ve) || tr.Cause.Error() != want || tr.Delay != vkRetryDelays[i] {
+			t.Errorf("переподключение %d: %v через %v, ожидалось %q через %v", i+1, tr.Cause, tr.Delay, want, vkRetryDelays[i])
+		}
+	}
+}
+
+// После одной-двух временных ошибок VK ответил — цикл идёт дальше, как при
+// сбое сети, только с паузами повторов VK.
+func TestAutoJSTransientThenConnect(t *testing.T) {
+	h := newHarness(t, autoJSOptions(), recVKUnknown, recVKInternal, recConnect)
+	done := h.run()
+	h.waitState(StateConnected)
+	h.cancel()
+	if err := h.result(done); err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	if got, want := h.sleeps(), vkRetryDelays[:2]; !slices.Equal(got, want) {
+		t.Errorf("задержки %v, ожидались %v", got, want)
+	}
+	recs := h.transitionsTo(StateReconnecting)
+	if len(recs) != 2 || !strings.Contains(recs[0].Cause.Error(), "API 1: Unknown error occurred") ||
+		!strings.Contains(recs[1].Cause.Error(), "API 10: Internal server error") {
+		t.Errorf("переподключения: %+v", recs)
+	}
+}
+
+// Работающий туннель обнуляет счёт повторов: после пяти временных ошибок и
+// подключения новые временные ошибки снова повторяются с начала, а не
+// кончают цикл. Общий backoff после подключения тоже с начала (1 с на выход
+// работавшего ядра).
+func TestAutoJSTransientResetAfterConnect(t *testing.T) {
+	five := [][]string{recVKTooMany, recVKUnknown, recVKInternal, recVKTooMany, recVKTooMany}
+	scripts := append(slices.Clone(five), join(recConnect, []string{"exit 1"}), recVKTooMany, recVKTooMany, recVKTooMany, recConnect)
+	h := newHarness(t, autoJSOptions(), scripts...)
+	done := h.run()
+	h.waitState(StateConnected)
+	h.waitState(StateConnected)
+	h.cancel()
+	if err := h.result(done); err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	if n := len(h.attempts()); n != len(scripts) {
+		t.Errorf("попыток %d, ожидалось %d", n, len(scripts))
+	}
+	want := slices.Concat(vkRetryDelays, []time.Duration{time.Second}, vkRetryDelays[:3])
+	if got := h.sleeps(); !slices.Equal(got, want) {
+		t.Errorf("задержки %v, ожидались %v", got, want)
 	}
 }
 

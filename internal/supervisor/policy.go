@@ -37,6 +37,34 @@ func (b *backoff) next() time.Duration {
 // reset — туннель поднялся: прошлые неудачи больше не в счёт.
 func (b *backoff) reset() { b.failures = 0 }
 
+// Повторы временных ошибок API VK в auto_js (§08а): до PROCESS ядро открывает
+// сессию аккаунта и создаёт звонок, и на коды, которые проходят сами
+// (coreproc.FatalError.Transient), попытка повторяется — но не больше
+// vkRetryLimit раз подряд, с паузами 2 · 2^k секунд: 2, 4, 8, 16, 32. Паузы
+// длиннее общего backoff и повторов конечное число: каждая попытка — новые
+// сессии и запросы под аккаунтом.
+const (
+	vkRetryLimit   = 5
+	vkRetryBackoff = 2 * time.Second
+)
+
+// vkRetries считает временные ошибки VK подряд.
+type vkRetries struct{ failures int }
+
+// next — ещё одна временная ошибка: пауза перед повтором; ok = false —
+// повторы исчерпаны.
+func (r *vkRetries) next() (delay time.Duration, ok bool) {
+	if r.failures >= vkRetryLimit {
+		return 0, false
+	}
+	d := vkRetryBackoff << r.failures
+	r.failures++
+	return d, true
+}
+
+// reset — туннель заработал: VK отвечает, счёт заново.
+func (r *vkRetries) reset() { r.failures = 0 }
+
 // DeadHash — хеш, исключённый из попыток: звонок недоступен.
 type DeadHash struct {
 	Hash string

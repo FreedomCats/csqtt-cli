@@ -185,6 +185,8 @@ func TestExplainConnectErrorAutoJS(t *testing.T) {
 	}{
 		{"отказ VK", &supervisor.VKError{Fatal: fatal("[ФАТАЛ] vchat.startConversation: API 9: Flood control")},
 			"VK отказал: vchat.startConversation: API 9: Flood control\n  попробуйте позже", true},
+		{"повторы исчерпаны", &supervisor.VKError{Fatal: fatal("[ФАТАЛ] API 10: Internal server error"), Retries: 5},
+			"VK отказал 6 раз подряд, повторы исчерпаны: API 10: Internal server error\n  попробуйте позже", true},
 		{"ответ VK не того вида", &supervisor.StartupError{Fatal: fatal("[ФАТАЛ] vchat.startConversation: нет join_link")},
 			"VK ответил не так, как ждёт ядро", true},
 		{"имя сервера", &supervisor.StartupError{Fatal: fatal("[ФАТАЛ] ошибка разбора пира: пустой DNS-ответ для пира"),

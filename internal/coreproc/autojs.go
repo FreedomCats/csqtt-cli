@@ -246,6 +246,19 @@ func (e *FatalError) TokenRejected() bool {
 	return e.Kind == FatalAPI && e.Method == "" && tokenRejectedCodes[e.APICode]
 }
 
+// transientCodes — коды VK, за которыми ничего не стоит и которые проходят
+// сами: 1 — unknown error, 6 — too many requests per second, 10 — internal
+// server error. Код 9 (flood control) сюда не входит: это уже лимит на
+// аккаунт, и повтор его только усугубит.
+var transientCodes = map[int]bool{1: true, 6: true, 10: true}
+
+// Transient — временная ошибка API VK: повтор через несколько секунд может
+// помочь. С припиской метода или без: такой код может прийти и при открытии
+// сессии, и при создании звонка.
+func (e *FatalError) Transient() bool {
+	return e.Kind == FatalAPI && transientCodes[e.APICode]
+}
+
 // apiError — «API <код>: » в начале текста или после приписки «<метод>: »
 // (vk_js_calls.rs, check_api_error).
 var apiError = regexp.MustCompile(`(?:^|: )API ([^\s:]+): `)

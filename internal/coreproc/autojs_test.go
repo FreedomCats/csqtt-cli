@@ -346,6 +346,29 @@ func TestParseFatal(t *testing.T) {
 	}
 }
 
+// Временные ошибки API (коды 1, 6, 10) — с припиской метода и без; отказ
+// токена, flood control и не ошибки API — нет.
+func TestFatalTransient(t *testing.T) {
+	for line, want := range map[string]bool{
+		"[ФАТАЛ] API 1: Unknown error occurred":                                true,
+		"[ФАТАЛ] vchat.startConversation: API 6: Too many requests per second": true,
+		"[ФАТАЛ] API 10: Internal server error":                                true,
+		"[ФАТАЛ] vchat.startConversation: API 9: Flood control":                false,
+		"[ФАТАЛ] API 5: User authorization failed: invalid access_token (4).":  false,
+		"[ФАТАЛ] API unknown: API error":                                       false,
+		"[ФАТАЛ] auth.anonymLogin: HTTP 429 Too Many Requests":                 false,
+		"[ФАТАЛ] vchat.startConversation: нет join_link":                       false,
+	} {
+		got, ok := ParseFatal(line)
+		if !ok {
+			t.Fatalf("ParseFatal(%q): не разобрана", line)
+		}
+		if got.Transient() != want {
+			t.Errorf("ParseFatal(%q).Transient() = %v", line, got.Transient())
+		}
+	}
+}
+
 func TestCallState(t *testing.T) {
 	for _, c := range []struct {
 		lines         []string

@@ -236,12 +236,20 @@ func (e *TokenRejectedError) Error() string {
 // PROCESS открывало сессию аккаунта или создавало звонок, и это не отказ
 // токена (тот — *TokenRejectedError). Цикл кончается на любой попытке:
 // каждая попытка — новые сессии и запросы под аккаунтом, а повтор вслепую
-// (Flood control) только добавит следов и риска для аккаунта.
+// (Flood control) только добавит следов и риска для аккаунта. Временная
+// ошибка (coreproc.FatalError.Transient) до этого повторяется, но не без
+// конца (vkRetryLimit): тогда Retries — сколько повторов было.
 type VKError struct {
 	Fatal *coreproc.FatalError
+	// Retries — сколько раз подряд попытка повторялась из-за временных
+	// ошибок VK до этой; 0 — отказ, который не повторяют.
+	Retries int
 }
 
 func (e *VKError) Error() string {
+	if e.Retries > 0 {
+		return fmt.Sprintf("VK отказал %d раз подряд, повторы исчерпаны: %s", e.Retries+1, e.Fatal.Text)
+	}
 	return "VK отказал: " + e.Fatal.Text
 }
 
@@ -255,6 +263,9 @@ type Tunnel struct {
 	machine *Machine
 	hashes  *HashPool
 	backoff backoff
+	// vkRetries — временные ошибки VK подряд до PROCESS (auto_js); свой счёт
+	// и свои паузы, отдельно от backoff. Только горутина цикла.
+	vkRetries vkRetries
 
 	// outMu сериализует OnMessage, OnTransition и Logf: строки цикла пишут и
 	// горутины капчи.
@@ -404,6 +415,9 @@ func (t *Tunnel) Run(ctx context.Context) error {
 			// Перезапуск сервера — не неудача клиента.
 			t.backoff.reset()
 			delay = ServerRestartDelay
+		case res.delay > 0:
+			// Паузу назначила попытка: повтор временной ошибки VK.
+			delay = res.delay
 		default:
 			delay = t.backoff.next()
 		}
@@ -440,11 +454,14 @@ func (t *Tunnel) pause(ctx context.Context, delay time.Duration) bool {
 }
 
 // result — чем кончилась попытка. final — следующей не будет; restart —
-// следующая начинается сразу (Restart).
+// следующая начинается сразу (Restart); delay — пауза перед следующей,
+// назначенная самой попыткой (повтор временной ошибки VK, §08а), 0 — по
+// общему backoff.
 type result struct {
 	err     error
 	final   bool
 	restart bool
+	delay   time.Duration
 }
 
 // attempt проводит одну попытку: запускает ядро, ведёт его до выхода и
@@ -661,8 +678,10 @@ func (a *attempt) run(cancelled <-chan struct{}) result {
 // аккаунта и создаёт звонок в VK, и причину говорит строка «[ФАТАЛ] …».
 // Ошибка API VK — конец на любой попытке: отказ токена (поможет только новый
 // вход) или прочий отказ VK — каждая попытка создаёт звонок и сессии под
-// аккаунтом, и повторять их без конца нельзя. Сбой сети до VK — повтор и на
-// первой попытке: запрос до VK не дошёл, сессий нет. Прочее (имя сервера,
+// аккаунтом, и повторять их без конца нельзя. Исключение — временные ошибки
+// VK (коды 1, 6, 10): повтор со своей паузой, пока не исчерпан vkRetryLimit
+// (vkRetries); работающий туннель счёт обнуляет. Сбой сети до VK — повтор и
+// на первой попытке: запрос до VK не дошёл, сессий нет. Прочее (имя сервера,
 // аргументы, данные auto_js, ответ VK не того вида) — как в режиме с хешами:
 // на первой попытке конец, после работавшего ядра — повтор. ok = false —
 // решает общее правило.
@@ -678,6 +697,16 @@ func (a *attempt) autoJSStartup(startup *StartupError) (res result, ok bool) {
 		return result{}, false
 	case startup.Fatal.TokenRejected():
 		return result{err: &TokenRejectedError{Fatal: startup.Fatal}, final: true}, true
+	case startup.Fatal.Transient():
+		retries := &a.tunnel.vkRetries
+		delay, ok := retries.next()
+		if !ok {
+			return result{err: &VKError{Fatal: startup.Fatal, Retries: retries.failures}, final: true}, true
+		}
+		// Причина в строке переподключения — ответ VK и который это повтор;
+		// без типа *VKError: это не конец цикла.
+		return result{err: fmt.Errorf("VK отказал: %s (повтор %d из %d)",
+			startup.Fatal.Text, retries.failures, vkRetryLimit), delay: delay}, true
 	case startup.Fatal.Kind == coreproc.FatalAPI:
 		return result{err: &VKError{Fatal: startup.Fatal}, final: true}, true
 	case startup.Fatal.Kind == coreproc.FatalNetwork:
@@ -740,8 +769,9 @@ func (a *attempt) handle(m coreproc.Message) {
 func (a *attempt) moved(tr Transition) {
 	if tr.To == StateConnected {
 		// Туннель поднялся: задержки, заработанные прошлыми неудачами,
-		// больше не в счёт.
+		// больше не в счёт — и повторы временных ошибок VK тоже.
 		a.tunnel.backoff.reset()
+		a.tunnel.vkRetries.reset()
 	}
 	if tr.From == StateDegraded {
 		a.stopDegradedTimer()
