@@ -83,8 +83,22 @@ func openPage(t *testing.T, c *cdpCapture) string {
 		t.Fatalf("подключение к вкладке: %+v", cmds)
 	}
 
-	setup := mustStep(t, c, replyTo(cmds[0], `{"sessionId":"S1"}`))
-	want := []string{"Network.enable", "Target.setAutoAttach", "Page.navigate"}
+	nav := setupPage(t, c, cmds[0])
+	mustStep(t, c, replyTo(nav, `{"frameId":"F1","loaderId":"L1"}`))
+	if !c.ready {
+		t.Fatal("после Page.navigate страница не считается открытой")
+	}
+	return "S1"
+}
+
+// setupPage проводит автомат от ответа на Target.attachToTarget до
+// Page.navigate и возвращает её. Страница открывается, только когда браузер
+// ответил на всю подготовку вкладки: ответы приходят в любом порядке, и
+// здесь — в обратном, как ответ на Network.enable живьём.
+func setupPage(t *testing.T, c *cdpCapture, attach cdpCommand) cdpCommand {
+	t.Helper()
+	setup := mustStep(t, c, replyTo(attach, `{"sessionId":"S1"}`))
+	want := []string{"Network.enable", "Target.setAutoAttach"}
 	if got := methods(setup); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("подготовка вкладки: %v, ожидалось %v", got, want)
 	}
@@ -93,18 +107,17 @@ func openPage(t *testing.T, c *cdpCapture) string {
 			t.Errorf("%s ушла не в сессию вкладки: %q", cmd.Method, cmd.SessionID)
 		}
 	}
-	if p := params(t, setup[2]); !strings.Contains(p, `"url":"https://id.vk.com/not_robot_captcha`) {
+	if cmds := mustStep(t, c, replyTo(setup[1], `{}`)); len(cmds) != 0 {
+		t.Fatalf("до ответа на Network.enable отправлено %v", methods(cmds))
+	}
+	nav := mustStep(t, c, replyTo(setup[0], `{}`))
+	if len(nav) != 1 || nav[0].Method != "Page.navigate" || nav[0].SessionID != "S1" {
+		t.Fatalf("после подготовки вкладки: %+v", nav)
+	}
+	if p := params(t, nav[0]); !strings.Contains(p, `"url":"https://id.vk.com/not_robot_captcha`) {
 		t.Errorf("Page.navigate: %s", p)
 	}
-
-	for _, cmd := range setup[:2] {
-		mustStep(t, c, replyTo(cmd, `{}`))
-	}
-	mustStep(t, c, replyTo(setup[2], `{"frameId":"F1","loaderId":"L1"}`))
-	if !c.ready {
-		t.Fatal("после Page.navigate страница не считается открытой")
-	}
-	return "S1"
+	return nav[0]
 }
 
 // checkFinished проводит один ответ check: responseReceived, loadingFinished,
@@ -220,14 +233,14 @@ func TestCDPCaptureIgnores(t *testing.T) {
 }
 
 // Фрейм на другом сайте живёт в своём процессе и подключается отдельной
-// сессией: в ней включается Network, а сам фрейм отпускается.
+// сессией: в ней включается Network, и только потом фрейм отпускается.
 func TestCDPCaptureChildFrame(t *testing.T) {
 	c := newCDPCapture(testCaptchaURL, nil)
 	openPage(t, c)
 
 	cmds := mustStep(t, c, msg(t, `{"method":"Target.attachedToTarget","sessionId":"S1","params":{
 		"sessionId":"S2","targetInfo":{"targetId":"FRAME","type":"iframe"},"waitingForDebugger":true}}`))
-	want := "Network.enable,Target.setAutoAttach,Runtime.runIfWaitingForDebugger"
+	want := "Network.enable,Target.setAutoAttach"
 	if got := strings.Join(methods(cmds), ","); got != want {
 		t.Fatalf("подготовка фрейма: %s, ожидалось %s", got, want)
 	}
@@ -236,14 +249,43 @@ func TestCDPCaptureChildFrame(t *testing.T) {
 			t.Errorf("%s ушла не в сессию фрейма: %q", cmd.Method, cmd.SessionID)
 		}
 	}
-	// Отказы в сессии фрейма разговор не кончают.
-	mustStep(t, c, cdpMessage{ID: cmds[1].ID, SessionID: "S2", Error: &cdpError{Code: -32601, Message: "not supported"}})
+	// Отказы в сессии фрейма разговор не кончают, а фрейм всё равно
+	// отпускается — когда ответы пришли на всё.
+	if early := mustStep(t, c, cdpMessage{ID: cmds[1].ID, SessionID: "S2",
+		Error: &cdpError{Code: -32601, Message: "not supported"}}); len(early) != 0 {
+		t.Fatalf("фрейм отпущен до ответа на Network.enable: %v", methods(early))
+	}
+	release := mustStep(t, c, replyTo(cmds[0], `{}`))
+	if len(release) != 1 || release[0].Method != "Runtime.runIfWaitingForDebugger" || release[0].SessionID != "S2" {
+		t.Fatalf("фрейм не отпущен: %+v", release)
+	}
+	mustStep(t, c, cdpMessage{ID: release[0].ID, SessionID: "S2", Error: &cdpError{Code: -32000, Message: "not waiting"}})
 
 	// Воркеру автоподключение не шлём — у него нет фреймов.
 	worker := mustStep(t, c, msg(t, `{"method":"Target.attachedToTarget","sessionId":"S1","params":{
 		"sessionId":"S3","targetInfo":{"targetId":"W","type":"worker"},"waitingForDebugger":true}}`))
-	if got := strings.Join(methods(worker), ","); got != "Network.enable,Runtime.runIfWaitingForDebugger" {
+	if got := strings.Join(methods(worker), ","); got != "Network.enable" {
 		t.Errorf("подготовка воркера: %s", got)
+	}
+	release = mustStep(t, c, cdpMessage{ID: worker[0].ID, SessionID: "S3", Error: &cdpError{Code: -32000, Message: "gone"}})
+	if got := strings.Join(methods(release), ","); got != "Runtime.runIfWaitingForDebugger" {
+		t.Errorf("воркер не отпущен: %s", got)
+	}
+
+	// Придержанный service worker на Network.enable не отвечает, пока его не
+	// отпустят: отпускаем сразу, ответа не ждём.
+	sw := mustStep(t, c, msg(t, `{"method":"Target.attachedToTarget","sessionId":"S1","params":{
+		"sessionId":"S4","targetInfo":{"targetId":"SW","type":"service_worker"},"waitingForDebugger":true}}`))
+	if got := strings.Join(methods(sw), ","); got != "Network.enable,Runtime.runIfWaitingForDebugger" {
+		t.Errorf("подготовка service worker: %s", got)
+	}
+	for _, cmd := range sw {
+		if cmd.SessionID != "S4" {
+			t.Errorf("%s ушла не в сессию service worker: %q", cmd.Method, cmd.SessionID)
+		}
+		if more := mustStep(t, c, replyTo(cmd, `{}`)); len(more) != 0 {
+			t.Errorf("на ответ %s отправлено %v", cmd.Method, methods(more))
+		}
 	}
 
 	get := checkFinished(t, c, "S2", "R1")
@@ -302,12 +344,24 @@ func TestCDPCaptureSetupFailures(t *testing.T) {
 			t.Fatalf("исход: %+v", out)
 		}
 	})
+	t.Run("Network.enable", func(t *testing.T) {
+		c := newCDPCapture(testCaptchaURL, nil)
+		start := c.start()
+		cmds := mustStep(t, c, replyTo(start[0], `{"targetInfos":[{"targetId":"P","type":"page"}]}`))
+		setup := mustStep(t, c, replyTo(cmds[0], `{"sessionId":"S1"}`))
+		_, out := c.handle(cdpMessage{ID: setup[0].ID, SessionID: "S1", Error: &cdpError{Code: -32000, Message: "выдуманный отказ"}})
+		if out == nil || !errors.Is(out.err, ErrBrowser) {
+			t.Fatalf("исход: %+v", out)
+		}
+	})
 	t.Run("страница", func(t *testing.T) {
 		c := newCDPCapture(testCaptchaURL, nil)
 		start := c.start()
 		cmds := mustStep(t, c, replyTo(start[0], `{"targetInfos":[{"targetId":"P","type":"page"}]}`))
 		setup := mustStep(t, c, replyTo(cmds[0], `{"sessionId":"S1"}`))
-		_, out := c.handle(replyTo(setup[2], `{"frameId":"F","errorText":"net::ERR_TUNNEL_CONNECTION_FAILED"}`))
+		mustStep(t, c, replyTo(setup[0], `{}`))
+		nav := mustStep(t, c, replyTo(setup[1], `{}`))
+		_, out := c.handle(replyTo(nav[0], `{"frameId":"F","errorText":"net::ERR_TUNNEL_CONNECTION_FAILED"}`))
 		if out == nil || out.err == nil || errors.Is(out.err, ErrBrowser) ||
 			!strings.Contains(out.err.Error(), "ERR_TUNNEL_CONNECTION_FAILED") {
 			t.Fatalf("исход: %+v", out)

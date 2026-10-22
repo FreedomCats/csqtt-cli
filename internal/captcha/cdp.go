@@ -66,14 +66,16 @@ const (
 	callSetup                    // подготовка вкладки: отказ — страницы не будет
 	callNavigate                 // Page.navigate на страницу капчи
 	callChild                    // подготовка фрейма или воркера: отказ не важен
+	callRelease                  // Runtime.runIfWaitingForDebugger: отказ не важен
 	callBody                     // Network.getResponseBody ответа VK
 )
 
 type pendingCall struct {
-	kind   callKind
-	method string
-	key    requestKey // для callBody
-	api    string     // для callBody: метод API капчи
+	kind    callKind
+	method  string
+	session string     // для callChild: сессия фрейма или воркера
+	key     requestKey // для callBody
+	api     string     // для callBody: метод API капчи
 }
 
 // requestKey — запрос в сессии: requestId уникальны только внутри неё.
@@ -93,10 +95,18 @@ type requestKey struct {
 //     человека бы только путала.
 //  2. Target.attachToTarget с flatten — сессия вкладки, команды ей идут по той
 //     же трубе с её sessionId.
-//  3. В сессии: Network.enable, Target.setAutoAttach (фреймы на других сайтах
-//     и воркеры живут в своих процессах, и их запросы вкладке не видны) и
-//     только потом Page.navigate. Команды одной сессии браузер выполняет по
-//     порядку, так что запросы страницы застанут Network уже включённым.
+//  3. В сессии: Network.enable и Target.setAutoAttach (фреймы на других
+//     сайтах и воркеры живут в своих процессах, и их запросы вкладке не
+//     видны), и только когда браузер ответил на обе, — Page.navigate. Ждать
+//     ответов нужно: Page.navigate браузер выполняет сам, а Network.enable
+//     доходит до процесса страницы позже и ответ на него приходит после
+//     ответа на Page.navigate. Отправленные разом, они давали гонку: первые
+//     запросы страницы — initSession — уходили, пока Network в ней ещё не
+//     включён, и их ответа не было видно или браузер не отдавал его тела.
+//     Так же фрейм и выделенный воркер отпускаются, только когда браузер
+//     ответил на их подготовку. Service worker и прочие так ждать нельзя: на
+//     Network.enable придержанный service worker отвечает, только когда его
+//     отпустят, — их отпускаем сразу, вслед за подготовкой, как раньше.
 //  4. Читать ответы API капчи в любой из сессий, пока check не даст исход.
 type cdpCapture struct {
 	url   string
@@ -106,10 +116,12 @@ type cdpCapture struct {
 	nextID  int64
 	pending map[int64]pendingCall
 
-	target  string                // вкладка капчи
-	session string                // её сессия
-	ready   bool                  // страница капчи открывается
-	watched map[requestKey]string // ответы API капчи, тело которых ждём: метод
+	target    string                // вкладка капчи
+	session   string                // её сессия
+	setupLeft int                   // команд подготовки вкладки без ответа
+	ready     bool                  // страница капчи открывается
+	children  map[string]int        // фреймы и воркеры: команд подготовки без ответа
+	watched   map[requestKey]string // ответы API капчи, тело которых ждём: метод
 }
 
 func newCDPCapture(url string, logf func(string, ...any)) *cdpCapture {
@@ -117,7 +129,7 @@ func newCDPCapture(url string, logf func(string, ...any)) *cdpCapture {
 		logf = func(string, ...any) {}
 	}
 	return &cdpCapture{url: url, logf: logf, watch: pageWatch{logf: logf}, pending: map[int64]pendingCall{},
-		watched: map[requestKey]string{}}
+		children: map[string]int{}, watched: map[requestKey]string{}}
 }
 
 // start — первые команды разговора.
@@ -147,9 +159,14 @@ func (c *cdpCapture) handle(m cdpMessage) ([]cdpCommand, *outcome) {
 
 // reply — ответ на нашу команду.
 func (c *cdpCapture) reply(p pendingCall, m cdpMessage) ([]cdpCommand, *outcome) {
+	// Подготовка фрейма или воркера кончилась, удачно или нет, — его
+	// отпускают в любом случае: иначе он так и висел бы.
+	if p.kind == callChild {
+		return c.childReady(p.session), nil
+	}
 	if m.Error != nil {
 		switch p.kind {
-		case callChild:
+		case callRelease:
 			return nil, nil
 		case callBody:
 			c.logf("[CAPTCHA] браузер не отдал ответ VK: %v", m.Error)
@@ -194,11 +211,19 @@ func (c *cdpCapture) reply(p pendingCall, m cdpMessage) ([]cdpCommand, *outcome)
 		}
 		c.session = r.SessionID
 		s := c.session
+		c.setupLeft = 2
 		return []cdpCommand{
 			c.call(pendingCall{kind: callSetup}, s, "Network.enable", map[string]any{}),
 			c.call(pendingCall{kind: callSetup}, s, "Target.setAutoAttach", autoAttach),
-			c.call(pendingCall{kind: callNavigate}, s, "Page.navigate", map[string]any{"url": c.url}),
 		}, nil
+
+	case callSetup:
+		c.setupLeft--
+		if c.setupLeft > 0 {
+			return nil, nil
+		}
+		return []cdpCommand{c.call(pendingCall{kind: callNavigate}, c.session, "Page.navigate",
+			map[string]any{"url": c.url})}, nil
 
 	case callNavigate:
 		var r struct {
@@ -223,6 +248,21 @@ func (c *cdpCapture) reply(p pendingCall, m cdpMessage) ([]cdpCommand, *outcome)
 // их до того, как в них включён Network: иначе первый запрос мог бы уйти
 // незамеченным.
 var autoAttach = map[string]any{"autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true}
+
+// childReady — ответ на одну команду подготовки фрейма или воркера. Ответы
+// пришли на все — его можно отпустить.
+func (c *cdpCapture) childReady(session string) []cdpCommand {
+	left, ok := c.children[session]
+	if !ok {
+		return nil
+	}
+	if left > 1 {
+		c.children[session] = left - 1
+		return nil
+	}
+	delete(c.children, session)
+	return []cdpCommand{c.call(pendingCall{kind: callRelease}, session, "Runtime.runIfWaitingForDebugger", nil)}
+}
 
 func (c *cdpCapture) attach(target string) cdpCommand {
 	c.target = target
@@ -249,13 +289,20 @@ func (c *cdpCapture) event(m cdpMessage) ([]cdpCommand, *outcome) {
 			return nil, nil
 		}
 		s := p.SessionID
-		cmds := []cdpCommand{c.call(pendingCall{kind: callChild}, s, "Network.enable", map[string]any{})}
-		if p.TargetInfo.Type == "iframe" {
-			cmds = append(cmds, c.call(pendingCall{kind: callChild}, s, "Target.setAutoAttach", autoAttach))
+		child := pendingCall{kind: callChild, session: s}
+		cmds := []cdpCommand{c.call(child, s, "Network.enable", map[string]any{})}
+		switch p.TargetInfo.Type {
+		case "iframe":
+			cmds = append(cmds, c.call(child, s, "Target.setAutoAttach", autoAttach))
+			fallthrough
+		case "worker":
+			// Отпускается, когда на всё это придут ответы (childReady).
+			c.children[s] = len(cmds)
+		default:
+			// Service worker не ответит, пока его не отпустят (шаг 3 у
+			// cdpCapture): отпускаем сразу.
+			cmds = append(cmds, c.call(pendingCall{kind: callRelease}, s, "Runtime.runIfWaitingForDebugger", nil))
 		}
-		// Отпустить придержанный фрейм нужно в любом случае, даже если
-		// Network в нём не включился: иначе он так и висел бы.
-		cmds = append(cmds, c.call(pendingCall{kind: callChild}, s, "Runtime.runIfWaitingForDebugger", nil))
 		return cmds, nil
 
 	case "Network.responseReceived":

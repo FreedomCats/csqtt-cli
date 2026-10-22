@@ -872,15 +872,27 @@ func TestPrepareFailure(t *testing.T) {
 }
 
 // Restart посреди работающей попытки: ядро получает Stop, следующая попытка
-// — сразу, а счётчик неудач сброшен: после неё задержка снова 1 с.
+// — сразу, а счётчик неудач сброшен: после неё задержка снова 1 с. Вторая
+// просьба до исполнения первой — тот же перезапуск.
+//
+// Обе просьбы идут из OnTransition: его зовёт сам цикл попытки, и забрать
+// первую просьбу, пока не пришла вторая, он не может. Из горутины теста
+// вторая просьба могла опоздать: цикл успевал исполнить первую, начать
+// следующую попытку, и вторая — по праву — перезапускала уже её (задержки
+// [1s 2s 0s 0s]).
 func TestRestartDuringAttempt(t *testing.T) {
 	crash := join(recStart, []string{"exit 1"})
 	changed := errors.New("сеть сменилась")
 	h := newHarness(t, Options{}, crash, crash, recConnect, crash)
+	onTransition := h.tunnel.opts.OnTransition
+	h.tunnel.opts.OnTransition = func(tr Transition) {
+		onTransition(tr)
+		if tr.To == StateConnected {
+			h.tunnel.Restart(changed)
+			h.tunnel.Restart(changed)
+		}
+	}
 	done := h.run()
-	h.waitState(StateConnected)
-	h.tunnel.Restart(changed)
-	h.tunnel.Restart(changed) // вторая просьба до исполнения — тот же перезапуск
 	if err := h.result(done); err != nil {
 		t.Fatalf("Run() = %v", err)
 	}
