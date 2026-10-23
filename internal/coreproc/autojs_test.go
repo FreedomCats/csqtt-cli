@@ -451,15 +451,33 @@ func TestAutoJSStringsInCore(t *testing.T) {
 		},
 	}
 	for file, parts := range want {
-		src, err := os.ReadFile(filepath.Join("..", "..", "core", "rust-client", file))
-		if err != nil {
-			t.Fatalf("исходник ядра: %v", err)
-		}
+		src := coreSource(t, filepath.Join("..", "..", "core", "rust-client", file))
 		for _, part := range parts {
-			if !strings.Contains(string(src), part) {
+			if !strings.Contains(src, part) {
 				t.Errorf("в %s нет %q — разбор auto_js сверить с ядром заново", file, part)
 			}
 		}
+	}
+}
+
+// coreSource — исходник ядра с концами строк LF: git на Windows выкладывает
+// core/ с CRLF, а часть образцов сторожа многострочная.
+func coreSource(t *testing.T, path string) string {
+	t.Helper()
+	src, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("исходник ядра: %v", err)
+	}
+	return strings.ReplaceAll(string(src), "\r\n", "\n")
+}
+
+func TestCoreSourceCRLF(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.rs")
+	if err := os.WriteFile(path, []byte("a(\r\n    b)\r\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := coreSource(t, path); got != "a(\n    b)\n" {
+		t.Errorf("coreSource = %q", got)
 	}
 }
 
