@@ -1,12 +1,11 @@
-//go:build !linux
+//go:build !linux && !windows
 
 package datapath
 
 import "errors"
 
-// errTunUnsupported — свой адаптер на Windows появится с задачей W3, на
-// прочих системах его нет.
-var errTunUnsupported = errors.New("datapath tun пока работает только на Linux")
+// errTunUnsupported — своего адаптера на прочих системах нет.
+var errTunUnsupported = errors.New("datapath tun работает только на Linux и Windows")
 
 // tunUnsupported — для Requires: вызывающий откажет до проверки прав.
 func tunUnsupported() error { return errTunUnsupported }

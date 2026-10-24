@@ -54,8 +54,9 @@ func connectCommand() *command {
 
 Режим tun (datapath = "tun", умолчание) — системный VPN: весь трафик
 системы идёт в туннель через адаптер csqtt-cli. Он требует прав root
-(sudo ` + app.Name + ` connect) и пока работает только на Linux. Файл настроек,
-секреты и окно капчи под sudo остаются у того, кто его вызвал. Пока туннель
+(sudo ` + app.Name + ` connect), на Windows — администратора. На Windows он пока
+работает без защиты DNS и kill-switch и поэтому — только с -allow-leak. Файл
+настроек, секреты и окно капчи под sudo остаются у того, кто его вызвал. Пока туннель
 не поднят, kill-switch блокирует трафик системы; пока поднят, DNS системы
 ходит только к резолверам туннеля, а IPv6 наружу закрыт. Не включились
 защита DNS или kill-switch — подключения не будет, разве что с -allow-leak.
@@ -188,7 +189,7 @@ func (e *env) planConnect(f connectFlags) (*connectPlan, error) {
 			from = "-datapath tun"
 		}
 		if err := tunRequirementsError(newTun(datapath.TunOptions{}).Requires(), from, p.Name, f.configPath,
-			f.modeNamed); err != nil {
+			f.modeNamed, f.allowLeak); err != nil {
 			return nil, err
 		}
 	default:
@@ -255,10 +256,12 @@ var isRoot = isElevated
 
 // tunRequirementsError объясняет, почему tun не запустится, или возвращает
 // nil. Неподдерживаемая система проверяется первой: права тут не помогут, и
-// советовать sudo незачем. from — откуда взялся режим tun, для начала
-// строки; modeNamed — tun задан флагом -datapath, и в команде с sudo он
-// нужен снова: профиль мог бы выбрать socks.
-func tunRequirementsError(req datapath.Requirements, from, profile, configPath string, modeNamed bool) error {
+// советовать sudo незачем. Затем — защита DNS и kill-switch: где их на
+// системе ещё нет (tunGuardMissing), tun только с -allow-leak (allowLeak).
+// from — откуда взялся режим tun, для начала строки; modeNamed — tun задан
+// флагом -datapath, и в команде с правами он нужен снова: профиль мог бы
+// выбрать socks.
+func tunRequirementsError(req datapath.Requirements, from, profile, configPath string, modeNamed, allowLeak bool) error {
 	args := profile
 	if configPath != "" {
 		args = "-config " + configPath + " " + profile
@@ -267,15 +270,27 @@ func tunRequirementsError(req datapath.Requirements, from, profile, configPath s
 	if modeNamed {
 		tunArgs = "-datapath tun " + args
 	}
+	if allowLeak {
+		tunArgs = "-allow-leak " + tunArgs
+	}
 	socks := fmt.Sprintf("%s connect -datapath socks %s (насовсем — %s profile set %s -datapath socks)",
 		app.Name, args, app.Name, args)
 	if req.Unsupported != nil {
 		return &tunRefusal{err: fmt.Errorf("%s: режим tun — весь трафик системы: %w; на этой системе есть только SOCKS5: %s",
 			from, req.Unsupported, socks)}
 	}
+	if req.DNSGuard && tunGuardMissing != nil && !allowLeak {
+		withLeak := "-allow-leak " + args
+		if modeNamed {
+			withLeak = "-allow-leak -datapath tun " + args
+		}
+		return &tunRefusal{err: fmt.Errorf("%s: режим tun — весь трафик системы: %w, и DNS-запросы и трафик системы "+
+			"могут уходить мимо туннеля; подключиться так: %s connect %s; или только SOCKS5: %s",
+			from, tunGuardMissing, app.Name, withLeak, socks)}
+	}
 	if req.Admin && !isRoot() {
-		return &tunRefusal{needsRoot: true, err: fmt.Errorf("%s: режиму tun — весь трафик системы — нужны права root: "+
-			"sudo %s connect %s; без прав работает только SOCKS5: %s", from, app.Name, tunArgs, socks)}
+		return &tunRefusal{needsRoot: true, err: fmt.Errorf("%s: режиму tun — весь трафик системы — %s %s connect %s; "+
+			"без прав работает только SOCKS5: %s", from, adminHint, app.Name, tunArgs, socks)}
 	}
 	return nil
 }

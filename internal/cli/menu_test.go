@@ -34,6 +34,7 @@ func (te *testEnv) input(lines string) { te.stdin = strings.NewReader(lines) }
 // работает (Linux), иначе — причина, по которой нет (как на Windows).
 func tunSupport(t *testing.T, unsupported error) {
 	t.Helper()
+	withTunGuard(t, nil)
 	prev := newTun
 	t.Cleanup(func() { newTun = prev })
 	newTun = func(datapath.TunOptions) tunDatapath {
@@ -471,6 +472,30 @@ func TestWizardCancelledOnEachQuestion(t *testing.T) {
 				t.Errorf("в хранилище %d секретов", n)
 			}
 		})
+	}
+}
+
+// Где tun работает только без защиты DNS и kill-switch (Windows до W5),
+// мастер его не предлагает: согласие на утечку — -allow-leak командной
+// строки. Причина и команда — в строке о режиме.
+func TestWizardModeWithoutGuard(t *testing.T) {
+	tunSupport(t, nil)
+	withTunGuard(t, errors.New("на Windows он пока работает без защиты от утечки DNS и kill-switch"))
+	te := newMenuEnv(t)
+	te.answer("", testPassword, testPassword, testHashA)
+	te.input("\n\nexample.org\n\n0\n")
+
+	code, stdout, stderr := te.run("menu")
+	if code != exitOK {
+		t.Fatalf("код возврата %d, stderr:\n%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "здесь недоступен: на Windows он пока работает без защиты от утечки DNS и kill-switch "+
+		"(подключиться так можно только из командной строки: csqtt-cli connect -datapath tun -allow-leak)") ||
+		strings.Contains(stdout, "Весь трафик компьютера.") {
+		t.Errorf("режимы показаны не так:\n%s", stdout)
+	}
+	if got := loadTestFile(t, te).Profiles["home"]; got == nil || got.Datapath != config.DatapathSocks {
+		t.Errorf("профиль: %+v", got)
 	}
 }
 

@@ -126,6 +126,7 @@ func openTunAdapter(name string, logf func(string, ...any)) (*tunAdapter, error)
 		// (blockIPv6).
 		addRoutes:    func() error { return linuxsys.SetTunnelRoutes(index, tunRoutes4) },
 		removeRoutes: func() error { return linuxsys.ClearTunnelRoutes(index, tunRoutes4) },
+		routes:       tunRoutes4,
 		setDNS: func(servers []netip.Addr) error {
 			if err := dns.Set(index, servers); err != nil {
 				return err

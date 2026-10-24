@@ -306,15 +306,23 @@ func (m *menu) askCallLinks(ctx context.Context, empty linksEmpty, room int) ([]
 }
 
 // askMode спрашивает режим. Весь трафик — первым и по Enter: человеку без
-// технической подготовки прокси настраивать негде. Где tun не работает (на
-// Windows — до своего адаптера), по Enter — socks, а о tun сказано, почему
-// его нет; узнаётся это у datapath, как и в connect (tunRequirementsError).
+// технической подготовки прокси настраивать негде. Где tun не работает, по
+// Enter — socks, а о tun сказано, почему его нет; узнаётся это у datapath,
+// как и в connect (tunRequirementsError). Где tun работает только без защиты
+// DNS и kill-switch (на Windows — до неё), меню его тоже не предлагает:
+// согласие на утечку — флаг -allow-leak командной строки, а не Enter.
 func (m *menu) askMode(ctx context.Context) (string, error) {
 	w := m.e.stdout
 	socks := fmt.Sprintf("Только программы, в которых указан прокси SOCKS5 %s.", datapath.DefaultSocksListen)
 	fmt.Fprintln(w, "Что пускать через туннель?")
 
-	if unsupported := newTun(datapath.TunOptions{}).Requires().Unsupported; unsupported != nil {
+	req := newTun(datapath.TunOptions{}).Requires()
+	unsupported := req.Unsupported
+	if unsupported == nil && req.DNSGuard && tunGuardMissing != nil {
+		unsupported = fmt.Errorf("%w (подключиться так можно только из командной строки: %s connect -datapath tun -allow-leak)",
+			tunGuardMissing, app.Name)
+	}
+	if unsupported != nil {
 		fmt.Fprintf(w, "  1. %s\n", socks)
 		fmt.Fprintf(w, "Весь трафик компьютера (режим tun) здесь недоступен: %v.\n", unsupported)
 		for {
@@ -329,7 +337,7 @@ func (m *menu) askMode(ctx context.Context) (string, error) {
 		}
 	}
 
-	fmt.Fprintln(w, "  1. Весь трафик компьютера. Нужны права root: меню запросит их при подключении (sudo).")
+	fmt.Fprintln(w, "  1. Весь трафик компьютера. "+adminNote)
 	fmt.Fprintf(w, "  2. %s\n", socks)
 	for {
 		line, err := m.wizardAsk(ctx, "Выберите [1]: ")

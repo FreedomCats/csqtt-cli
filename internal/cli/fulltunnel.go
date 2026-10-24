@@ -13,6 +13,7 @@ package cli
 
 import (
 	"errors"
+	"runtime"
 
 	"github.com/FreedomCats/csqtt-cli/internal/app"
 	"github.com/FreedomCats/csqtt-cli/internal/datapath"
@@ -20,8 +21,9 @@ import (
 	"github.com/FreedomCats/csqtt-cli/internal/supervisor"
 )
 
-// tunDatapath — то, что connect нужно от datapath.Tun. Канал дескриптором
-// (supervisor.TunFD) — только на Linux, поэтому он берётся проверкой типа.
+// tunDatapath — то, что connect нужно от datapath.Tun. Канал с ядром у
+// платформ разный — дескриптор (supervisor.TunFD, Linux) или Link (tunLink,
+// Windows), — поэтому он берётся проверкой типа.
 type tunDatapath interface {
 	supervisor.Datapath
 	datapath.Persistent
@@ -29,6 +31,11 @@ type tunDatapath interface {
 	Reserve() (release func(), err error)
 	Open() error
 	Close() error
+}
+
+// tunLink — Link адаптера, по которому мост возит пакеты (Windows).
+type tunLink interface {
+	Link() (*datapath.Link, error)
 }
 
 // newTun — переменная ради тестов: настоящему адаптеру нужен root.
@@ -72,10 +79,11 @@ func (plan *connectPlan) openTun(e *env, out *printer, verbose bool) (_ *session
 		return nil, err
 	}
 	undo = append(undo, setup.close)
-	if setup.guard != nil {
+	if setup.guard != nil && runtime.GOOS == "linux" {
 		// По метке таблица пропускает сокеты ядра и окна капчи. Без
 		// таблицы метка не нужна, а без CAP_NET_ADMIN ядро с ней не
-		// стартовало бы вовсе.
+		// стартовало бы вовсе. Меток нет на Windows: ядро с -mark там не
+		// стартует.
 		guard.Mark = netguard.SocketMark
 	}
 	if setup.killSwitch != nil {
@@ -96,15 +104,10 @@ func (plan *connectPlan) openTun(e *env, out *printer, verbose bool) (_ *session
 	if err := tun.Open(); err != nil {
 		return nil, err
 	}
-	fd, ok := tun.(supervisor.TunFD)
-	if !ok {
-		return nil, errors.New("tun: ядру нечем передать адаптер на этой системе")
-	}
 
 	binding := &coreBinding{out: out, guard: guard, last: choice}
 	dp := &sessionDatapath{
 		datapath:   tun,
-		tunFD:      fd,
 		describe:   "адаптер " + datapath.TunName + " — весь трафик системы",
 		note:       "весь трафик системы — через адаптер " + datapath.TunName,
 		prepare:    binding.prepare,
@@ -115,6 +118,18 @@ func (plan *connectPlan) openTun(e *env, out *printer, verbose bool) (_ *session
 			return stop
 		},
 		close: closeAll,
+	}
+	// Канал пакетов с ядром: на Linux — дескриптор адаптера, на Windows —
+	// Link, по которому мост возит пакеты Wintun.
+	switch ch := tun.(type) {
+	case supervisor.TunFD:
+		dp.tunFD = ch
+	case tunLink:
+		if dp.link, err = ch.Link(); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, errors.New("tun: ядру нечем передать адаптер на этой системе")
 	}
 	if setup.killSwitch != nil {
 		// Окно капчи — через прокси csqtt-cli сокетами мимо туннеля, с

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -95,6 +96,15 @@ func (f *fakeConnectTun) SendFD(context.Context, string, int) error {
 	return nil
 }
 
+// linkTun — fakeConnectTun с каналом Link вместо дескриптора, как адаптер
+// Windows: SendFD и SocketName у него нет.
+type linkTun struct {
+	tunDatapath
+	link *datapath.Link
+}
+
+func (l linkTun) Link() (*datapath.Link, error) { return l.link, nil }
+
 // journalGuard — сессия защиты DNS (таблица nftables) с журналом.
 type journalGuard struct {
 	j           *tunJournal
@@ -143,11 +153,31 @@ type tunStubs struct {
 	rpProblem  string
 	recoverErr error
 	watchErr   error
+	// link — адаптер с каналом Link (Windows), а не с дескриптором.
+	link *datapath.Link
 
 	mu       sync.Mutex
 	netguard *netguard.Guard
 	changed  func(now, before netguard.Choice)
 	bridge   *captcha.Options
+}
+
+// markFlags — метка сокетов ядра: на Linux её пропускает таблица защиты, на
+// Windows меток нет, и ядро с -mark не стартует.
+func markFlags() []string {
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+	return []string{fmt.Sprintf("--mark=%d", netguard.SocketMark)}
+}
+
+// withTunGuard задаёт tunGuardMissing на время теста: nil — система с защитой
+// DNS и kill-switch (Linux), ошибка — без неё (Windows до W5).
+func withTunGuard(t *testing.T, missing error) {
+	t.Helper()
+	prev := tunGuardMissing
+	t.Cleanup(func() { tunGuardMissing = prev })
+	tunGuardMissing = missing
 }
 
 // stubTun подменяет всё, что connect с tun трогает в системе.
@@ -158,6 +188,7 @@ func stubTun(t *testing.T) *tunStubs {
 		choices: []netguard.Choice{{Index4: 3, Alias4: "eth0"}}}
 	s.tun = &fakeConnectTun{j: j}
 
+	withTunGuard(t, nil)
 	prevTun, prevRoot, prevSelect, prevRP, prevDNS, prevWatch, prevGuard :=
 		newTun, isRoot, selectInterfaces, reversePathCheck, prepareSystemDNS, watchNetworkChanges, openDNSGuard
 	t.Cleanup(func() {
@@ -170,6 +201,9 @@ func stubTun(t *testing.T) *tunStubs {
 			return &fakeConnectTun{j: j, unsupported: s.tun.unsupported}
 		}
 		s.tun.opts = opts
+		if s.link != nil {
+			return linkTun{s.tun, s.link}
+		}
 		return s.tun
 	}
 	isRoot = func() bool { return s.root }
@@ -327,7 +361,7 @@ func TestConnectTunOrder(t *testing.T) {
 	if len(args) != 1 {
 		t.Fatalf("попыток %d:\n%s", len(args), got)
 	}
-	for _, flag := range []string{"--tun-uds=csqtt-cli-tun-test", "--bind-if=3", fmt.Sprintf("--mark=%d", netguard.SocketMark)} {
+	for _, flag := range append([]string{"--tun-uds=csqtt-cli-tun-test", "--bind-if=3"}, markFlags()...) {
 		if !strings.Contains(args[0], flag) {
 			t.Errorf("у ядра нет %s: %s", flag, args[0])
 		}
@@ -368,7 +402,7 @@ func TestConnectTunRefusals(t *testing.T) {
 		steps []string
 	}{
 		{"нет root", func(s *tunStubs) { s.root = false }, nil,
-			[]string{"нужны права root", "sudo csqtt-cli connect -config ", "-datapath socks",
+			[]string{adminHint + " csqtt-cli connect -config ", "-datapath socks",
 				"home -datapath socks)"}, nil},
 		{"tun на этой системе нет", func(s *tunStubs) {
 			s.tun.unsupported = errors.New("datapath tun пока работает только на Linux")
@@ -434,9 +468,9 @@ func TestConnectTunRootHint(t *testing.T) {
 		args    []string
 		sudo    string
 	}{
-		{"режим из профиля", nil, nil, "sudo csqtt-cli connect -config %s home;"},
+		{"режим из профиля", nil, nil, adminHint + " csqtt-cli connect -config %s home;"},
 		{"режим флагом", []string{"-datapath", "socks"}, []string{"-datapath", "tun"},
-			"sudo csqtt-cli connect -datapath tun -config %s home;"},
+			adminHint + " csqtt-cli connect -datapath tun -config %s home;"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			s := stubTun(t)
@@ -492,6 +526,104 @@ func TestConnectTunAllowLeak(t *testing.T) {
 	}
 }
 
+// Где защиты DNS и kill-switch ещё нет (Windows до W5), tun без -allow-leak —
+// отказ до резерва адаптера, с готовыми командами: тот же запуск с
+// -allow-leak и socks. Меню узнаёт отказ по типу и предложит socks.
+func TestConnectTunWithoutGuardNeedsAllowLeak(t *testing.T) {
+	for _, c := range []struct {
+		name, want string
+		args       []string
+	}{
+		{"режим из профиля", "csqtt-cli connect -allow-leak -config %s home;", nil},
+		{"режим флагом", "csqtt-cli connect -allow-leak -datapath tun -config %s home;", []string{"-datapath", "tun"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := stubTun(t)
+			withTunGuard(t, errors.New("на Windows он пока работает без защиты от утечки DNS и kill-switch"))
+			te := newTestEnv(t)
+			te.addHome()
+			var out, errOut syncBuffer
+			code := run(context.Background(), s.env(te, &out, &errOut),
+				append(append([]string{"connect"}, c.args...), "-config", te.configPath(), "home"))
+			if code != exitError {
+				t.Errorf("код %d", code)
+			}
+			cfg := te.configPath()
+			for _, want := range []string{
+				"без защиты от утечки DNS и kill-switch, и DNS-запросы и трафик системы могут уходить мимо туннеля",
+				fmt.Sprintf(c.want, cfg),
+				fmt.Sprintf("или только SOCKS5: csqtt-cli connect -datapath socks -config %s home", cfg),
+			} {
+				if !strings.Contains(errOut.String(), want) {
+					t.Errorf("нет %q:\n%s", want, errOut.String())
+				}
+			}
+			if steps := s.j.list(); len(steps) != 0 {
+				t.Errorf("до отказа встало: %v", steps)
+			}
+		})
+	}
+}
+
+// С -allow-leak tun поднимается и там, где защиты нет, а без прав подсказка
+// с правами сохраняет -allow-leak.
+func TestConnectTunWithoutGuardAllowLeak(t *testing.T) {
+	s := stubTun(t)
+	withTunGuard(t, errors.New("защиты нет"))
+	s.guardErr = errors.New("на этой системе их пока нет")
+	te := newTestEnv(t)
+	te.addHome()
+	te.core = "connected"
+	out, errOut, stop := connectTun(t, te, s, "-allow-leak")
+	waitFor(t, out, errOut, "туннель работает")
+	if code := stop(); code != exitOK {
+		t.Fatalf("код %d, stderr:\n%s", code, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "Предупреждение: защита от утечки DNS и kill-switch не включились") {
+		t.Errorf("нет предупреждения:\n%s", errOut.String())
+	}
+
+	s = stubTun(t)
+	withTunGuard(t, errors.New("защиты нет"))
+	s.root = false
+	te = newTestEnv(t)
+	te.addHome()
+	var out2, errOut2 syncBuffer
+	code := run(context.Background(), s.env(te, &out2, &errOut2), []string{"connect", "-allow-leak", "-config", te.configPath(), "home"})
+	if want := fmt.Sprintf("%s csqtt-cli connect -allow-leak -config %s home;", adminHint, te.configPath()); code != exitError ||
+		!strings.Contains(errOut2.String(), want) {
+		t.Errorf("код %d, нет %q:\n%s", code, want, errOut2.String())
+	}
+}
+
+// Адаптер с каналом Link (Windows): ядро получает -listen-peer этого Link, а
+// не -tun-uds, и дескриптор не передаётся.
+func TestConnectTunOverLink(t *testing.T) {
+	s := stubTun(t)
+	link, err := datapath.ListenLink()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = link.Close() })
+	s.link = link
+	te := newTestEnv(t)
+	te.addHome()
+	te.core = "connected"
+	out, errOut, stop := connectTun(t, te, s)
+	waitFor(t, out, errOut, "туннель работает")
+	if code := stop(); code != exitOK {
+		t.Fatalf("код %d, stderr:\n%s", code, errOut.String())
+	}
+	args := coreArgs(out.String())
+	if len(args) != 1 || !strings.Contains(args[0], "--listen-peer="+link.Addr().String()) ||
+		strings.Contains(args[0], "--tun-uds") {
+		t.Errorf("аргументы ядра: %q", args)
+	}
+	if slices.Contains(s.j.list(), "дескриптор ядру") {
+		t.Errorf("дескриптор передавался: %v", s.j.list())
+	}
+}
+
 // -no-kill-switch и kill_switch = false: защита DNS есть, «закрыто» — нет;
 // метка у ядра есть (её пропускает защита DNS), окно капчи — без прокси.
 func TestConnectTunKillSwitchOff(t *testing.T) {
@@ -518,7 +650,7 @@ func TestConnectTunKillSwitchOff(t *testing.T) {
 				t.Errorf("kill-switch встал: %v", s.j.list())
 			}
 			args := coreArgs(out.String())
-			if len(args) != 1 || !strings.Contains(args[0], fmt.Sprintf("--mark=%d", netguard.SocketMark)) {
+			if len(args) != 1 || strings.Contains(args[0], "--mark=") != (len(markFlags()) > 0) {
 				t.Errorf("аргументы ядра: %q", args)
 			}
 			if s.bridge.Dial != nil || s.bridge.Direct != nil {

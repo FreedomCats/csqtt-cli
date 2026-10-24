@@ -9,6 +9,9 @@ go 1.26.2
 // golang.zx2c4.com/wireguard/windows (MIT) — пакет tunnel/winipcfg: маршруты,
 // адреса, DNS и выбор интерфейса. Импортируется только из *_windows.go,
 // в сборки под другие системы не попадает. Сам WireGuard не используется.
+// golang.zx2c4.com/wireguard (MIT) — только пакет tun: адаптер Wintun
+// datapath tun на Windows; тянет golang.zx2c4.com/wintun (MIT). Импортируется
+// только из *_windows.go. Версия — та, что в qwdtt-cli.
 // tailscale/wf (BSD-3) — фильтры WFP защиты от утечки DNS и kill-switch;
 // тянет go4.org/netipx (BSD-3). Тоже только из *_windows.go. Прочие его
 // косвенные (x/tools, honnef.co/go/tools, x/exp/typeparams) нужны лишь его
@@ -42,6 +45,7 @@ require (
 	golang.org/x/net v0.57.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
+	golang.zx2c4.com/wireguard v0.0.0-20260522210424-ecfc5a8d5446
 	golang.zx2c4.com/wireguard/windows v1.1.1
 	gvisor.dev/gvisor v0.0.0-20250503011706-39ed1f5ac29c
 )
@@ -60,6 +64,7 @@ require (
 	golang.org/x/time v0.7.0 // indirect
 	golang.org/x/tools v0.47.0 // indirect
 	golang.org/x/tools/go/expect v0.1.1-deprecated // indirect
+	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 	honnef.co/go/tools v0.5.1 // indirect
 )
 

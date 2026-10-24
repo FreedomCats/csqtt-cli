@@ -246,7 +246,7 @@ func TestMenuConnectOnlyWithoutRootDoesNotRelaunch(t *testing.T) {
 		name, sudoUser, want string
 	}{
 		{name: "через sudo", sudoUser: "user", want: "права root не получены: csqtt-cli запущен через sudo, но не от root"},
-		{name: "без sudo", want: "нужны права root"},
+		{name: "без sudo", want: adminHint},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			te := elevatedMenu(t)

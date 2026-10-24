@@ -40,7 +40,9 @@ type TunOptions struct {
 
 // Tun — datapath с системным адаптером: весь трафик системы идёт в туннель
 // (architecture.md §05). На Linux пакеты ходят между адаптером и ядром
-// напрямую: ядро получает дескриптор адаптера (SendFD, Р4).
+// напрямую: ядро получает дескриптор адаптера (SendFD, Р4). На Windows
+// адаптер Wintun открыт в процессе оболочки, и пакеты между ним и ядром
+// возит мост по Link (Link, tunBridge).
 //
 // Tun — Persistent: адаптер живёт весь csqtt-cli connect. Создаётся он при
 // первой надобности — Open, первый SendFD или первый Start, — Start каждой
@@ -89,10 +91,14 @@ type tunAdapter struct {
 	// configure задаёт адаптеру адрес /32 и MTU TunnelMTU и поднимает его;
 	// повторный вызов меняет адрес.
 	configure func(addr netip.Addr) error
-	// addRoutes и removeRoutes ставят и снимают маршруты через адаптер; оба
-	// безвредны повторно. Сам адаптер при этом остаётся.
+	// addRoutes и removeRoutes ставят и снимают маршруты routes через
+	// адаптер; оба безвредны повторно. Сам адаптер при этом остаётся.
 	addRoutes    func() error
 	removeRoutes func() error
+	routes       []netip.Prefix
+	// dropsIPv6 — IPv6 системы маршрутизируется в адаптер и отбрасывается
+	// мостом (Windows): закрывать его защите DNS незачем.
+	dropsIPv6 bool
 	// setDNS делает servers DNS системы, повторный вызов заменяет прежние;
 	// пустой список снимает поставленное. revertDNS снимает поставленное,
 	// без него ничего не делает. nil — DNS системы задавать нечем (подделки
@@ -101,6 +107,9 @@ type tunAdapter struct {
 	revertDNS func() error
 	// dup — новый дубликат дескриптора адаптера для ядра (Linux).
 	dup func() (int, error)
+	// link — канал с ядром, по которому мост возит пакеты адаптера
+	// (Windows); nil — пакеты идут мимо оболочки (dup).
+	link *Link
 	// close закрывает адаптер — вместе с ним уходят адрес и маршруты — и
 	// отпускает блокировку второго запуска.
 	close func() error
@@ -201,8 +210,8 @@ func (t *Tun) Start(_ context.Context, conf TunConf) error {
 	if err := adapter.addRoutes(); err != nil {
 		return fmt.Errorf("tun: маршруты: %w", err)
 	}
-	t.logf("[TUN] адаптер %q: адрес %v/32, MTU %d, маршруты %v", t.opts.Name, a, TunnelMTU, tunRoutes4)
-	t.blockIPv6()
+	t.logf("[TUN] адаптер %q: адрес %v/32, MTU %d, маршруты %v", t.opts.Name, a, TunnelMTU, adapter.routes)
+	t.blockIPv6(adapter)
 	t.dns = slices.Clone(conf.DNS)
 	if err := t.applyDNS(adapter); err != nil {
 		return errors.Join(fmt.Errorf("tun: %w", err), t.suspendLocked())
@@ -266,11 +275,20 @@ func (t *Tun) applyDNS(adapter *tunAdapter) error {
 }
 
 // blockIPv6 говорит защите DNS закрыть IPv6 системы наружу при следующем
-// Enable: маршрутов IPv6 в туннель нет никогда, и без запрета IPv6 шёл бы
-// мимо него. Локальная сеть IPv6 остаётся открытой, как и IPv4.
+// Enable: маршрутов IPv6 в туннель на Linux нет, и без запрета IPv6 шёл бы
+// мимо него. Локальная сеть IPv6 остаётся открытой, как и IPv4. Где IPv6
+// уходит в адаптер и отбрасывается мостом (dropsIPv6), защите закрывать
+// нечего.
 // Под t.mu. Зовётся перед каждым включением защиты — защита могла смениться
 // между сеансами, а вызов дешёвый; строка в журнал — один раз.
-func (t *Tun) blockIPv6() {
+func (t *Tun) blockIPv6(adapter *tunAdapter) {
+	if adapter.dropsIPv6 {
+		if !t.ipv6Told {
+			t.ipv6Told = true
+			t.logf("[TUN] IPv6 системы уходит в адаптер и отбрасывается, пока туннель поднят: туннель IPv6 не везёт")
+		}
+		return
+	}
 	blocker, ok := t.opts.DNSGuard.(IPv6Blocker)
 	if ok {
 		blocker.BlockIPv6(true)
