@@ -66,6 +66,9 @@ type Config struct {
 	// BindIf. Ноль — не передаётся.
 	BindIf uint32
 	Mark   uint32
+	// epoch — эпоха подключения (-gen/-salt). Её задаёт Start, новую на
+	// каждый процесс ядра; нулевая не передаётся.
+	epoch epoch
 }
 
 // Args — аргументы командной строки ядра. Флаги — в виде --имя=значение.
@@ -105,6 +108,10 @@ func (c Config) Args() []string {
 	if c.Mark != 0 {
 		add("mark", strconv.FormatUint(uint64(c.Mark), 10))
 	}
+	if c.epoch.gen != 0 {
+		add("gen", strconv.FormatUint(c.epoch.gen, 10))
+	}
+	add("salt", c.epoch.salt)
 	return args
 }
 

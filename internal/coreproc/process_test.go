@@ -59,6 +59,10 @@ func fakeCore(mode string) int {
 			fmt.Fprintln(os.Stderr, "[ФАТАЛ] секреты в аргументах или нет --secrets-stdin")
 			return 3
 		}
+		if _, _, err := epochArgs(os.Args); err != nil {
+			fmt.Fprintln(os.Stderr, "[ФАТАЛ] эпоха:", err)
+			return 3
+		}
 		in := bufio.NewScanner(os.Stdin)
 		if !in.Scan() || in.Text() != fakeConfig.SecretsLine() {
 			fmt.Fprintln(os.Stderr, "[ФАТАЛ] первая строка stdin — не секреты")
@@ -97,6 +101,15 @@ func fakeCore(mode string) int {
 	// hashcheck — режим --validate-vk-hashes (hashcheck_test.go).
 	case "hashcheck":
 		return fakeHashCheck()
+	// epoch печатает в журнал свои аргументы эпохи и выходит.
+	case "epoch":
+		gen, salt, err := epochArgs(os.Args)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "[ФАТАЛ] эпоха:", err)
+			return 3
+		}
+		fmt.Fprintln(os.Stderr, "EPOCH "+gen+" "+salt)
+		return 0
 	// fail падает при запуске, как ядро без пароля.
 	case "fail":
 		fmt.Fprintln(os.Stderr, "[ФАТАЛ] [КЛИЕНТ] Нужен -password")

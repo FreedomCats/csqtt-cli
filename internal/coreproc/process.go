@@ -81,6 +81,7 @@ type Process struct {
 // Start запускает ядро path с аргументами cfg.Args() и первой строкой stdin
 // пишет ему cfg.SecretsLine(), а в auto_js той же записью — строку с токеном
 // VK (cfg.VKToken). Ядро в auto_js без токена не запускается: ErrNoVKToken.
+// Каждый запуск получает новую эпоху подключения (newEpoch).
 //
 // Ядро не видит консоли оболочки, и Ctrl+C до него не доходит: остановить
 // его — дело оболочки (Stop). Если оболочка умрёт, ядро умрёт вместе с ней:
@@ -103,6 +104,7 @@ func startConfig(path string, cfg Config, env []string) (*Process, error) {
 	if err != nil {
 		return nil, err
 	}
+	cfg.epoch = newEpoch()
 	p, err := start(path, cfg.Args(), env, cfg.AutoJS())
 	if err != nil {
 		return nil, err

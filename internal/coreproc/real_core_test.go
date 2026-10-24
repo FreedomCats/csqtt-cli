@@ -60,6 +60,10 @@ func TestRealCore(t *testing.T) {
 		strings.Contains(cmdline, realCoreConfig.Password) || strings.Contains(cmdline, realCoreConfig.Hashes[0]) {
 		t.Errorf("командная строка ядра: %s", cmdline)
 	}
+	// Эпоху ядро приняло: с негодным --gen оно не дошло бы до LISTEN.
+	if _, _, err := epochArgs(strings.Fields(cmdline)); err != nil {
+		t.Errorf("эпоха в командной строке ядра: %v", err)
+	}
 	time.Sleep(2 * time.Second)
 
 	start := time.Now()
