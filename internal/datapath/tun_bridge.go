@@ -23,11 +23,16 @@ type packetDevice interface {
 // впустую, пока сбой не пройдёт или мост не остановят.
 const bridgeRetry = 100 * time.Millisecond
 
-// bridgeGiveUp — сколько сбой одной стороны может идти без перерыва, прежде
-// чем мост сочтёт адаптер сломанным. Повторы лечат занятое кольцо, но не
+// bridgeGiveUp — сколько мост может провести в сбое одной стороны (сбои
+// подряд, без удачного вызова между ними), прежде чем сочтёт адаптер
+// сломанным. Повторы лечат занятое кольцо, но не
 // испорченное («Send ring corrupt» у wireguard-go): такой сбой не проходит.
 // Переменная — ради тестов.
 var bridgeGiveUp = 10 * time.Second
+
+// bridgeGap — больше этого промежуток между сбоями в серию не засчитывается
+// (bridgeFailure.report). Переменная — ради тестов.
+var bridgeGap = time.Second
 
 // errAdapterGone — адаптер закрыт не мостом: система закрыла его сама.
 var errAdapterGone = errors.New("система закрыла адаптер: его отключили или удалили, " +
@@ -169,28 +174,35 @@ func (b *tunBridge) stopped() bool {
 	}
 }
 
-// bridgeFailure — идущий сбой одной стороны моста: сколько раз подряд и с
-// какого времени.
+// bridgeFailure — идущий сбой одной стороны моста: сколько раз подряд, когда
+// последний и сколько времени мост в нём провёл.
 type bridgeFailure struct {
-	count int
-	since time.Time
+	count   int
+	last    time.Time
+	failing time.Duration
 }
 
-// report отмечает сбой и отдаёт, сколько идёт серия.
+// report отмечает сбой и отдаёт, сколько мост в серии провёл. Промежуток
+// между сбоями засчитывается не длиннее bridgeGap: сторона записи сбоит,
+// только когда есть что писать, и тишина между двумя случайными сбоями —
+// не сбой, а постоянный сбой при редких пакетах всё равно набежит.
 func (f *bridgeFailure) report(logf func(string, ...any), what string, err error) time.Duration {
+	now := time.Now()
 	if f.count == 0 {
-		f.since = time.Now()
 		if logf != nil {
 			logf("[TUN] мост: %s: %v — повторяю", what, err)
 		}
+	} else {
+		f.failing += min(now.Sub(f.last), bridgeGap)
 	}
 	f.count++
-	return time.Since(f.since)
+	f.last = now
+	return f.failing
 }
 
 func (f *bridgeFailure) ok(logf func(string, ...any), what string) {
 	if f.count > 0 && logf != nil {
 		logf("[TUN] мост: %s снова работает после %d сбоев", what, f.count)
 	}
-	f.count = 0
+	f.count, f.failing = 0, 0
 }

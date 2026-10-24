@@ -343,3 +343,31 @@ func TestBridgeStopIsNotLoss(t *testing.T) {
 		t.Errorf("после своей остановки мост сказал о пропаже: %q", lost)
 	}
 }
+
+// Два случайных сбоя записи, между которыми тишина дольше bridgeGiveUp, —
+// не сбой длиной в эту тишину: мост работает дальше.
+func TestBridgeIdleBetweenFailures(t *testing.T) {
+	savedGiveUp, savedGap := bridgeGiveUp, bridgeGap
+	bridgeGiveUp, bridgeGap = 300*time.Millisecond, 50*time.Millisecond
+	t.Cleanup(func() { bridgeGiveUp, bridgeGap = savedGiveUp, savedGap })
+	dev, link, log, _ := runBridge(t)
+	core := fakeCore(t, link)
+	boom := errors.New("кольцо Wintun занято")
+	dev.mu.Lock()
+	dev.writeErr = []error{boom, boom}
+	dev.mu.Unlock()
+
+	send(t, core, link.Addr(), ipv4(40, 1))
+	if n := log.await("запись в адаптер: кольцо Wintun занято", 1, time.Second); n != 1 {
+		t.Fatalf("строк о сбое записи %d", n)
+	}
+	time.Sleep(2 * bridgeGiveUp)
+	send(t, core, link.Addr(), ipv4(40, 2))
+	send(t, core, link.Addr(), ipv4(40, 3))
+	if got := dev.written(2 * time.Second); len(got) != 40 || got[20] != 3 {
+		t.Fatalf("после сбоев записано %v, ждали третий пакет", got)
+	}
+	if lost := log.losses(); len(lost) != 0 {
+		t.Errorf("мост счёл адаптер сломанным: %q", lost)
+	}
+}

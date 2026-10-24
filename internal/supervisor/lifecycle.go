@@ -382,6 +382,8 @@ func (t *Tunnel) Restart(reason error) {
 // и так же — если ядро команду отклонило. Между попытками — тоже как Restart:
 // задержка прерывается, а индекс новое ядро получит в Prepare. Не поднимется
 // туннель на новом интерфейсе — ядро перезапустит таймер деградации.
+// Ядро, которое уже на интерфейсе index (Prepare попытки взял его), просьбу
+// пропускает: перезапуск ему ничего не даст.
 //
 // Вторая просьба до исполнения первой её заменяет: нужен последний
 // интерфейс.
@@ -449,6 +451,14 @@ func (t *Tunnel) Run(ctx context.Context) error {
 			final = res.err
 			return res.err
 		}
+		// Datapath мог сломаться, пока попытка кончалась сама: тогда не
+		// снимать его и не обещать переподключение — это конец.
+		select {
+		case err := <-t.failed:
+			final = err
+			return err
+		default:
+		}
 
 		t.suspend()
 		var delay time.Duration
@@ -489,19 +499,17 @@ func (t *Tunnel) pause(ctx context.Context, delay time.Duration) (bool, error) {
 	}
 	woken := make(chan wakeup, 1)
 	go func() {
+		var w wakeup
 		select {
 		case <-t.restart:
-			woken <- wakeup{early: true}
-			wake()
+			w.early = true
 		case <-t.rebind:
-			woken <- wakeup{early: true}
-			wake()
-		case err := <-t.failed:
-			woken <- wakeup{err: err}
-			wake()
+			w.early = true
+		case w.err = <-t.failed:
 		case <-sctx.Done():
-			woken <- wakeup{}
 		}
+		woken <- w
+		wake()
 	}()
 	slept := t.sleep(sctx, delay)
 	wake()
@@ -570,7 +578,7 @@ func (t *Tunnel) attempt(ctx context.Context) result {
 
 	actx, cancel := context.WithCancel(ctx)
 	a := &attempt{tunnel: t, core: core, ctx: actx, socket: socket,
-		fdSent: t.opts.TunFD == nil, fdDone: make(chan error, 1)}
+		fdSent: t.opts.TunFD == nil, fdDone: make(chan error, 1), bindIf: cfg.BindIf}
 	// Порядок снятия: таймер, отмена (капча бросает ожидание), горутины.
 	defer a.wg.Wait()
 	defer cancel()
@@ -680,6 +688,9 @@ type attempt struct {
 	// rebound — ядру послан BIND_IF с этой причиной, и отказ в его журнале
 	// перезапускает попытку; nil — не посылали.
 	rebound error
+	// bindIf — интерфейс ядра: -bind-if из Prepare, затем последний
+	// посланный BIND_IF; ноль — без привязки.
+	bindIf uint32
 }
 
 // run читает вывод ядра до конца — иначе оно встанет на записи — и решает,
@@ -710,9 +721,13 @@ func (a *attempt) run(cancelled <-chan struct{}) result {
 			a.rebind(req)
 		case err := <-a.tunnel.failed:
 			// Datapath сломался насовсем: следующей попытке не на чем
-			// работать. Остановка по Ctrl+C, если шла, — тоже конец.
+			// работать. Остановка, если шла, — тоже конец, но причину
+			// конца, уже известную (сервер отказал, токен не принят), сбой
+			// адаптера не заменяет.
 			if a.stopping {
-				a.res = result{err: err, final: true}
+				if !a.res.final {
+					a.res = result{err: err, final: true}
+				}
 			} else {
 				a.stop(result{err: err, final: true})
 			}
@@ -766,6 +781,11 @@ func (a *attempt) restart(reason error) {
 // rebind — просьба Rebind посреди попытки: работающему ядру — BIND_IF, иначе
 // перезапуск (см. Rebind).
 func (a *attempt) rebind(req rebindRequest) {
+	if req.index == a.bindIf && !a.stopping {
+		// Ядро уже на этом интерфейсе: попытка началась, когда новый
+		// выбор уже стоял, и Prepare его взял.
+		return
+	}
 	if a.stopping || !a.started {
 		a.restart(req.reason)
 		return
@@ -774,7 +794,7 @@ func (a *attempt) rebind(req rebindRequest) {
 		a.restart(req.reason)
 		return
 	}
-	a.rebound = req.reason
+	a.rebound, a.bindIf = req.reason, req.index
 	a.tunnel.logf("ядро переходит на интерфейс %d без перезапуска: новые соединения — через него", req.index)
 }
 

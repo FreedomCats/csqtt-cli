@@ -5,8 +5,11 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/FreedomCats/csqtt-cli/internal/coreproc"
 )
 
 // recRebound — ядро приняло BIND_IF:7, как пишет настоящее (bind_if.rs).
@@ -219,5 +222,123 @@ func TestDatapathFailedDuringDelay(t *testing.T) {
 	}
 	if n := len(h.attempts()); n != 1 {
 		t.Errorf("попыток %d, ждали одну", n)
+	}
+}
+
+// waitRebindTaken ждёт, пока цикл не заберёт просьбу Rebind.
+func waitRebindTaken(t *testing.T, h *harness) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(h.tunnel.rebind) > 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("цикл не забрал просьбу Rebind")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+}
+
+// Попытка началась, когда новый интерфейс уже стоял, и Prepare дал его
+// ядру: Rebind на него же до PROCESS не перезапускает, после — не шлёт
+// BIND_IF.
+func TestRebindToCurrentInterface(t *testing.T) {
+	prepare := func(cfg *coreproc.Config) error {
+		cfg.BindIf = 7
+		return nil
+	}
+	changed := errors.New("сеть сменилась")
+	t.Run("до PROCESS", func(t *testing.T) {
+		h := newHarness(t, Options{Prepare: prepare}, []string{"wait never"})
+		done := h.run()
+		core := waitAttempts(t, h, 1)[0]
+		h.tunnel.Rebind(7, changed)
+		waitRebindTaken(t, h)
+		if core.wasStopped() || len(h.attempts()) != 1 {
+			t.Errorf("ядро на том же интерфейсе перезапустили: попыток %d", len(h.attempts()))
+		}
+		h.cancel()
+		if err := h.result(done); err != nil {
+			t.Fatalf("Run() = %v", err)
+		}
+	})
+	t.Run("после PROCESS", func(t *testing.T) {
+		h := newHarness(t, Options{Prepare: prepare}, recConnect)
+		done := h.run()
+		h.waitState(StateConnected)
+		h.tunnel.Rebind(7, changed)
+		waitRebindTaken(t, h)
+		h.cancel()
+		if err := h.result(done); err != nil {
+			t.Fatalf("Run() = %v", err)
+		}
+		if got := h.attempts()[0].commands(); len(got) != 0 || len(h.attempts()) != 1 {
+			t.Errorf("попыток %d, команды ядру %q", len(h.attempts()), got)
+		}
+	})
+}
+
+// Datapath сломался, пока ядро останавливается по отказу сервера: Run
+// кончается отказом сервера — его причину сбой адаптера не заменяет.
+func TestDatapathFailedKeepsFinalCause(t *testing.T) {
+	dp := newFakeFailing()
+	h := newHarness(t, Options{Datapath: dp}, join(recStart, recCredentials, []string{
+		fatalLine("handshake_rejected", "FATAL_AUTH: неверный пароль подключения"),
+		"on stop", "hold",
+	}))
+	done := h.run()
+	core := waitAttempts(t, h, 1)[0]
+	deadline := time.Now().Add(5 * time.Second)
+	for !core.wasStopped() {
+		if time.Now().After(deadline) {
+			t.Fatal("ядру не послали Stop")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	dp.failed <- errors.New("адаптер пропал")
+	for len(dp.failed) > 0 {
+		time.Sleep(time.Millisecond)
+	}
+	if !h.abort() {
+		t.Fatal("остановку не прервать")
+	}
+	var se *ServerError
+	if err := h.result(done); !errors.As(err, &se) || !se.Rejected() {
+		t.Fatalf("Run() = %v, ждали отказ сервера", err)
+	}
+}
+
+// failingOnRelease — Link, на котором datapath ломается, когда попытка
+// кончилась и порт ядра снят: уже после её цикла, до следующей.
+type failingOnRelease struct {
+	*fakeLink
+	once sync.Once
+	fail func()
+}
+
+func (l *failingOnRelease) SetCorePort(port uint16) {
+	l.fakeLink.SetCorePort(port)
+	if port == 0 {
+		l.once.Do(l.fail)
+	}
+}
+
+// Datapath сломался, пока попытка кончалась сама: Run кончается его
+// ошибкой без снятия маршрутов и без строки о переподключении.
+func TestDatapathFailedAsAttemptEnds(t *testing.T) {
+	dp := newFakeFailing()
+	gone := errors.New("адаптер пропал")
+	h := newHarness(t, Options{Datapath: dp}, join(recConnect, []string{"exit 1"}), recConnect)
+	h.tunnel.opts.Link = &failingOnRelease{fakeLink: h.link, fail: func() { dp.failed <- gone }}
+	if err := h.result(h.run()); !errors.Is(err, gone) {
+		t.Fatalf("Run() = %v, ждали отказ datapath", err)
+	}
+	if n := len(h.attempts()); n != 1 {
+		t.Errorf("попыток %d, ждали одну", n)
+	}
+	if recs := h.transitionsTo(StateReconnecting); recs != nil {
+		t.Errorf("туннель обещал переподключение: %+v", recs)
+	}
+	if len(h.sleeps()) != 0 {
+		t.Errorf("задержки %v", h.sleeps())
 	}
 }

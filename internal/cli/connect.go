@@ -192,6 +192,11 @@ func (e *env) planConnect(f connectFlags) (*connectPlan, error) {
 	}
 	switch mode {
 	case config.DatapathSocks:
+		// В отличие от прочих флагов tun, этот не пропускается молча: за
+		// сетью в socks никто не следит, и замер с ним сравнил бы ничто.
+		if f.netSwitch == netSwitchBindIf {
+			return nil, usagef("-net-switch %s — только с tun: в socks за сменой сети не слежу", f.netSwitch)
+		}
 	case config.DatapathTun:
 		// Права и система — до секретов и до сети: отказ, а не тихий
 		// SOCKS5, — человек, ждущий VPN на всю систему, решил бы, что весь

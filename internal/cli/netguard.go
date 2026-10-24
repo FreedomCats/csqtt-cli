@@ -157,12 +157,18 @@ func (b *coreBinding) warnReversePath(c netguard.Choice) {
 // watchNetwork следит за сменой физического интерфейса: новые индексы
 // netguard ставит сам, выбор печатается строкой, туннель переходит в новую
 // сеть — перезапуском или, если rebind, командой BIND_IF работающему ядру.
-// Интерфейс, который пропадал и вернулся тем же, — всегда перезапуск: BIND_IF
-// на тот же индекс ничего не меняет, а сокеты через него мертвы. ok = false —
-// подписаться не вышло: подключению это не мешает, но новая сеть подхватится
-// только с концом попытки — об этом строка.
+// BIND_IF — только на другой индекс IPv4, чем тот, к которому ядро уже
+// привязано (bound): на тот же он ничего не меняет, а смена именно этого
+// интерфейса (пропал и вернулся, сменился лишь IPv6) значит, что сокеты
+// через него мертвы, — тогда перезапуск. ok = false — подписаться не вышло:
+// подключению это не мешает, но новая сеть подхватится только с концом
+// попытки — об этом строка.
 func watchNetwork(out *printer, guard *netguard.Guard, sw netSwitcher, rebind bool) (stop func(), ok bool) {
 	b := &coreBinding{out: out}
+	// bound — индекс IPv4 ядра: с ним начнётся первая попытка, а дальше —
+	// последний непустой выбор (его получит и BIND_IF, и Prepare новой
+	// попытки). Changed зовётся по одному.
+	bound, _ := guard.Interfaces()
 	stop, err := watchNetworkChanges(guard, netguard.WatchOptions{
 		Changed: func(now, before netguard.Choice) {
 			switch {
@@ -177,14 +183,16 @@ func watchNetwork(out *printer, guard *netguard.Guard, sw netSwitcher, rebind bo
 				out.line("сеть переподключилась: %s", now)
 			default:
 				out.line("сеть сменилась: %s", now)
-				if rebind && now.Index4 != 0 {
-					b.warnReversePath(now)
-					sw.Rebind(now.Index4, errNetworkChanged)
-					return
-				}
 			}
 			b.warnReversePath(now)
-			sw.Restart(errNetworkChanged)
+			if rebind && now.Index4 != 0 && now.Index4 != bound {
+				sw.Rebind(now.Index4, errNetworkChanged)
+			} else {
+				sw.Restart(errNetworkChanged)
+			}
+			if now.Index4 != 0 {
+				bound = now.Index4
+			}
 		},
 	})
 	if err != nil {

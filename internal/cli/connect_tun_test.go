@@ -793,8 +793,54 @@ func TestConnectTunNetworkChangeBindIf(t *testing.T) {
 	}
 }
 
+// -net-switch bindif: смена того интерфейса, к которому ядро уже привязано, —
+// перезапуск, а не BIND_IF на тот же индекс: кабель выдернули и вставили,
+// сменился только IPv6.
+func TestConnectTunSameInterfaceBindIf(t *testing.T) {
+	s := stubTun(t)
+	te := newTestEnv(t)
+	te.addHome()
+	te.core = "connected"
+	out, errOut, stop := connectTun(t, te, s, "-net-switch", "bindif")
+	waitFor(t, out, errOut, "туннель работает")
+
+	eth := netguard.Choice{Index4: 3, Alias4: "eth0"}
+	s.network(netguard.Choice{}, eth)
+	waitFor(t, out, errOut, "сеть пропала")
+	s.network(eth, netguard.Choice{})
+	waitAttemptsCLI(t, out, errOut, 2)
+	eth6 := netguard.Choice{Index4: 3, Alias4: "eth0", Index6: 5, Alias6: "eth1"}
+	s.network(eth6, eth)
+	waitAttemptsCLI(t, out, errOut, 3)
+	if code := stop(); code != exitOK {
+		t.Fatalf("код %d, stderr:\n%s", code, errOut.String())
+	}
+
+	got := out.String()
+	for i, a := range coreArgs(got) {
+		if !strings.Contains(a, "--bind-if=3") {
+			t.Errorf("попытка %d: аргументы ядра %q", i+1, a)
+		}
+	}
+	if strings.Contains(got, "без перезапуска") {
+		t.Errorf("ядру слали BIND_IF на тот же интерфейс:\n%s", got)
+	}
+}
+
+// waitAttemptsCLI ждёт, пока поддельное ядро не запустят n раз.
+func waitAttemptsCLI(t *testing.T, out, errOut *syncBuffer, n int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for len(coreArgs(out.String())) < n {
+		if time.Now().After(deadline) {
+			t.Fatalf("попыток меньше %d:\n%s\nstderr:\n%s", n, out.String(), errOut.String())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // Негодное значение -net-switch — ошибка командной строки до подключения;
-// в помощи флага нет.
+// bindif с socks — тоже: за сетью там не следят. В помощи флага нет.
 func TestConnectNetSwitchFlag(t *testing.T) {
 	s := stubTun(t)
 	te := newTestEnv(t)
@@ -802,6 +848,10 @@ func TestConnectNetSwitchFlag(t *testing.T) {
 	code, _, stderr := te.run("connect", "-net-switch", "bind", "-config", te.configPath())
 	if code != exitUsage || !strings.Contains(stderr, "-net-switch: restart или bindif") {
 		t.Errorf("код %d, stderr:\n%s", code, stderr)
+	}
+	code, _, stderr = te.run("connect", "-datapath", "socks", "-net-switch", "bindif", "-config", te.configPath())
+	if code != exitUsage || !strings.Contains(stderr, "-net-switch bindif — только с tun") {
+		t.Errorf("socks: код %d, stderr:\n%s", code, stderr)
 	}
 	if steps := s.j.list(); len(steps) != 0 {
 		t.Errorf("с негодным флагом connect трогал систему: %v", steps)
