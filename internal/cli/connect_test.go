@@ -40,9 +40,10 @@ func socksHome(t *testing.T, te *testEnv) string {
 	return listen
 }
 
-// Профиль с datapath = tun (умолчание) — отказ с подсказкой, а не тихий
-// SOCKS5: ядро не запускается.
+// Профиль с datapath = tun (умолчание) без прав — отказ с подсказкой, а не
+// тихий SOCKS5: ядро не запускается.
 func TestConnectRefusesTun(t *testing.T) {
+	runAsRoot(t, false)
 	te := newTestEnv(t)
 	te.addHome()
 	te.core = "connected"

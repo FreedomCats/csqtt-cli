@@ -1,9 +1,9 @@
 // dnsguard.go — защита от утечки DNS и kill-switch для datapath, которые
 // забирают весь трафик системы (Requirements.DNSGuard).
 //
-// Сессия защиты (на Linux — таблица nftables inet csqtt-cli) открывается
-// здесь, до первой попытки, и живёт весь csqtt-cli connect; правила ставит и
-// снимает сам datapath. В той же сессии живёт kill-switch (killswitch.go).
+// Сессия защиты (на Linux — таблица nftables inet csqtt-cli, на Windows —
+// сессия WFP) открывается здесь, до первой попытки, и живёт весь csqtt-cli
+// connect; правила ставит и снимает сам datapath. В той же сессии живёт kill-switch (killswitch.go).
 // Отказ — по умолчанию ошибка с подсказкой про -allow-leak: подключение без
 // защиты — только явным согласием.
 package cli
@@ -16,8 +16,8 @@ import (
 	"github.com/FreedomCats/csqtt-cli/internal/datapath"
 )
 
-// dnsGuardSession — то, что CLI получает от linuxsys.DNSGuard: защита DNS с
-// kill-switch.
+// dnsGuardSession — то, что CLI получает от linuxsys.DNSGuard и
+// winsys.DNSGuard: защита DNS с kill-switch.
 type dnsGuardSession interface {
 	lockdownSession
 	Close() error

@@ -15,7 +15,7 @@ const (
 )
 
 // Lockdown ставит набор «закрыто» — kill-switch, пока
-// туннель не поднят: системе разрешены только процесс csqtt-cli, loopback,
+// туннель не поднят: системе разрешены только процессы csqtt-cli и ядра, loopback,
 // служебные протоколы (DHCP, ICMPv6 ND и RA) и локальная сеть, а DNS —
 // никуда, кроме csqtt-cli и loopback, даже к локальной сети: резолвер роутера
 // отдал бы запросы провайдеру. Прочее запрещено, как в linuxsys.
@@ -25,7 +25,7 @@ const (
 func (g *DNSGuard) Lockdown() error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	rules, err := lockdownRules(g.appID)
+	rules, err := lockdownRules(g.appIDs)
 	if err != nil {
 		return err
 	}
@@ -52,69 +52,86 @@ var localNets = []netip.Prefix{
 // (MIT, v1.1.1: permitLoopback, permitDHCPIPv4/IPv6, permitNdp, blockAll),
 // но DHCP — к любому адресу, как в linuxsys: аренда продлевается одноадресно, и
 // сервер бывает не в локальной сети. На каждом слое — сверху вниз по весу:
-// свой процесс и loopback, запрет порта 53, служебные протоколы и
+// свои процессы и loopback, запрет порта 53, служебные протоколы и
 // локальная сеть, запрет всего.
-func lockdownRules(appID string) ([]*wf.Rule, error) {
+func lockdownRules(appIDs []string) ([]*wf.Rule, error) {
 	var rules []*wf.Rule
 	for _, layer := range dnsGuardLayers {
-		add := func(name string, weight uint64, action wf.Action, conds ...*wf.Match) error {
-			r, err := newGuardRule(layer.id, name+", "+layer.name, weight, action, conds)
-			if err != nil {
-				return err
-			}
-			rules = append(rules, r)
-			return nil
+		self, err := newGuardRule(layer.id, "csqtt-cli: kill-switch, сам csqtt-cli, "+layer.name,
+			dnsGuardPermitWeight, wf.ActionPermit, selfMatches(appIDs))
+		if err != nil {
+			return nil, err
 		}
+		block53, err := newGuardRule(layer.id, "csqtt-cli: kill-switch, запрет DNS, "+layer.name,
+			dnsGuardBlockWeight, wf.ActionBlock, dnsPortMatches())
+		if err != nil {
+			return nil, err
+		}
+		local, err := lockdownLocalRules(layer, "csqtt-cli: kill-switch")
+		if err != nil {
+			return nil, err
+		}
+		// local[0] — loopback: вес как у своих процессов, выше запрета DNS.
+		rules = append(append(rules, self, local[0], block53), local[1:]...)
+	}
+	return rules, nil
+}
 
-		if err := add("csqtt-cli: kill-switch, сам csqtt-cli", dnsGuardPermitWeight, wf.ActionPermit,
-			&wf.Match{Field: wf.FieldALEAppID, Op: wf.MatchTypeEqual, Value: appID}); err != nil {
-			return nil, err
+// lockdownLocalRules — часть «закрыто» одного слоя без своих процессов и
+// запрета DNS: loopback, DHCP, ICMPv6 ND и RA, локальная сеть, запрет всего.
+// Ею же защита DNS закрывает IPv6 наружу (BlockIPv6). prefix — начало имён
+// правил.
+func lockdownLocalRules(layer guardLayer, prefix string) ([]*wf.Rule, error) {
+	var rules []*wf.Rule
+	add := func(name string, weight uint64, action wf.Action, conds ...*wf.Match) error {
+		r, err := newGuardRule(layer.id, prefix+", "+name+", "+layer.name, weight, action, conds)
+		if err != nil {
+			return err
 		}
-		if err := add("csqtt-cli: kill-switch, loopback", dnsGuardPermitWeight, wf.ActionPermit,
-			&wf.Match{Field: wf.FieldFlags, Op: wf.MatchTypeFlagsAllSet, Value: wf.ConditionFlagIsLoopback}); err != nil {
-			return nil, err
-		}
-		if err := add("csqtt-cli: kill-switch, запрет DNS", dnsGuardBlockWeight, wf.ActionBlock,
-			dnsPortMatches()...); err != nil {
-			return nil, err
-		}
+		rules = append(rules, r)
+		return nil
+	}
 
-		// DHCP: клиент — порт 68 (546 у DHCPv6), сервер — 67 (547). На
-		// входящем слое «локальный» — тоже клиент.
-		client, server := uint16(68), uint16(67)
-		if layer.ipv6 {
-			client, server = 546, 547
-		}
-		if err := add("csqtt-cli: kill-switch, DHCP", lockdownLocalWeight, wf.ActionPermit,
-			&wf.Match{Field: wf.FieldIPProtocol, Op: wf.MatchTypeEqual, Value: wf.IPProtoUDP},
-			&wf.Match{Field: wf.FieldIPLocalPort, Op: wf.MatchTypeEqual, Value: client},
-			&wf.Match{Field: wf.FieldIPRemotePort, Op: wf.MatchTypeEqual, Value: server}); err != nil {
-			return nil, err
-		}
-		if layer.ipv6 {
-			// ND и RA ходят и на глобальные адреса соседей. Тип ICMP на
-			// слоях ALE лежит в поле локального порта.
-			ndp := []*wf.Match{{Field: wf.FieldIPProtocol, Op: wf.MatchTypeEqual, Value: wf.IPProtoICMPV6}}
-			for typ := uint16(133); typ <= 137; typ++ {
-				ndp = append(ndp, &wf.Match{Field: wf.FieldIPLocalPort, Op: wf.MatchTypeEqual, Value: typ})
-			}
-			if err := add("csqtt-cli: kill-switch, ICMPv6 ND и RA", lockdownLocalWeight, wf.ActionPermit, ndp...); err != nil {
-				return nil, err
-			}
-		}
+	if err := add("loopback", dnsGuardPermitWeight, wf.ActionPermit,
+		&wf.Match{Field: wf.FieldFlags, Op: wf.MatchTypeFlagsAllSet, Value: wf.ConditionFlagIsLoopback}); err != nil {
+		return nil, err
+	}
 
-		var local []*wf.Match
-		for _, p := range localNets {
-			if p.Addr().Is6() == layer.ipv6 {
-				local = append(local, &wf.Match{Field: wf.FieldIPRemoteAddress, Op: wf.MatchTypeEqual, Value: p})
-			}
+	// DHCP: клиент — порт 68 (546 у DHCPv6), сервер — 67 (547). На
+	// входящем слое «локальный» — тоже клиент.
+	client, server := uint16(68), uint16(67)
+	if layer.ipv6 {
+		client, server = 546, 547
+	}
+	if err := add("DHCP", lockdownLocalWeight, wf.ActionPermit,
+		&wf.Match{Field: wf.FieldIPProtocol, Op: wf.MatchTypeEqual, Value: wf.IPProtoUDP},
+		&wf.Match{Field: wf.FieldIPLocalPort, Op: wf.MatchTypeEqual, Value: client},
+		&wf.Match{Field: wf.FieldIPRemotePort, Op: wf.MatchTypeEqual, Value: server}); err != nil {
+		return nil, err
+	}
+	if layer.ipv6 {
+		// ND и RA ходят и на глобальные адреса соседей. Тип ICMP на
+		// слоях ALE лежит в поле локального порта.
+		ndp := []*wf.Match{{Field: wf.FieldIPProtocol, Op: wf.MatchTypeEqual, Value: wf.IPProtoICMPV6}}
+		for typ := uint16(133); typ <= 137; typ++ {
+			ndp = append(ndp, &wf.Match{Field: wf.FieldIPLocalPort, Op: wf.MatchTypeEqual, Value: typ})
 		}
-		if err := add("csqtt-cli: kill-switch, локальная сеть", lockdownLocalWeight, wf.ActionPermit, local...); err != nil {
+		if err := add("ICMPv6 ND и RA", lockdownLocalWeight, wf.ActionPermit, ndp...); err != nil {
 			return nil, err
 		}
-		if err := add("csqtt-cli: kill-switch, запрет всего", lockdownBlockWeight, wf.ActionBlock); err != nil {
-			return nil, err
+	}
+
+	var local []*wf.Match
+	for _, p := range localNets {
+		if p.Addr().Is6() == layer.ipv6 {
+			local = append(local, &wf.Match{Field: wf.FieldIPRemoteAddress, Op: wf.MatchTypeEqual, Value: p})
 		}
+	}
+	if err := add("локальная сеть", lockdownLocalWeight, wf.ActionPermit, local...); err != nil {
+		return nil, err
+	}
+	if err := add("запрет всего", lockdownBlockWeight, wf.ActionBlock); err != nil {
+		return nil, err
 	}
 	return rules, nil
 }

@@ -35,6 +35,12 @@ func TestMain(m *testing.M) {
 	// каталога.
 	os.Unsetenv("DBUS_SESSION_BUS_ADDRESS")
 	os.Unsetenv("XDG_RUNTIME_DIR")
+	// И до настоящей защиты DNS: с правами (консоль администратора, root)
+	// connect дошёл бы до фильтров WFP или таблицы nftables и закрыл бы сеть
+	// машины. Тест, которому она нужна, ставит её сам.
+	openDNSGuard = func() (dnsGuardSession, error) {
+		return nil, errors.New("настоящая защита DNS в тестах не открывается")
+	}
 	if os.Getenv(asMainEnv) != "" {
 		os.Exit(Main(os.Args[1:], Build{}))
 	}

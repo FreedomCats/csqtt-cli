@@ -22,7 +22,7 @@ func TestDNSGuardRules(t *testing.T) {
 		netip.MustParseAddr("::ffff:1.1.1.1"), // IPv4 в IPv6-записи — к IPv4
 		netip.MustParseAddr("fd00::1"),
 	}
-	rules, err := dnsGuardRules(dns, "app-id")
+	rules, err := dnsGuardRules(dns, []string{"app-id", "core-id"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,6 +59,7 @@ func TestDNSGuardRules(t *testing.T) {
 		}
 		checkMatches(t, layer.name+": свой процесс", self.Conditions, []wf.Match{
 			{Field: wf.FieldALEAppID, Op: wf.MatchTypeEqual, Value: "app-id"},
+			{Field: wf.FieldALEAppID, Op: wf.MatchTypeEqual, Value: "core-id"},
 		})
 
 		if allowed.Action != wf.ActionPermit {
@@ -78,6 +79,42 @@ func TestDNSGuardRules(t *testing.T) {
 			}
 		}
 		checkMatches(t, layer.name+": резолверы", allowed.Conditions, want)
+	}
+}
+
+// IPv6 наружу закрыт (BlockIPv6): на слоях IPv4 — те же три правила, на
+// слоях IPv6 к ним — loopback, DHCPv6, ND и RA, локальная сеть и запрет
+// всего, легче запрета порта 53, так что DNS к локальной сети закрыт.
+func TestDNSGuardRulesBlockIPv6(t *testing.T) {
+	rules, err := dnsGuardRules([]netip.Addr{netip.MustParseAddr("192.0.2.53")}, []string{"app-id"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byLayer := map[wf.LayerID][]*wf.Rule{}
+	for _, r := range rules {
+		byLayer[r.Layer] = append(byLayer[r.Layer], r)
+	}
+	for _, layer := range dnsGuardLayers {
+		got := byLayer[layer.id]
+		if !layer.ipv6 {
+			if len(got) != 3 {
+				t.Errorf("%s: правил %d, ждали 3", layer.name, len(got))
+			}
+			continue
+		}
+		if len(got) != 3+5 {
+			t.Fatalf("%s: правил %d, ждали 8", layer.name, len(got))
+		}
+		block53, all := got[0], got[len(got)-1]
+		if all.Action != wf.ActionBlock || len(all.Conditions) != 0 || all.Weight != lockdownBlockWeight {
+			t.Errorf("%s: последнее правило %q — %v, вес %d, условий %d; ждали запрет всего",
+				layer.name, all.Name, all.Action, all.Weight, len(all.Conditions))
+		}
+		for _, r := range got[3 : len(got)-1] {
+			if r.Action != wf.ActionPermit || (r.Weight >= block53.Weight) != strings.Contains(r.Name, "loopback") {
+				t.Errorf("%s: %q — %v с весом %d при запрете DNS %d", layer.name, r.Name, r.Action, r.Weight, block53.Weight)
+			}
+		}
 	}
 }
 
@@ -156,11 +193,11 @@ func TestDNSGuardUnderGC(t *testing.T) {
 		<-done
 	}()
 
-	appID := g.appID
+	appID := g.appIDs[0]
 	dns := []netip.Addr{netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("1.0.0.1")}
 	for i := range 50 {
 		for pad := range 8 {
-			g.appID = appID + strings.Repeat("x", pad)
+			g.appIDs[0] = appID + strings.Repeat("x", pad)
 			if err := g.Enable(dns); err != nil {
 				t.Fatalf("Enable %d, дополнение %d: %v", i, pad, err)
 			}
@@ -175,7 +212,7 @@ func TestDNSGuardUnderGC(t *testing.T) {
 // процесс и loopback, запрет DNS, служебные протоколы и локальная сеть
 // своего семейства, запрет всего.
 func TestLockdownRules(t *testing.T) {
-	rules, err := lockdownRules("app-id")
+	rules, err := lockdownRules([]string{"app-id", "core-id"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,6 +267,7 @@ func TestLockdownRules(t *testing.T) {
 
 		checkMatches(t, layer.name+": свой процесс", self.Conditions, []wf.Match{
 			{Field: wf.FieldALEAppID, Op: wf.MatchTypeEqual, Value: "app-id"},
+			{Field: wf.FieldALEAppID, Op: wf.MatchTypeEqual, Value: "core-id"},
 		})
 		checkMatches(t, layer.name+": loopback", loopback.Conditions, []wf.Match{
 			{Field: wf.FieldFlags, Op: wf.MatchTypeFlagsAllSet, Value: wf.ConditionFlagIsLoopback},
@@ -274,7 +312,8 @@ func TestLockdownRules(t *testing.T) {
 }
 
 // Переходы между наборами на настоящем WFP (нужны права администратора):
-// «закрыто» → защита DNS → «закрыто» → без правил. После каждого перехода
+// «закрыто» → защита DNS → «закрыто» → защита DNS с закрытым IPv6 →
+// «закрыто» → без правил. После каждого перехода
 // в сессии ровно правила нового набора — старые сняты, новые на месте.
 func TestDNSGuardLockdownSession(t *testing.T) {
 	g, err := OpenDNSGuard()
@@ -282,7 +321,7 @@ func TestDNSGuardLockdownSession(t *testing.T) {
 		t.Skipf("сессия WFP не открылась (нужны права администратора): %v", err)
 	}
 	defer g.Close()
-	lockdown, err := lockdownRules(g.appID)
+	lockdown, err := lockdownRules(g.appIDs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,6 +347,11 @@ func TestDNSGuardLockdownSession(t *testing.T) {
 		{"повторный Lockdown", g.Lockdown, guardLockdown, len(lockdown)},
 		{"Enable", func() error { return g.Enable(dns) }, guardTunnel, 3 * len(dnsGuardLayers)},
 		{"Lockdown после Enable", g.Lockdown, guardLockdown, len(lockdown)},
+		{"Enable с закрытым IPv6", func() error {
+			g.BlockIPv6(true)
+			return g.Enable(dns)
+		}, guardTunnel, 3*len(dnsGuardLayers) + 2*5},
+		{"Lockdown после закрытого IPv6", g.Lockdown, guardLockdown, len(lockdown)},
 		{"Disable", g.Disable, guardOpen, 0},
 	}
 	for _, s := range steps {
@@ -332,7 +376,7 @@ func TestDNSGuardReplaceRollback(t *testing.T) {
 	}
 	want := len(g.rules)
 
-	rules, err := dnsGuardRules([]netip.Addr{netip.MustParseAddr("1.1.1.1")}, g.appID)
+	rules, err := dnsGuardRules([]netip.Addr{netip.MustParseAddr("1.1.1.1")}, g.appIDs, false)
 	if err != nil {
 		t.Fatal(err)
 	}

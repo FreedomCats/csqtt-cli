@@ -30,13 +30,19 @@ func (s *fakeGuardSession) Close() error    { s.closed = true; return nil }
 
 func stubOpenDNSGuard(t *testing.T, session dnsGuardSession, err error) {
 	t.Helper()
-	prev := openDNSGuard
-	openDNSGuard = func() (dnsGuardSession, error) {
+	stubOpenDNSGuardFunc(t, func() (dnsGuardSession, error) {
 		if err != nil {
 			return nil, err
 		}
 		return session, nil
-	}
+	})
+}
+
+// stubOpenDNSGuardFunc подменяет openDNSGuard на время теста.
+func stubOpenDNSGuardFunc(t *testing.T, open func() (dnsGuardSession, error)) {
+	t.Helper()
+	prev := openDNSGuard
+	openDNSGuard = open
 	t.Cleanup(func() { openDNSGuard = prev })
 }
 

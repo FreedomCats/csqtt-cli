@@ -475,12 +475,12 @@ func TestWizardCancelledOnEachQuestion(t *testing.T) {
 	}
 }
 
-// Где tun работает только без защиты DNS и kill-switch (Windows до W5),
+// Где tun работает только без защиты DNS и kill-switch,
 // мастер его не предлагает: согласие на утечку — -allow-leak командной
 // строки. Причина и команда — в строке о режиме.
 func TestWizardModeWithoutGuard(t *testing.T) {
 	tunSupport(t, nil)
-	withTunGuard(t, errors.New("на Windows он пока работает без защиты от утечки DNS и kill-switch"))
+	withTunGuard(t, errors.New("здесь он работает без защиты от утечки DNS и kill-switch"))
 	te := newMenuEnv(t)
 	te.answer("", testPassword, testPassword, testHashA)
 	te.input("\n\nexample.org\n\n0\n")
@@ -489,7 +489,7 @@ func TestWizardModeWithoutGuard(t *testing.T) {
 	if code != exitOK {
 		t.Fatalf("код возврата %d, stderr:\n%s", code, stderr)
 	}
-	if !strings.Contains(stdout, "здесь недоступен: на Windows он пока работает без защиты от утечки DNS и kill-switch "+
+	if !strings.Contains(stdout, "здесь недоступен: здесь он работает без защиты от утечки DNS и kill-switch "+
 		"(подключиться так можно только из командной строки: csqtt-cli connect -datapath tun -allow-leak)") ||
 		strings.Contains(stdout, "Весь трафик компьютера.") {
 		t.Errorf("режимы показаны не так:\n%s", stdout)

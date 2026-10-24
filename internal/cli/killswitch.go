@@ -2,7 +2,8 @@
 // трафик системы заблокирован.
 //
 // Отдельного объекта у kill-switch нет: это второй набор правил в той же
-// таблице nftables (linuxsys.DNSGuard), что и защита DNS. Datapath о нём не
+// сессии, что и защита DNS (таблица nftables linuxsys.DNSGuard, сессия WFP
+// winsys.DNSGuard). Datapath о нём не
 // знает: обёртка killSwitchGuard подменяет Disable защиты на «закрыто», а
 // Enable оставляет как есть — поднятый туннель держит одна защита DNS.
 //
@@ -29,7 +30,7 @@ const killSwitchUsage = "в режиме tun он блокирует трафи�
 var errKillSwitchClosed = errors.New("kill-switch: сессия защиты уже закрыта")
 
 // lockdownSession — защита, которая умеет kill-switch (Lockdown):
-// linuxsys.DNSGuard.
+// linuxsys.DNSGuard, winsys.DNSGuard.
 type lockdownSession interface {
 	datapath.DNSGuard
 	// Lockdown ставит набор «закрыто» вместо прежних правил, одним
@@ -150,7 +151,9 @@ func (g *killSwitchGuard) openForCaptcha() {
 		return
 	}
 	if err := g.session.Disable(); err != nil {
-		// Пакет правил nftables атомарен: «закрыто» осталось как было.
+		// nftables — одним пакетом: «закрыто» осталось как было. WFP снимает
+		// правила по одному, и могла остаться часть — от тяжёлых, свой
+		// процесс и loopback последними.
 		g.logf("Внимание: kill-switch не снялся на время капчи: %v — страница капчи в браузере может не открыться", err)
 		return
 	}

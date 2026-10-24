@@ -172,7 +172,7 @@ func markFlags() []string {
 }
 
 // withTunGuard задаёт tunGuardMissing на время теста: nil — система с защитой
-// DNS и kill-switch (Linux), ошибка — без неё (Windows до W5).
+// DNS и kill-switch (Linux, Windows), ошибка — без неё.
 func withTunGuard(t *testing.T, missing error) {
 	t.Helper()
 	prev := tunGuardMissing
@@ -526,7 +526,7 @@ func TestConnectTunAllowLeak(t *testing.T) {
 	}
 }
 
-// Где защиты DNS и kill-switch ещё нет (Windows до W5), tun без -allow-leak —
+// Где защиты DNS и kill-switch нет, tun без -allow-leak —
 // отказ до резерва адаптера, с готовыми командами: тот же запуск с
 // -allow-leak и socks. Меню узнаёт отказ по типу и предложит socks. Без
 // прав отказ сразу говорит и о них.
@@ -543,7 +543,7 @@ func TestConnectTunWithoutGuardNeedsAllowLeak(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			s := stubTun(t)
 			s.root = !c.noRoot
-			withTunGuard(t, errors.New("на Windows он пока работает без защиты от утечки DNS и kill-switch"))
+			withTunGuard(t, errors.New("здесь он работает без защиты от утечки DNS и kill-switch"))
 			te := newTestEnv(t)
 			te.addHome()
 			var out, errOut syncBuffer

@@ -46,6 +46,8 @@ func TestKillSwitchTunNetns(t *testing.T) {
 	if os.Getenv(netnsEnv) != "1" || os.Geteuid() != 0 {
 		t.Skipf("меняет сеть: только в контейнере, %s=1 и root", netnsEnv)
 	}
+	// TestMain закрыл настоящую защиту от тестов; здесь она и проверяется.
+	stubOpenDNSGuardFunc(t, openSystemDNSGuard)
 	const name = "csqttks0"
 	mark := int(netguard.SocketMark)
 	ipv6 := ipv6Dummy(t)

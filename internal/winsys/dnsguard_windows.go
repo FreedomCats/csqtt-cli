@@ -41,14 +41,15 @@ const (
 
 // DNSGuard — защита от утечки DNS: фильтры WFP
 // запрещают обращения на порт 53, UDP и TCP, ко всем адресам, кроме
-// резолверов туннеля, loopback и запросов самого csqtt-cli.
+// резолверов туннеля, loopback и запросов самого csqtt-cli и его ядра.
 //
 // Сессия WFP динамическая: всё, что в ней создано, система снимает при её
 // закрытии или со смертью процесса, поэтому упавший csqtt-cli фильтров не оставляет
 // и уборка при запуске не нужна.
 //
-// Своему процессу разрешено всё: ядро ходит к DNS VK (резолвер из профиля)
-// сокетами мимо туннеля (netguard), и без этого не подключилось бы.
+// Своим процессам — csqtt-cli и ядру — разрешено всё: ядро ходит к DNS
+// Яндекса, VK и TURN сокетами мимо туннеля (привязка к интерфейсу, §06), а
+// прокси окна капчи — сокетами csqtt-cli, и без этого не подключилось бы.
 // Системные запросы идут от службы DNS-клиента, а не от программ, — их
 // пропускает правило по адресу резолвера туннеля.
 //
@@ -59,9 +60,11 @@ const (
 type DNSGuard struct {
 	mu      sync.Mutex
 	session *wf.Session
-	appID   string
+	appIDs  []string   // csqtt-cli и ядро: им разрешено всё
 	rules   []*wf.Rule // стоят в сессии
 	state   guardState
+	// blockIPv6 — закрывать при Enable IPv6 системы наружу (BlockIPv6).
+	blockIPv6 bool
 
 	// step — ради теста перехода: зовётся после каждого правила, которое
 	// встало (added) или снято, пока g.mu взят.
@@ -80,14 +83,22 @@ const (
 // OpenDNSGuard открывает сессию WFP, заводит в ней провайдера и подслой;
 // правил ещё нет. Нужны права администратора и работающая служба BFE
 // (Base Filtering Engine).
-func OpenDNSGuard() (*DNSGuard, error) {
+//
+// Всё разрешено самому процессу и программам programs — полным путям к
+// exe (ядро рядом с csqtt-cli.exe). WFP узнаёт программу по пути к файлу, а
+// не по процессу, поэтому путь — тот, с которого её запустят.
+func OpenDNSGuard(programs ...string) (*DNSGuard, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("путь к csqtt-cli.exe: %w", err)
 	}
-	appID, err := wf.AppID(exe)
-	if err != nil {
-		return nil, fmt.Errorf("идентификатор приложения WFP для %s: %w", exe, err)
+	var appIDs []string
+	for _, path := range append([]string{exe}, programs...) {
+		appID, err := wf.AppID(path)
+		if err != nil {
+			return nil, fmt.Errorf("идентификатор приложения WFP для %s: %w", path, err)
+		}
+		appIDs = append(appIDs, appID)
 	}
 
 	session, err := wf.New(&wf.Options{
@@ -116,7 +127,18 @@ func OpenDNSGuard() (*DNSGuard, error) {
 		session.Close()
 		return nil, fmt.Errorf("подслой WFP: %w", err)
 	}
-	return &DNSGuard{session: session, appID: appID}, nil
+	return &DNSGuard{session: session, appIDs: appIDs}, nil
+}
+
+// BlockIPv6 задаёт, закрывать ли при следующем Enable IPv6 системы наружу:
+// туннель IPv6 не везёт, и если маршрутов IPv6 в адаптер нет (IPv6 выключен
+// на нём), IPv6 шёл бы мимо туннеля. Открытыми остаются loopback, свои
+// процессы и, как в «закрыто», DHCPv6, ND, RA и локальная сеть IPv6; DNS к
+// локальной сети закрыт запретом порта 53.
+func (g *DNSGuard) BlockIPv6(block bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.blockIPv6 = block
 }
 
 // Enable ставит правила: DNS — только к резолверам dns. Прежние правила
@@ -126,7 +148,7 @@ func OpenDNSGuard() (*DNSGuard, error) {
 func (g *DNSGuard) Enable(dns []netip.Addr) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	rules, err := dnsGuardRules(dns, g.appID)
+	rules, err := dnsGuardRules(dns, g.appIDs, g.blockIPv6)
 	if err == nil {
 		err = g.replaceLocked(guardTunnel, "защита DNS", rules)
 	}
@@ -233,22 +255,29 @@ const fwpEFilterNotFound = 0x80320003
 // dnsGuardLayers — слои, где действуют правила: исходящие соединения и
 // первый входящий пакет несвязанного сокета, IPv4 и IPv6, как у blockDNS
 // в wireguard-windows.
-var dnsGuardLayers = []struct {
-	id   wf.LayerID
-	ipv6 bool
-	name string
-}{
+var dnsGuardLayers = []guardLayer{
 	{wf.LayerALEAuthConnectV4, false, "исходящие IPv4"},
 	{wf.LayerALEAuthRecvAcceptV4, false, "входящие IPv4"},
 	{wf.LayerALEAuthConnectV6, true, "исходящие IPv6"},
 	{wf.LayerALEAuthRecvAcceptV6, true, "входящие IPv6"},
 }
 
+// guardLayer — слой WFP, на котором стоят правила защиты.
+type guardLayer struct {
+	id   wf.LayerID
+	ipv6 bool
+	name string
+}
+
 // dnsGuardRules строит правила для Enable; отдельно — ради теста без прав.
-// На каждом слое: запрет порта 53 по UDP и TCP, разрешение своему
-// процессу, разрешение резолверам туннеля своего семейства и loopback.
+// На каждом слое: запрет порта 53 по UDP и TCP, разрешение своим
+// процессам, разрешение резолверам туннеля своего семейства и loopback.
 // Повтор условия с тем же полем WFP читает как «или».
-func dnsGuardRules(dns []netip.Addr, appID string) ([]*wf.Rule, error) {
+//
+// При blockIPv6 на слоях IPv6 ещё набор «закрыто» без своих процессов и
+// запрета DNS (они уже есть): loopback, служебные протоколы и локальная
+// сеть, запрет всего (lockdownLocalRules).
+func dnsGuardRules(dns []netip.Addr, appIDs []string, blockIPv6 bool) ([]*wf.Rule, error) {
 	var rules []*wf.Rule
 	add := func(layer wf.LayerID, name string, weight uint64, action wf.Action, conds []*wf.Match) error {
 		r, err := newGuardRule(layer, name, weight, action, conds)
@@ -265,9 +294,8 @@ func dnsGuardRules(dns []netip.Addr, appID string) ([]*wf.Rule, error) {
 			return nil, err
 		}
 
-		self := []*wf.Match{{Field: wf.FieldALEAppID, Op: wf.MatchTypeEqual, Value: appID}}
 		if err := add(layer.id, "csqtt-cli: DNS самого csqtt-cli, "+layer.name,
-			dnsGuardPermitWeight, wf.ActionPermit, self); err != nil {
+			dnsGuardPermitWeight, wf.ActionPermit, selfMatches(appIDs)); err != nil {
 			return nil, err
 		}
 
@@ -287,8 +315,25 @@ func dnsGuardRules(dns []netip.Addr, appID string) ([]*wf.Rule, error) {
 			dnsGuardPermitWeight, wf.ActionPermit, allowed); err != nil {
 			return nil, err
 		}
+
+		if blockIPv6 && layer.ipv6 {
+			local, err := lockdownLocalRules(layer, "csqtt-cli: IPv6 наружу закрыт")
+			if err != nil {
+				return nil, err
+			}
+			rules = append(rules, local...)
+		}
 	}
 	return rules, nil
+}
+
+// selfMatches — условие «свой процесс»: любой из appIDs.
+func selfMatches(appIDs []string) []*wf.Match {
+	var m []*wf.Match
+	for _, id := range appIDs {
+		m = append(m, &wf.Match{Field: wf.FieldALEAppID, Op: wf.MatchTypeEqual, Value: id})
+	}
+	return m
 }
 
 // dnsPortMatches — условия запрета DNS: порт 53, UDP или TCP.
