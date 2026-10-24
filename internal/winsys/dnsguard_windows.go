@@ -86,7 +86,10 @@ const (
 //
 // Всё разрешено самому процессу и программам programs — полным путям к
 // exe (ядро рядом с csqtt-cli.exe). WFP узнаёт программу по пути к файлу, а
-// не по процессу, поэтому путь — тот, с которого её запустят.
+// не по процессу, поэтому путь — тот, с которого её запустят. Путь
+// приводится к длинным именам: процесс WFP знает по ним, а от пути с
+// короткими (8.3, «PROGRA~1») идентификатор выйдет другой, и kill-switch
+// закрыл бы и само ядро.
 func OpenDNSGuard(programs ...string) (*DNSGuard, error) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -94,7 +97,7 @@ func OpenDNSGuard(programs ...string) (*DNSGuard, error) {
 	}
 	var appIDs []string
 	for _, path := range append([]string{exe}, programs...) {
-		appID, err := wf.AppID(path)
+		appID, err := wf.AppID(longPath(path))
 		if err != nil {
 			return nil, fmt.Errorf("идентификатор приложения WFP для %s: %w", path, err)
 		}
@@ -128,6 +131,28 @@ func OpenDNSGuard(programs ...string) (*DNSGuard, error) {
 		return nil, fmt.Errorf("подслой WFP: %w", err)
 	}
 	return &DNSGuard{session: session, appIDs: appIDs}, nil
+}
+
+// longPath — path с длинными именами вместо коротких 8.3. Не вышло (файла
+// нет, нет прав на каталог) — path как есть: тогда и WFP получит его же.
+func longPath(path string) string {
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return path
+	}
+	buf := make([]uint16, windows.MAX_PATH)
+	for {
+		n, err := windows.GetLongPathName(p, &buf[0], uint32(len(buf)))
+		switch {
+		case err != nil || n == 0:
+			return path
+		case int(n) < len(buf):
+			// Поместилось: n — длина без нуля в конце.
+			return windows.UTF16ToString(buf[:n])
+		}
+		// Мал буфер: n — нужный размер с нулём.
+		buf = make([]uint16, n)
+	}
 }
 
 // BlockIPv6 задаёт, закрывать ли при следующем Enable IPv6 системы наружу:

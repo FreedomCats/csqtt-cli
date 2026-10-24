@@ -8,8 +8,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
 
 // dnsProbeEnv — режим помощника: послать запрос DNS серверу из значения и
@@ -67,12 +70,59 @@ func dnsProbe(server string) error {
 	}
 }
 
+// shortDir — каталог с длинным именем внутри t.TempDir() и его путь с
+// короткими именами 8.3; short пуст, если на томе их не заводят.
+func shortDir(t *testing.T) (long, short string) {
+	t.Helper()
+	long = filepath.Join(t.TempDir(), "csqtt long directory name")
+	if err := os.Mkdir(long, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p, err := windows.UTF16PtrFromString(long)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]uint16, windows.MAX_PATH)
+	n, err := windows.GetShortPathName(p, &buf[0], uint32(len(buf)))
+	if err != nil || n == 0 || int(n) >= len(buf) {
+		return long, ""
+	}
+	if short = windows.UTF16ToString(buf[:n]); strings.EqualFold(short, long) {
+		return long, ""
+	}
+	return long, short
+}
+
+// Путь с короткими именами 8.3 становится длинным; путь без файла
+// остаётся как есть.
+func TestLongPath(t *testing.T) {
+	long, short := shortDir(t)
+	if short == "" {
+		t.Skip("на томе не заводятся короткие имена 8.3")
+	}
+	// Сравнивать с long нельзя: сам t.TempDir() бывает коротким (TEMP в CI).
+	got := longPath(short)
+	if _, err := os.Stat(got); err != nil || strings.Contains(got, "~") ||
+		!strings.EqualFold(filepath.Base(got), filepath.Base(long)) {
+		t.Errorf("longPath(%q) = %q (%v), ждали путь без коротких имён к %s", short, got, err, filepath.Base(long))
+	}
+	missing := filepath.Join(short, "нет такого.exe")
+	if got := longPath(missing); got != missing {
+		t.Errorf("longPath(%q) = %q, ждали путь как есть", missing, got)
+	}
+}
+
 // Программа из programs узнаётся WFP по пути к exe: при «закрыто» её
 // запрос DNS к DNS Яндекса проходит, а у той же программы под другим путём —
-// нет. Так kill-switch пропускает ядро рядом с csqtt-cli.exe. Нужны права
-// администратора и доступ к DNS Яндекса.
+// нет. Так kill-switch пропускает ядро рядом с csqtt-cli.exe. Путь — с
+// короткими именами 8.3, если том их заводит: процесс WFP знает по длинным
+// (так в CI GitHub, где TEMP — «RUNNER~1»). Нужны права администратора и
+// доступ к DNS Яндекса.
 func TestDNSGuardPermitsPrograms(t *testing.T) {
-	dir := t.TempDir()
+	dir, short := shortDir(t)
+	if short != "" {
+		dir = short
+	}
 	allowed, other := filepath.Join(dir, "allowed.exe"), filepath.Join(dir, "other.exe")
 	for _, path := range []string{allowed, other} {
 		copyFile(t, os.Args[0], path)
