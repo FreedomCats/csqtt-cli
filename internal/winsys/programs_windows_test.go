@@ -30,8 +30,12 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// dnsProbeTries — сколько раз проба шлёт запрос: одна датаграма до DNS
+// Яндекса из облака CI теряется и без защиты.
+const dnsProbeTries = 3
+
 // dnsProbe спрашивает у server запись A для example.com и ждёт ответа с тем
-// же номером запроса.
+// же номером запроса; без ответа повторяет, до dnsProbeTries раз.
 func dnsProbe(server string) error {
 	conn, err := net.DialTimeout("udp4", server, 3*time.Second)
 	if err != nil {
@@ -43,19 +47,24 @@ func dnsProbe(server string) error {
 		query = append(append(query, byte(len(label))), label...)
 	}
 	query = append(query, 0, 0, 1, 0, 1)
-	if _, err := conn.Write(query); err != nil {
-		return err
-	}
-	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	reply := make([]byte, 512)
-	n, err := conn.Read(reply)
-	if err != nil {
-		return err
+	for try := 1; ; try++ {
+		if _, err := conn.Write(query); err != nil {
+			return err
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		n, err := conn.Read(reply)
+		if err != nil {
+			if try < dnsProbeTries {
+				continue
+			}
+			return err
+		}
+		if n < 12 || binary.BigEndian.Uint16(reply) != 0x517e {
+			return errors.New("чужой ответ DNS")
+		}
+		return nil
 	}
-	if n < 12 || binary.BigEndian.Uint16(reply) != 0x517e {
-		return errors.New("чужой ответ DNS")
-	}
-	return nil
 }
 
 // Программа из programs узнаётся WFP по пути к exe: при «закрыто» её
