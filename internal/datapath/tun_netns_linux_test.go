@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"os"
@@ -335,6 +336,59 @@ func TestTunForeignLinkNetns(t *testing.T) {
 	}
 	if err := fromOtherProcess(t, "lock"); err != nil {
 		t.Errorf("блокировка не отпущена после отказа: %v", err)
+	}
+}
+
+// Удалённый интерфейс (ip link del) — CheckAdapter отвечает, что адаптера
+// нет, хотя дескриптор открыт: чтение и запись по нему отвечают EBADFD, а
+// TUN_LOST ядро на это не шлёт. Lost отдаёт *AdapterLostError в Failed, Close
+// после этого проходит без ошибок.
+func TestTunAdapterDeletedNetns(t *testing.T) {
+	skipOutsideNetns(t)
+	const name = "csqtttest5"
+	w := NewTun(TunOptions{Name: name, Logf: t.Logf})
+	defer w.Close()
+	if err := w.Open(); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := w.CheckAdapter(); err != nil {
+		t.Fatalf("CheckAdapter живого адаптера: %v", err)
+	}
+	link, err := netlink.LinkByName(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := netlink.LinkDel(link); err != nil {
+		t.Fatalf("ip link del: %v", err)
+	}
+	err = w.CheckAdapter()
+	if err == nil || !strings.Contains(err.Error(), "в системе больше нет") {
+		t.Fatalf("CheckAdapter удалённого адаптера: %v", err)
+	}
+
+	// Тот же индекс у другого интерфейса с тем же именем — тоже не наш
+	// адаптер; индексы ядро Linux не переиспользует сразу, но имя — может.
+	dummy := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: name}}
+	if err := netlink.LinkAdd(dummy); err != nil {
+		t.Fatal(err)
+	}
+	defer netlink.LinkDel(dummy)
+	if err := w.CheckAdapter(); err == nil {
+		t.Error("CheckAdapter принял чужой интерфейс с тем же именем")
+	}
+
+	w.Lost(fmt.Errorf("ядро потеряло дескриптор адаптера: %w", err))
+	select {
+	case lost := <-w.Failed():
+		var le *AdapterLostError
+		if !errors.As(lost, &le) || le.Name != name {
+			t.Errorf("Failed: %v", lost)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Failed молчит")
+	}
+	if err := w.Close(); err != nil {
+		t.Errorf("Close удалённого адаптера: %v", err)
 	}
 }
 

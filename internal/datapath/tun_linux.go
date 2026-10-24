@@ -151,6 +151,20 @@ func openTunAdapter(name string, logf func(string, ...any), _ func(error)) (*tun
 		dup: func() (int, error) {
 			return unix.FcntlInt(uintptr(fd), unix.F_DUPFD_CLOEXEC, 0)
 		},
+		// Удалённый интерфейс (ip link del) дескриптор не держит: он
+		// остаётся открытым, но чтение и запись отвечают EBADFD.
+		present: func() error {
+			got, ok, err := linuxsys.LinkName(index)
+			switch {
+			case err != nil:
+				return fmt.Errorf("адаптер %q: %w", name, err)
+			case !ok:
+				return fmt.Errorf("адаптера %q (индекс %d) в системе больше нет", name, index)
+			case got != name:
+				return fmt.Errorf("адаптера %q в системе больше нет: индекс %d теперь у %q", name, index, got)
+			}
+			return nil
+		},
 		// Адрес и маршруты уходят вместе с интерфейсом, когда закрывается
 		// последний его дескриптор.
 		close: func() error {

@@ -66,6 +66,9 @@ type exitError int
 
 func (e exitError) Error() string { return fmt.Sprintf("exit status %d", int(e)) }
 
+// ExitCode — как у *exec.ExitError.
+func (e exitError) ExitCode() int { return int(e) }
+
 // fakeCore — ядро по записи. Шаги записи:
 //
 //	строка вывода      — сообщение ядра;
@@ -302,12 +305,17 @@ func (d *fakeDatapath) calls() ([]datapath.TunConf, [][]netip.Addr) {
 
 // fakeTunFD — канал дескриптором адаптера: имена сокетов по порядку, вызовы
 // SendFD запоминаются. send подменяет поведение SendFD; nil — ядро
-// принимает сразу.
+// принимает сразу. check — ответ CheckAdapter; nil — адаптер на месте. Lost,
+// как у datapath.Tun, отдаёт *datapath.AdapterLostError в failed один раз.
 type fakeTunFD struct {
-	mu    sync.Mutex
-	names int
-	sends []fdSend
-	send  func(ctx context.Context, socket string, pid int) error
+	mu     sync.Mutex
+	names  int
+	sends  []fdSend
+	send   func(ctx context.Context, socket string, pid int) error
+	check  func() error
+	checks int
+	lost   []error
+	failed chan error
 }
 
 // fdSend — вызов SendFD: куда, кому и чем кончился.
@@ -335,6 +343,33 @@ func (f *fakeTunFD) SendFD(ctx context.Context, socket string, pid int) error {
 	return err
 }
 
+func (f *fakeTunFD) CheckAdapter() error {
+	f.mu.Lock()
+	f.checks++
+	check := f.check
+	f.mu.Unlock()
+	if check == nil {
+		return nil
+	}
+	return check()
+}
+
+func (f *fakeTunFD) Lost(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lost = append(f.lost, err)
+	if len(f.lost) == 1 && f.failed != nil {
+		f.failed <- &datapath.AdapterLostError{Name: "csqtt-cli", Err: err}
+	}
+}
+
+// lostCalls — причины, с которыми звали Lost.
+func (f *fakeTunFD) lostCalls() []error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]error(nil), f.lost...)
+}
+
 func (f *fakeTunFD) calls() []fdSend {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -342,12 +377,16 @@ func (f *fakeTunFD) calls() []fdSend {
 }
 
 // fakePersistent — datapath, живущий весь сеанс: Suspend зовёт onSuspend и
-// возвращает suspendErr.
+// возвращает suspendErr. Он и datapath.Failing, как tun: в failed приходит
+// то, что отдаёт Lost у fakeTunFD; nil — не ломается никогда.
 type fakePersistent struct {
 	*fakeDatapath
 	onSuspend  func()
 	suspendErr error
+	failed     chan error
 }
+
+func (p *fakePersistent) Failed() <-chan error { return p.failed }
 
 func (p *fakePersistent) Suspend() error {
 	if p.onSuspend != nil {

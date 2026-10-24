@@ -52,8 +52,10 @@ type TunOptions struct {
 // Адаптер живёт, пока открыт его дескриптор: после падения процесса он
 // исчезает сам, вместе с адресом и маршрутами.
 //
-// Tun — Failing: адаптер, который пропал сам (на Windows это видит мост),
-// кончает сеанс (Failed).
+// Tun — Failing: адаптер, который сломался сам, кончает сеанс (Failed). На
+// Windows это видит мост; на Linux — только потерю дескриптора, которую
+// заметило ядро (TUN_LOST), и тогда супервизор зовёт Lost. Удаление
+// интерфейса ядро 2.5.0 не замечает (architecture.md §05).
 type Tun struct {
 	opts TunOptions
 
@@ -116,6 +118,9 @@ type tunAdapter struct {
 	revertDNS func() error
 	// dup — новый дубликат дескриптора адаптера для ядра (Linux).
 	dup func() (int, error)
+	// present — адаптер всё ещё в системе: nil — на месте (CheckAdapter).
+	// nil вместо функции — проверять нечем, адаптер считается на месте.
+	present func() error
 	// link — канал с ядром, по которому мост возит пакеты адаптера
 	// (Windows); nil — пакеты идут мимо оболочки (dup).
 	link *Link
@@ -151,6 +156,32 @@ func (t *Tun) lost(err error) {
 		t.logf("[TUN] адаптер %q перестал работать: %v", t.opts.Name, err)
 		t.failed <- &AdapterLostError{Name: t.opts.Name, Err: err}
 	})
+}
+
+// Lost — адаптер сломан, и узнал об этом не сам Tun, а тот, кто ведёт ядро:
+// на Linux пакеты идут мимо оболочки, и потерю дескриптора видит ядро
+// (TUN_LOST), а не Tun. Причина уходит в Failed, как у адаптера, пропавшего
+// сам; повторный вызов ничего не меняет.
+func (t *Tun) Lost(err error) { t.lost(err) }
+
+// CheckAdapter — адаптер сеанса на месте: на Linux — интерфейс с теми
+// индексом и именем, с которыми он создан, есть в системе. Ошибка — его нет
+// (удалён, например ip link del), он не создан или datapath закрыт.
+func (t *Tun) CheckAdapter() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	switch {
+	case t.closed:
+		return errTunClosed
+	case t.adapter == nil:
+		return fmt.Errorf("tun: адаптер %q не создан", t.opts.Name)
+	case t.adapter.present == nil:
+		return nil
+	}
+	if err := t.adapter.present(); err != nil {
+		return fmt.Errorf("tun: %w", err)
+	}
+	return nil
 }
 
 // AdapterLostError — адаптер tun сломался сам посреди сеанса (Failed).

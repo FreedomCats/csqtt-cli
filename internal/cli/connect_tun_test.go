@@ -100,6 +100,12 @@ func (f *fakeConnectTun) SendFD(context.Context, string, int) error {
 	return nil
 }
 
+func (f *fakeConnectTun) CheckAdapter() error { return nil }
+
+func (f *fakeConnectTun) Lost(err error) {
+	f.j.add("адаптер сломан: %v", err)
+}
+
 // linkTun — fakeConnectTun с каналом Link вместо дескриптора, как адаптер
 // Windows: SendFD и SocketName у него нет.
 type linkTun struct {

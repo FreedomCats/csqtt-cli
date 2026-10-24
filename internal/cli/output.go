@@ -76,6 +76,9 @@ type printer struct {
 	// сам (flushDead). Ноль — ждать нечего.
 	pendingDead     int
 	pendingDeadCode int64
+	// workersLimit — лимит воркеров сервера из последнего WORKERS: строка
+	// о нём печатается, только когда он сменился.
+	workersLimit int
 }
 
 func newPrinter(w io.Writer, verbose bool) *printer {
@@ -421,6 +424,16 @@ func (p *printer) message(m coreproc.Message) {
 		p.flushDead()
 		p.pendingDead, p.pendingDeadCode = n, m.Code
 
+	case coreproc.WorkersEvent:
+		p.workersEvent(m)
+
+	case coreproc.TunLostEvent:
+		// Что с этим делать, решает цикл — и пишет строку сам (только с
+		// дескриптором адаптера, tun на Linux).
+		if p.verbose {
+			p.lineLocked("ядро: потерян дескриптор адаптера (TUN_LOST)")
+		}
+
 	case coreproc.ErrorEvent:
 		// Фатальную ошибку назовёт переход: попытка с ней кончается.
 		if !m.Fatal && p.verbose {
@@ -437,6 +450,27 @@ func (p *printer) message(m coreproc.Message) {
 		if p.verbose {
 			p.lineLocked("ядро остановилось")
 		}
+	}
+}
+
+// workersEvent — сервер ответил на согласование числа воркеров. Лимит, меньший
+// запрошенного ядром, виден и без -v — одной строкой, пока он не сменится:
+// воркеров на линии будет меньше, чем обещала строка профиля. Строка
+// состояния по-прежнему считает от запрошенного. Под замком.
+func (p *printer) workersEvent(e coreproc.WorkersEvent) {
+	if p.verbose {
+		if e.Limit == 0 {
+			p.lineLocked("ядро: у сервера нет лимита воркеров для этого пароля")
+		} else {
+			p.lineLocked(fmt.Sprintf("ядро: лимит воркеров у сервера — %d", e.Limit))
+		}
+	}
+	if e.Limit == p.workersLimit {
+		return
+	}
+	p.workersLimit = e.Limit
+	if asked := p.model.workersTotal; e.Limit > 0 && e.Limit < asked {
+		p.lineLocked(fmt.Sprintf("сервер ограничил число воркеров для этого пароля: %d вместо %d", e.Limit, asked))
 	}
 }
 

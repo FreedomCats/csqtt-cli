@@ -52,6 +52,17 @@ type (
 	ServerRestartEvent struct {
 		Source string `json:"source"`
 	}
+	// WorkersEvent — сервер ответил на согласование числа воркеров
+	// (TUNWORKERS): Limit — его лимит для этого пароля, 0 — лимита нет.
+	// Согласованное число — меньшее из запрошенного и лимита — ядро пишет
+	// только в журнал. Событие может прийти несколько раз за запуск.
+	WorkersEvent struct {
+		Limit int `json:"workers"`
+	}
+	// TunLostEvent — ядро в режиме -tun-uds потеряло дескриптор адаптера:
+	// чтение или запись TUN кончились. Новый дескриптор оно ждёт на том же
+	// сокете -tun-uds 20 с, не дождалось — выходит с кодом ExitTunLost.
+	TunLostEvent struct{}
 	// ErrorEvent — ошибка; Fatal — попытка подключения окончена.
 	ErrorEvent struct {
 		Code    string `json:"code"`
@@ -95,11 +106,17 @@ func (ActiveZeroEvent) message()      {}
 func (NetworkSuspectEvent) message()  {}
 func (CallUnavailableEvent) message() {}
 func (ServerRestartEvent) message()   {}
+func (WorkersEvent) message()         {}
+func (TunLostEvent) message()         {}
 func (ErrorEvent) message()           {}
 func (StoppedEvent) message()         {}
 func (CaptchaRequest) message()       {}
 func (HashCheck) message()            {}
 func (Log) message()                  {}
+
+// ExitTunLost — код выхода ядра, которое потеряло дескриптор адаптера
+// (TunLostEvent) и не дождалось нового (main.rs).
+const ExitTunLost = 3
 
 const (
 	eventPrefix     = "__CSQTT_EVENT__|"
@@ -189,6 +206,13 @@ func parseEvent(kind, payload string) Message {
 		if decode(&e) {
 			return e
 		}
+	case "WORKERS":
+		var e WorkersEvent
+		if decode(&e) && e.Limit >= 0 {
+			return e
+		}
+	case "TUN_LOST":
+		return TunLostEvent{}
 	case "ERROR":
 		var e ErrorEvent
 		if decode(&e) {

@@ -64,9 +64,16 @@ type Link interface {
 // *datapath.Tun. Вместо -listen-peer ядро получает -tun-uds с новым именем на
 // каждую попытку (SocketName), а когда оно запустилось (PROCESS), — новый
 // дубликат дескриптора адаптера через этот сокет (SendFD).
+//
+// Потерявшее дескриптор ядро (TUN_LOST) получает новый через тот же сокет,
+// если адаптер на месте (CheckAdapter). Иначе адаптер сломан, и цикл говорит
+// об этом Lost: причина приходит обратно через Failed datapath
+// (datapath.Failing) и кончает Run, как адаптер, пропавший сам.
 type TunFD interface {
 	SocketName() string
 	SendFD(ctx context.Context, socket string, pid int) error
+	CheckAdapter() error
+	Lost(err error)
 }
 
 // Datapath — куда идут пакеты туннеля: *datapath.Socks, *datapath.Tun. Живёт
@@ -78,6 +85,11 @@ type Datapath interface {
 	Start(ctx context.Context, conf datapath.TunConf) error
 	UpdateDNS(dns []netip.Addr) error
 }
+
+// tunLostRepeat — ядро, потерявшее дескриптор снова раньше этого срока после
+// прошлого раза, повторной передачей не вылечить: адаптер сломан (так же
+// судит Android-клиент CSQTT).
+const tunLostRepeat = 60 * time.Second
 
 // defaultFDTimeout — сколько ждать, пока ядро примет дескриптор адаптера.
 // Слушать сокет ядро начинает сразу после PROCESS, принимает за
@@ -272,12 +284,18 @@ type Tunnel struct {
 	// горутины капчи.
 	outMu sync.Mutex
 
-	// start и sleep подменяются в тестах: без первого понадобились бы ядро и
-	// сервер, без второго тест на задержки шёл бы минуту. fdTimeout —
-	// defaultFDTimeout, в тестах короче.
+	// start, sleep и now подменяются в тестах: без первого понадобились бы
+	// ядро и сервер, без второго тест на задержки шёл бы минуту, без третьего
+	// — тест на повторную потерю дескриптора. fdTimeout — defaultFDTimeout, в
+	// тестах короче.
 	start     func(coreproc.Config) (Core, error)
 	sleep     func(context.Context, time.Duration) bool
+	now       func() time.Time
 	fdTimeout time.Duration
+
+	// tunLostAt — когда ядро в этом Run последний раз потеряло дескриптор
+	// адаптера (TUN_LOST); ноль — не теряло. Только горутина цикла.
+	tunLostAt time.Time
 
 	// Трафик системы у Persistent-datapath (tun); только горутина цикла.
 	// routed — Start прошёл, и Suspend после него ещё не было; bypassed — на
@@ -344,6 +362,7 @@ func NewTunnel(opts Options) (*Tunnel, error) {
 			return coreproc.Start(path, cfg)
 		},
 		sleep:     sleepCtx,
+		now:       time.Now,
 		fdTimeout: defaultFDTimeout,
 		restart:   make(chan error, 1),
 		rebind:    make(chan rebindRequest, 1),
@@ -578,7 +597,8 @@ func (t *Tunnel) attempt(ctx context.Context) result {
 
 	actx, cancel := context.WithCancel(ctx)
 	a := &attempt{tunnel: t, core: core, ctx: actx, socket: socket,
-		fdSent: t.opts.TunFD == nil, fdDone: make(chan error, 1), bindIf: cfg.BindIf}
+		fdSent: t.opts.TunFD == nil, fdDone: make(chan error, 1), refdDone: make(chan error, 1),
+		bindIf: cfg.BindIf}
 	// Порядок снятия: таймер, отмена (капча бросает ожидание), горутины.
 	defer a.wg.Wait()
 	defer cancel()
@@ -682,6 +702,14 @@ type attempt struct {
 	fdDone    chan error
 	upShown   bool // DatapathUp автомату уже сообщён
 
+	// Потеря дескриптора ядром (TUN_LOST): pid — ядра попытки (PROCESS),
+	// tunLost — ядро теряло его в этой попытке, refdSending — новый дубликат
+	// в пути, refdDone — итог его передачи.
+	pid         int
+	tunLost     bool
+	refdSending bool
+	refdDone    chan error
+
 	degraded *time.Timer
 	lastLog  []string
 
@@ -711,6 +739,9 @@ func (a *attempt) run(cancelled <-chan struct{}) result {
 			a.handle(m)
 		case err := <-a.fdDone:
 			a.fdHandedOff(err)
+		case err := <-a.refdDone:
+			a.refdSending = false
+			a.fdResent(err)
 		case <-cancelled:
 			cancelled = nil
 			a.byUser = true
@@ -761,6 +792,13 @@ func (a *attempt) run(cancelled <-chan struct{}) result {
 			return result{err: startup.retryable()}
 		}
 		return result{err: startup, final: true}
+	case a.tunLost && exitCode(exitErr) == coreproc.ExitTunLost:
+		// Ядро потеряло дескриптор и не дождалось нового: следующее получило
+		// бы дубликат того же адаптера. Обычно Lost уже позван по TUN_LOST —
+		// тогда причина та, первая.
+		err := fmt.Errorf("ядро вышло, не дождавшись нового дескриптора адаптера: %w", exitErr)
+		a.tunnel.opts.TunFD.Lost(err)
+		return result{err: err}
 	case exitErr != nil:
 		return result{err: fmt.Errorf("ядро завершилось: %w", exitErr)}
 	default:
@@ -861,7 +899,10 @@ func (a *attempt) handle(m coreproc.Message) {
 	switch e := m.(type) {
 	case coreproc.PIDEvent:
 		a.started, t.coreStarted = true, true
+		a.pid = e.PID
 		a.sendFD(e.PID)
+	case coreproc.TunLostEvent:
+		a.coreLostFD()
 	case coreproc.ListenEvent:
 		if t.opts.Link != nil {
 			t.opts.Link.SetCorePort(uint16(e.Port))
@@ -986,6 +1027,73 @@ func (a *attempt) fdHandedOff(err error) {
 	}
 	a.fdSent = true
 	a.datapathUp()
+}
+
+// coreLostFD — ядро потеряло дескриптор адаптера (TUN_LOST) и 20 с ждёт новый
+// на сокете этой попытки. Если адаптер на месте, а прошлая потеря в этом Run
+// была не ближе tunLostRepeat, ядру уходит новый дубликат — в своей горутине,
+// итог приходит в run через refdDone, — и ядро продолжает без перезапуска.
+// Иначе адаптер сломан (TunFD.Lost), и Run кончается, как когда адаптер
+// пропал сам: перезапуск ядра не поможет — новое получит дубликат того же
+// адаптера.
+//
+// Без TunFD (-listen) ядро дескриптора не держит, и терять ему нечего:
+// событие остаётся строкой журнала (-v).
+func (a *attempt) coreLostFD() {
+	t := a.tunnel
+	fd := t.opts.TunFD
+	if fd == nil {
+		return
+	}
+	a.tunLost = true
+	now, prev := t.now(), t.tunLostAt
+	t.tunLostAt = now
+	switch {
+	case a.stopping:
+		return
+	case !prev.IsZero() && now.Sub(prev) < tunLostRepeat:
+		fd.Lost(fmt.Errorf("ядро снова потеряло дескриптор адаптера, через %d с после прошлого раза — "+
+			"повторная передача не помогает", int(now.Sub(prev).Seconds())))
+		return
+	case a.refdSending:
+		// Новый дубликат уже в пути.
+		return
+	}
+	if err := fd.CheckAdapter(); err != nil {
+		fd.Lost(fmt.Errorf("ядро потеряло дескриптор адаптера: %w", err))
+		return
+	}
+	a.refdSending = true
+	pid := a.pid
+	a.wg.Go(func() {
+		ctx, cancel := context.WithTimeout(a.ctx, t.fdTimeout)
+		defer cancel()
+		a.refdDone <- fd.SendFD(ctx, a.socket, pid)
+	})
+}
+
+// fdResent — итог повторной передачи дескриптора (coreLostFD). Отказ —
+// адаптер сломан: ядро без дескриптора выйдет само, а новое получило бы тот
+// же. Попытка, которая уже кончается, итога не ждёт.
+func (a *attempt) fdResent(err error) {
+	t := a.tunnel
+	switch {
+	case a.stopping || a.ctx.Err() != nil:
+	case err != nil:
+		t.opts.TunFD.Lost(fmt.Errorf("ядро потеряло дескриптор адаптера, а новый передать не удалось: %w", err))
+	default:
+		t.logf("ядро потеряло дескриптор адаптера — передан заново, туннель работает без перезапуска ядра")
+	}
+}
+
+// exitCode — код выхода ядра из ошибки Wait; -1 — ядро вышло не само или
+// без ошибки.
+func exitCode(err error) int {
+	var exit interface{ ExitCode() int }
+	if errors.As(err, &exit) {
+		return exit.ExitCode()
+	}
+	return -1
 }
 
 // callUnavailable исключает хеш из следующих попыток. Ядро тем временем

@@ -38,6 +38,19 @@ func LinkIndex(name string) (int, error) {
 	return link.Attrs().Index, nil
 }
 
+// LinkName — имя интерфейса с индексом index; ok = false — такого нет.
+func LinkName(index int) (name string, ok bool, err error) {
+	link, err := netlink.LinkByIndex(index)
+	if err != nil {
+		var notFound netlink.LinkNotFoundError
+		if errors.As(err, &notFound) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return link.Attrs().Name, true, nil
+}
+
 // ConfigureAdapter задаёт своему адаптеру MTU и адреса и поднимает его.
 // Аналог winsys.ConfigureAdapter: каждый адрес — префиксом во всю длину
 // (/32, /128), маршруты ставит вызывающий. Повторный вызов — перенастройка:

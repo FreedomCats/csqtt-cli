@@ -85,6 +85,8 @@ func TestVerboseOnlyDetails(t *testing.T) {
 		coreproc.StoppedEvent{},
 		coreproc.ConfigEvent{Address: netip.MustParseAddr("192.0.2.2"), DNS: []netip.Addr{netip.MustParseAddr("198.51.100.53")}},
 		coreproc.StatsEvent{Active: 9, BytesUp: 10, BytesDown: 20},
+		coreproc.WorkersEvent{Limit: 0},
+		coreproc.TunLostEvent{},
 	}
 	p, buf, _ := testPrinter(false)
 	for _, m := range quiet {
@@ -109,10 +111,42 @@ func TestVerboseOnlyDetails(t *testing.T) {
 		"192.0.2.2, DNS 198.51.100.53\n",
 		"воркеров на линии 9, отправлено 10 Б, получено 20 Б\n",
 		"[SOCKS] CONNECT example.com:443: отказ\n",
+		"ядро: у сервера нет лимита воркеров для этого пароля\n",
+		"ядро: потерян дескриптор адаптера (TUN_LOST)\n",
 	} {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("с -v нет строки %q:\n%s", want, buf.String())
 		}
+	}
+}
+
+// Лимит воркеров сервера меньше запрошенного — строка и без -v, одна на
+// значение: повтор того же лимита молчит, новый — новая строка. Лимит не
+// меньше запрошенного и «лимита нет» (0) молчат; с -v лимит виден всегда.
+func TestWorkersLimitLine(t *testing.T) {
+	const line = "сервер ограничил число воркеров для этого пароля"
+	p, buf, _ := testPrinter(false)
+	p.header(30)
+	for _, limit := range []int{0, 30, 50, 20, 20, 0, 10, 10} {
+		p.message(coreproc.WorkersEvent{Limit: limit})
+	}
+	want := []string{
+		"12:00:00 " + line + ": 20 вместо 30\n",
+		"12:00:00 " + line + ": 10 вместо 30\n",
+	}
+	if got := buf.String(); got != strings.Join(want, "") {
+		t.Errorf("вывод:\n%s\nожидалось:\n%s", got, strings.Join(want, ""))
+	}
+
+	p, buf, _ = testPrinter(true)
+	p.header(30)
+	p.message(coreproc.WorkersEvent{Limit: 20})
+	p.message(coreproc.WorkersEvent{Limit: 20})
+	if got := strings.Count(buf.String(), "ядро: лимит воркеров у сервера — 20\n"); got != 2 {
+		t.Errorf("с -v строк журнала о лимите %d, ждали 2:\n%s", got, buf.String())
+	}
+	if got := strings.Count(buf.String(), line); got != 1 {
+		t.Errorf("с -v строк об ограничении %d, ждали 1:\n%s", got, buf.String())
 	}
 }
 

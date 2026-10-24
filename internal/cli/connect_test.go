@@ -126,6 +126,9 @@ func TestConnectUpThenInterrupt(t *testing.T) {
 			t.Errorf("нет %q:\n%s", want, got)
 		}
 	}
+	if n := strings.Count(got, "сервер ограничил число воркеров для этого пароля: 5 вместо 10\n"); n != 1 {
+		t.Errorf("строк об ограничении воркеров %d, ждали одну:\n%s", n, got)
+	}
 	// После остановки порт SOCKS5 свободен.
 	if ln, err := net.Listen("tcp", listen); err != nil {
 		t.Errorf("SOCKS5 не закрыт: %v", err)

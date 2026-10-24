@@ -23,6 +23,8 @@ type fakeAdapter struct {
 	closeGate chan struct{}
 	// routes6 — addRoutes ставит и маршруты IPv6, как на Windows (dropsIPv6).
 	routes6 bool
+	// presentErr — ответ проверки, что адаптер на месте (present).
+	presentErr error
 
 	// DNS системы и общий с fakeDNSGuard журнал (tun_dns_test.go).
 	routed    bool
@@ -64,6 +66,11 @@ func (f *fakeAdapter) adapter() *tunAdapter {
 		},
 		setDNS:    f.setDNS,
 		revertDNS: f.revertDNS,
+		present: func() error {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			return f.presentErr
+		},
 		close: func() error {
 			if f.closeGate != nil {
 				<-f.closeGate
@@ -313,5 +320,54 @@ func TestTunFailed(t *testing.T) {
 	}
 	if err := w.Close(); err != nil {
 		t.Errorf("Close: %v", err)
+	}
+}
+
+// CheckAdapter: до открытия адаптера и после Close — ошибка, открытый —
+// ответ проверки платформы. Lost — тот же Failed, что у адаптера, пропавшего
+// сам.
+func TestTunCheckAdapterAndLost(t *testing.T) {
+	f := &fakeAdapter{}
+	w, _ := fakeTun(f, nil)
+	if err := w.CheckAdapter(); err == nil || !strings.Contains(err.Error(), "не создан") {
+		t.Errorf("CheckAdapter до Open: %v", err)
+	}
+	if err := w.Open(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.CheckAdapter(); err != nil {
+		t.Errorf("CheckAdapter: %v", err)
+	}
+	gone := errors.New(`адаптера "csqtt-cli" (индекс 7) в системе больше нет`)
+	f.mu.Lock()
+	f.presentErr = gone
+	f.mu.Unlock()
+	if err := w.CheckAdapter(); !errors.Is(err, gone) {
+		t.Errorf("CheckAdapter без адаптера: %v", err)
+	}
+
+	lost := errors.New("ядро потеряло дескриптор адаптера")
+	w.Lost(lost)
+	w.Lost(errors.New("второй раз"))
+	var le *AdapterLostError
+	select {
+	case err := <-w.Failed():
+		if !errors.As(err, &le) || le.Name != TunName || !errors.Is(err, lost) {
+			t.Errorf("Failed: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Failed молчит")
+	}
+	select {
+	case err := <-w.Failed():
+		t.Errorf("Failed второй раз: %v", err)
+	default:
+	}
+
+	if err := w.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+	if err := w.CheckAdapter(); !errors.Is(err, errTunClosed) {
+		t.Errorf("CheckAdapter после Close: %v", err)
 	}
 }

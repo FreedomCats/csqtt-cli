@@ -41,7 +41,8 @@ type tunHarness struct {
 
 func newTunHarness(t *testing.T, opts Options, scripts ...[]string) *tunHarness {
 	t.Helper()
-	th := &tunHarness{fd: &fakeTunFD{}, dp: &fakePersistent{fakeDatapath: &fakeDatapath{}}}
+	failed := make(chan error, 1)
+	th := &tunHarness{fd: &fakeTunFD{failed: failed}, dp: &fakePersistent{fakeDatapath: &fakeDatapath{}, failed: failed}}
 	opts.TunFD, opts.Datapath = th.fd, th.dp
 	th.harness = newHarness(t, opts, scripts...)
 	th.dp.onSuspend = func() {
@@ -213,6 +214,7 @@ func TestTunFDConnectedWaitsForHandoff(t *testing.T) {
 var (
 	_ Datapath            = (*datapath.Tun)(nil)
 	_ datapath.Persistent = (*datapath.Tun)(nil)
+	_ datapath.Failing    = (*datapath.Tun)(nil)
 )
 
 // Строка после конца попытки говорит правду о трафике системы: если туннель

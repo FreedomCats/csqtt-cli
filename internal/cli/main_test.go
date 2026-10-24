@@ -153,6 +153,10 @@ func fakeCore(mode string) int {
 		event("PROGRESS", `{"kind":"credentials"}`)
 		event("CONFIG", `{"config":"TUNCONF:192.0.2.2:198.51.100.53"}`)
 		event("READY", `{"worker":1}`)
+		// Сервер урезал воркеров пароля до 5 — и сказал это дважды.
+		fmt.Fprintln(os.Stderr, "[СЕССИЯ] TUNWORKERS: согласовано 5, лимит сервера 5")
+		event("WORKERS", `{"workers":5}`)
+		event("WORKERS", `{"workers":5}`)
 		event("STATS", `{"active":1,"bytes_up":100,"bytes_down":200}`)
 		return waitStop()
 
