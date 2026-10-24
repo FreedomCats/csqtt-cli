@@ -51,12 +51,20 @@ type TunOptions struct {
 //
 // Адаптер живёт, пока открыт его дескриптор: после падения процесса он
 // исчезает сам, вместе с адресом и маршрутами.
+//
+// Tun — Failing: адаптер, который пропал сам (на Windows это видит мост),
+// кончает сеанс (Failed).
 type Tun struct {
 	opts TunOptions
 
-	// openAdapter создаёт адаптер. Поле — ради тестов: настоящему нужны
-	// права, а логика Start, Suspend и Close от этого не зависит.
-	openAdapter func(name string, logf func(string, ...any)) (*tunAdapter, error)
+	// openAdapter создаёт адаптер; lost он зовёт, если адаптер сломался сам.
+	// Поле — ради тестов: настоящему нужны права, а логика Start, Suspend и
+	// Close от этого не зависит.
+	openAdapter func(name string, logf func(string, ...any), lost func(error)) (*tunAdapter, error)
+
+	// failed — причина, по которой адаптер сломался (Failed); один раз.
+	failed     chan error
+	failedOnce sync.Once
 
 	// mu держится и на время системных вызовов: они короткие, а Close так
 	// дожидается Start, идущего в другой горутине.
@@ -128,8 +136,34 @@ func NewTun(opts TunOptions) *Tun {
 	if strings.TrimSpace(opts.Name) == "" {
 		opts.Name = TunName
 	}
-	return &Tun{opts: opts, openAdapter: openTunAdapter}
+	return &Tun{opts: opts, openAdapter: openTunAdapter, failed: make(chan error, 1)}
 }
+
+// Failed отдаёт причину, по которой адаптер сломался сам (datapath.Failing):
+// на Windows его закрыла система или мост не может с ним работать дольше
+// bridgeGiveUp. Маршруты при этом ведут в адаптер, который никуда не везёт;
+// убирает их Close.
+func (t *Tun) Failed() <-chan error { return t.failed }
+
+// lost — адаптер сломался сам: строка в журнал и причина в Failed.
+func (t *Tun) lost(err error) {
+	t.failedOnce.Do(func() {
+		t.logf("[TUN] адаптер %q перестал работать: %v", t.opts.Name, err)
+		t.failed <- &AdapterLostError{Name: t.opts.Name, Err: err}
+	})
+}
+
+// AdapterLostError — адаптер tun сломался сам посреди сеанса (Failed).
+type AdapterLostError struct {
+	Name string
+	Err  error
+}
+
+func (e *AdapterLostError) Error() string {
+	return fmt.Sprintf("tun: адаптер %q перестал работать: %v", e.Name, e.Err)
+}
+
+func (e *AdapterLostError) Unwrap() error { return e.Err }
 
 // Requires: root, весь трафик системы — значит, сокеты ядра нужно увести
 // мимо туннеля, а DNS системы — закрыть от утечки. Где своего адаптера
@@ -169,7 +203,7 @@ func (t *Tun) openLocked() (*tunAdapter, error) {
 	if t.adapter != nil {
 		return t.adapter, nil
 	}
-	adapter, err := t.openAdapter(t.opts.Name, t.logf)
+	adapter, err := t.openAdapter(t.opts.Name, t.logf, t.lost)
 	if err != nil {
 		return nil, fmt.Errorf("tun: %w", err)
 	}

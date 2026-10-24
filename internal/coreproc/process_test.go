@@ -310,3 +310,20 @@ func TestShellDeathKillsCore(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+// Отказ BIND_IF узнаётся по обеим строкам ядра (bind_if.rs), принятая
+// команда и прочий журнал — нет.
+func TestBindIfRejected(t *testing.T) {
+	for text, want := range map[string]bool{
+		"[П3] BIND_IF отклонён: ядро запущено без -bind-if":                                         true,
+		`[П3] BIND_IF отклонён: "x" — не индекс интерфейса`:                                         true,
+		"[П3] BIND_IF:7 отклонён, сокеты остаются на интерфейсе 3: нет интерфейса с таким индексом": true,
+		"[П3] Интерфейс 3 → 7: новые сокеты — через него":                                           false,
+		"[STDIN] BIND_IF:7": false,
+		"[КАПЧА] отклонён устаревший ответ": false,
+	} {
+		if got := BindIfRejected(text); got != want {
+			t.Errorf("BindIfRejected(%q) = %v", text, got)
+		}
+	}
+}

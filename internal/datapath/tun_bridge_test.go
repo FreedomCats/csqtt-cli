@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -80,10 +82,24 @@ func (d *fakeDevice) written(wait time.Duration) []byte {
 	}
 }
 
-// bridgeLog — журнал моста для проверок.
+// bridgeLog — журнал моста для проверок; lost — что мост сказал о
+// сломанном адаптере.
 type bridgeLog struct {
 	mu    sync.Mutex
 	lines []string
+	lost  []error
+}
+
+func (l *bridgeLog) lose(err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.lost = append(l.lost, err)
+}
+
+func (l *bridgeLog) losses() []error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.lost)
 }
 
 func (l *bridgeLog) logf(format string, args ...any) {
@@ -118,7 +134,7 @@ func runBridge(t *testing.T) (*fakeDevice, *Link, *bridgeLog, func() bool) {
 	dev := newFakeDevice()
 	link := openLink(t)
 	log := &bridgeLog{}
-	b := startBridge(dev, link, log.logf)
+	b := startBridge(dev, link, log.logf, log.lose)
 	stopped := false
 	stop := func() bool {
 		if stopped {
@@ -266,5 +282,64 @@ func TestBridgeStopsWhileFailing(t *testing.T) {
 	}
 	if d := time.Since(start); d > time.Second {
 		t.Errorf("остановка заняла %v", d)
+	}
+}
+
+// Адаптер закрыла система (отключён, удалён): мост говорит об этом один раз
+// и выходит, а не молчит, как при своей остановке.
+func TestBridgeAdapterClosedBySystem(t *testing.T) {
+	dev, _, log, stop := runBridge(t)
+	dev.Close()
+	deadline := time.Now().Add(2 * time.Second)
+	for len(log.losses()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !stop() {
+		t.Fatal("мост не остановился")
+	}
+	lost := log.losses()
+	if len(lost) != 1 || !errors.Is(lost[0], errAdapterGone) {
+		t.Fatalf("мост сказал о пропаже %q, ждали один раз errAdapterGone", lost)
+	}
+}
+
+// Сбой, который не проходит дольше bridgeGiveUp, — адаптер сломан.
+func TestBridgeGivesUpOnEndlessFailure(t *testing.T) {
+	saved := bridgeGiveUp
+	bridgeGiveUp = 300 * time.Millisecond
+	t.Cleanup(func() { bridgeGiveUp = saved })
+	dev, _, log, stop := runBridge(t)
+	ring := errors.New("Send ring corrupt")
+	dev.mu.Lock()
+	for range 1000 {
+		dev.readErr = append(dev.readErr, ring)
+	}
+	dev.mu.Unlock()
+	// Read уже ждёт пакет в первом вызове; ошибки — со следующего.
+	dev.in <- ipv4(40, 12)
+	deadline := time.Now().Add(3 * time.Second)
+	for len(log.losses()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !stop() {
+		t.Fatal("мост не остановился")
+	}
+	lost := log.losses()
+	if len(lost) != 1 || !errors.Is(lost[0], ring) || !strings.Contains(lost[0].Error(), "чтение адаптера") {
+		t.Fatalf("мост сказал о сбое %q", lost)
+	}
+}
+
+// Своя остановка — не пропажа адаптера, даже посреди сбоев.
+func TestBridgeStopIsNotLoss(t *testing.T) {
+	dev, _, log, stop := runBridge(t)
+	dev.mu.Lock()
+	dev.writeErr = []error{errors.New("сбой")}
+	dev.mu.Unlock()
+	if !stop() {
+		t.Fatal("мост не остановился")
+	}
+	if lost := log.losses(); len(lost) != 0 {
+		t.Errorf("после своей остановки мост сказал о пропаже: %q", lost)
 	}
 }

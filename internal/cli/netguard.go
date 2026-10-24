@@ -7,11 +7,13 @@
 // csqtt-cli — прокси окна капчи (architecture.md §06).
 //
 // Индекс ядро получает на каждую попытку (coreBinding — Prepare супервизора),
-// а за сменой сети следит netguard.Guard.Watch: сменился интерфейс — попытка
-// перезапускается, и новое ядро получает новый индекс. Без перезапуска ядро
-// на прежнем индексе в новую сеть не пойдёт: на Linux сокеты на пропавшем
-// интерфейсе получают ENODEV, мимо привязки они не уходят. Команда BIND_IF:
-// без перезапуска ядра — замер W6, здесь её нет.
+// а за сменой сети следит netguard.Guard.Watch. Сменился интерфейс — по
+// умолчанию попытка перезапускается, и новое ядро получает новый индекс: на
+// прежнем индексе ядро в новую сеть не пойдёт, сокеты на пропавшем
+// интерфейсе получают ENODEV (Linux) или WSAENETUNREACH (Windows), мимо
+// привязки они не уходят. Со скрытым флагом -net-switch bindif работающее
+// ядро вместо этого получает BIND_IF (supervisor.Tunnel.Rebind) — для
+// замера W6.
 package cli
 
 import (
@@ -46,6 +48,22 @@ var reversePathCheck = reversePathProblem
 // errNetworkChanged — причина перезапуска при смене сети; её печатает
 // строка перехода «переподключение: сеть сменилась».
 var errNetworkChanged = errors.New("сеть сменилась")
+
+// Как туннель переходит в новую сеть (-net-switch).
+const (
+	// netSwitchRestart — перезапуск ядра (умолчание).
+	netSwitchRestart = "restart"
+	// netSwitchBindIf — BIND_IF работающему ядру, перезапуск — только если
+	// перевести нельзя (supervisor.Tunnel.Rebind).
+	netSwitchBindIf = "bindif"
+)
+
+// netSwitcher — чем слежение за сетью переводит туннель:
+// *supervisor.Tunnel.
+type netSwitcher interface {
+	Restart(reason error)
+	Rebind(index uint32, reason error)
+}
 
 // errNoNetwork — попытка без интерфейса IPv4: ядру не к чему привязаться.
 // Ядро ходит к DNS Яндекса и TURN только по IPv4, интерфейс IPv6 ему не
@@ -137,10 +155,13 @@ func (b *coreBinding) warnReversePath(c netguard.Choice) {
 }
 
 // watchNetwork следит за сменой физического интерфейса: новые индексы
-// netguard ставит сам, выбор печатается строкой, попытка перезапускается.
-// ok = false — подписаться не вышло: подключению это не мешает, но новая
-// сеть подхватится только с концом попытки — об этом строка.
-func watchNetwork(out *printer, guard *netguard.Guard, restart func(error)) (stop func(), ok bool) {
+// netguard ставит сам, выбор печатается строкой, туннель переходит в новую
+// сеть — перезапуском или, если rebind, командой BIND_IF работающему ядру.
+// Интерфейс, который пропадал и вернулся тем же, — всегда перезапуск: BIND_IF
+// на тот же индекс ничего не меняет, а сокеты через него мертвы. ok = false —
+// подписаться не вышло: подключению это не мешает, но новая сеть подхватится
+// только с концом попытки — об этом строка.
+func watchNetwork(out *printer, guard *netguard.Guard, sw netSwitcher, rebind bool) (stop func(), ok bool) {
 	b := &coreBinding{out: out}
 	stop, err := watchNetworkChanges(guard, netguard.WatchOptions{
 		Changed: func(now, before netguard.Choice) {
@@ -156,9 +177,14 @@ func watchNetwork(out *printer, guard *netguard.Guard, restart func(error)) (sto
 				out.line("сеть переподключилась: %s", now)
 			default:
 				out.line("сеть сменилась: %s", now)
+				if rebind && now.Index4 != 0 {
+					b.warnReversePath(now)
+					sw.Rebind(now.Index4, errNetworkChanged)
+					return
+				}
 			}
 			b.warnReversePath(now)
-			restart(errNetworkChanged)
+			sw.Restart(errNetworkChanged)
 		},
 	})
 	if err != nil {

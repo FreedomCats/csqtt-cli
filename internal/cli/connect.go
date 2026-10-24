@@ -54,8 +54,7 @@ func connectCommand() *command {
 
 Режим tun (datapath = "tun", умолчание) — системный VPN: весь трафик
 системы идёт в туннель через адаптер csqtt-cli. Он требует прав root
-(sudo ` + app.Name + ` connect), на Windows — администратора. На Windows он пока
-работает без защиты DNS и kill-switch и поэтому — только с -allow-leak. Файл
+(sudo ` + app.Name + ` connect), на Windows — администратора. Файл
 настроек, секреты и окно капчи под sudo остаются у того, кто его вызвал. Пока туннель
 не поднят, kill-switch блокирует трафик системы; пока поднят, DNS системы
 ходит только к резолверам туннеля, а IPv6 наружу закрыт. Не включились
@@ -80,7 +79,10 @@ Ctrl+C останавливает туннель. Второй, пока ядр�
 
 Недоступный звонок исключается из подключения, но профиль не меняется:
 заменить хеши — ` + app.Name + ` profile set <профиль> -hashes.`,
-		run: runConnect,
+		// -net-switch — замер W6 (§06 doc/architecture.md): в обычной
+		// помощи его нет.
+		hiddenFlags: []string{"net-switch"},
+		run:         runConnect,
 	}
 }
 
@@ -98,12 +100,17 @@ func runConnect(ctx context.Context, e *env, args []string) error {
 	// по одной причине — nftables.
 	allowLeak := fs.Bool("allow-leak", false,
 		"tun: подключаться, даже если защита от утечки DNS и kill-switch не включились")
+	netSwitch := fs.String("net-switch", netSwitchRestart, "диагностика (замер W6), tun: как переходить в новую сеть — "+
+		netSwitchRestart+" (перезапуск ядра) или "+netSwitchBindIf+" (команда BIND_IF работающему ядру)")
 	rest, err := parseWithArgs(e, fs, args)
 	if err != nil {
 		return err
 	}
 	if len(rest) > 1 {
 		return usagef("лишний аргумент: профиль называется один (аргумент не печатается)")
+	}
+	if *netSwitch != netSwitchRestart && *netSwitch != netSwitchBindIf {
+		return usagef("-net-switch: %s или %s", netSwitchRestart, netSwitchBindIf)
 	}
 	name := ""
 	if len(rest) == 1 {
@@ -118,6 +125,7 @@ func runConnect(ctx context.Context, e *env, args []string) error {
 		modeNamed:    named["datapath"],
 		noKillSwitch: named["no-kill-switch"] && *noKillSwitch,
 		allowLeak:    *allowLeak,
+		netSwitch:    *netSwitch,
 	})
 	if err != nil {
 		return err
@@ -134,6 +142,8 @@ type connectFlags struct {
 	// noKillSwitch и allowLeak действуют только в режиме tun: у socks нет
 	// ни защиты DNS, ни kill-switch, и флаги, как в qwdtt-cli, ему не мешают.
 	noKillSwitch, allowLeak bool
+	// netSwitch — -net-switch: netSwitchRestart или netSwitchBindIf.
+	netSwitch string
 }
 
 // connectPlan — всё, что собрано до входа в цикл подключения. Сети здесь
@@ -152,6 +162,8 @@ type connectPlan struct {
 	// killSwitchOff — чем kill-switch выключен, для строки до подключения;
 	// пусто — включён.
 	killSwitchOff string
+	// netSwitch — как переходить в новую сеть (-net-switch).
+	netSwitch string
 }
 
 // planConnect собирает план: профиль, режим, секреты из хранилища, путь к
@@ -227,7 +239,8 @@ func (e *env) planConnect(f connectFlags) (*connectPlan, error) {
 	if err != nil {
 		return nil, err
 	}
-	plan := &connectPlan{profile: p, cfg: cfg, corePath: corePath, mode: mode, allowLeak: f.allowLeak}
+	plan := &connectPlan{profile: p, cfg: cfg, corePath: corePath, mode: mode, allowLeak: f.allowLeak,
+		netSwitch: f.netSwitch}
 	switch {
 	case f.noKillSwitch:
 		plan.killSwitchOff = "-no-kill-switch"
@@ -384,7 +397,7 @@ func (plan *connectPlan) run(ctx context.Context, e *env, verbose bool) error {
 	}
 	if dp.watch != nil {
 		// Снимается раньше datapath: перезапуск после остановки незачем.
-		defer dp.watch(tunnel.Restart)()
+		defer dp.watch(tunnel)()
 	}
 	out.setWorkers(tunnel.Workers)
 	out.setConnectedNote(dp.note)
@@ -443,7 +456,7 @@ type sessionDatapath struct {
 	captchaDirect func() (done func())
 	// watch начинает слежение за сменой сети и возвращает его остановку;
 	// nil — следить незачем (socks).
-	watch func(restart func(error)) (stop func())
+	watch func(sw netSwitcher) (stop func())
 
 	// close убирает всё в обратном порядке.
 	close func()
@@ -473,9 +486,14 @@ func explainConnectError(err error, profile string, dead []int) error {
 	var startup *supervisor.StartupError
 	var token *supervisor.TokenRejectedError
 	var vk *supervisor.VKError
+	var lost *datapath.AdapterLostError
 	switch {
 	case err == nil:
 		return nil
+
+	case errors.As(err, &lost):
+		return fmt.Errorf("%w\n  туннель снят, трафик системы снова идёт напрямую; подключитесь заново — адаптер "+
+			"создастся снова: %s connect %s", err, app.Name, profile)
 
 	case errors.As(err, &token):
 		return fmt.Errorf("%w\n  токен отозван, просрочен или не тот — войдите заново: %s vk login", err, app.Name)

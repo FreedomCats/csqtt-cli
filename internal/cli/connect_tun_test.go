@@ -45,7 +45,11 @@ type fakeConnectTun struct {
 	unsupported error
 	openErr     error
 	opened      bool
+	// failed — datapath.Failing; nil — адаптер не ломается.
+	failed chan error
 }
+
+func (f *fakeConnectTun) Failed() <-chan error { return f.failed }
 
 func (f *fakeConnectTun) Requires() datapath.Requirements {
 	return datapath.Requirements{Unsupported: f.unsupported, Admin: true, Netguard: true, DNSGuard: true}
@@ -740,6 +744,101 @@ func TestConnectTunNetworkChange(t *testing.T) {
 	}
 	if !slices.Contains(s.j.list(), "rp_filter wlan0") {
 		t.Errorf("обратный фильтр нового интерфейса не проверен: %v", s.j.list())
+	}
+}
+
+// -net-switch bindif: новый интерфейс работающее ядро получает командой
+// BIND_IF, без перезапуска. Интерфейс, который пропадал и вернулся тем же, —
+// всё равно перезапуск.
+func TestConnectTunNetworkChangeBindIf(t *testing.T) {
+	s := stubTun(t)
+	te := newTestEnv(t)
+	te.addHome()
+	te.core = "connected"
+	out, errOut, stop := connectTun(t, te, s, "-net-switch", "bindif")
+	waitFor(t, out, errOut, "туннель работает")
+
+	eth := netguard.Choice{Index4: 3, Alias4: "eth0"}
+	wifi := netguard.Choice{Index4: 7, Alias4: "wlan0"}
+	s.network(wifi, eth)
+	waitFor(t, out, errOut, "[П3] Интерфейс 3 → 7")
+	if args := coreArgs(out.String()); len(args) != 1 {
+		t.Fatalf("после BIND_IF ядро перезапускалось: %q", args)
+	}
+	s.network(wifi, wifi)
+	waitFor(t, out, errOut, "--bind-if=7")
+	if code := stop(); code != exitOK {
+		t.Fatalf("код %d, stderr:\n%s", code, errOut.String())
+	}
+
+	got := out.String()
+	if args := coreArgs(got); len(args) != 2 || !strings.Contains(args[0], "--bind-if=3") ||
+		!strings.Contains(args[1], "--bind-if=7") {
+		t.Errorf("аргументы ядра по попыткам: %q", args)
+	}
+	for _, want := range []string{
+		"сеть сменилась: IPv4 — wlan0 (индекс 7)",
+		"ядро переходит на интерфейс 7 без перезапуска",
+		"сеть переподключилась: IPv4 — wlan0 (индекс 7)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("нет %q:\n%s", want, got)
+		}
+	}
+	if n := strings.Count(got, "== переподключение: сеть сменилась"); n != 1 {
+		t.Errorf("переподключений по смене сети %d, ждали одно — на вернувшийся интерфейс:\n%s", n, got)
+	}
+	if !slices.Contains(s.j.list(), "rp_filter wlan0") {
+		t.Errorf("обратный фильтр нового интерфейса не проверен: %v", s.j.list())
+	}
+}
+
+// Негодное значение -net-switch — ошибка командной строки до подключения;
+// в помощи флага нет.
+func TestConnectNetSwitchFlag(t *testing.T) {
+	s := stubTun(t)
+	te := newTestEnv(t)
+	te.addHome()
+	code, _, stderr := te.run("connect", "-net-switch", "bind", "-config", te.configPath())
+	if code != exitUsage || !strings.Contains(stderr, "-net-switch: restart или bindif") {
+		t.Errorf("код %d, stderr:\n%s", code, stderr)
+	}
+	if steps := s.j.list(); len(steps) != 0 {
+		t.Errorf("с негодным флагом connect трогал систему: %v", steps)
+	}
+	code, stdout, _ := te.run("connect", "-h")
+	if code != exitOK || strings.Contains(stdout, "net-switch") {
+		t.Errorf("код %d, помощь:\n%s", code, stdout)
+	}
+}
+
+// Адаптер сломался сам: connect кончается ошибкой с подсказкой, всё
+// снимается, как при остановке.
+func TestConnectTunAdapterLost(t *testing.T) {
+	s := stubTun(t)
+	s.tun.failed = make(chan error, 1)
+	te := newTestEnv(t)
+	te.addHome()
+	te.core = "connected"
+	out, errOut, stop := connectTun(t, te, s)
+	waitFor(t, out, errOut, "туннель работает")
+	s.tun.failed <- &datapath.AdapterLostError{Name: datapath.TunName, Err: errors.New("система закрыла адаптер")}
+	// connect должен кончиться сам: stop отменил бы его раньше.
+	waitFor(t, errOut, out, "перестал работать")
+	if code := stop(); code != exitError {
+		t.Fatalf("код %d, stdout:\n%s\nstderr:\n%s", code, out.String(), errOut.String())
+	}
+	if msg := errOut.String(); !strings.Contains(msg, "перестал работать") || !strings.Contains(msg, "connect home") {
+		t.Errorf("stderr:\n%s", msg)
+	}
+	steps := s.j.list()
+	for _, want := range []string{"адаптер закрыт", "таблица закрыта", "резерв снят"} {
+		if !slices.Contains(steps, want) {
+			t.Errorf("нет шага %q: %v", want, steps)
+		}
+	}
+	if n := len(coreArgs(out.String())); n != 1 {
+		t.Errorf("попыток %d, ждали одну", n)
 	}
 }
 

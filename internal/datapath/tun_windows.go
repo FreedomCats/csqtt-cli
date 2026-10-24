@@ -71,7 +71,7 @@ func (t *Tun) Link() (*Link, error) {
 // Между попытками он снимается, как и маршруты: клиент DNS Windows шлёт
 // запросы к резолверам адаптера через сам адаптер, то есть в туннель без
 // ядра, и страница капчи не открылась бы (так же на Linux, §05).
-func openTunAdapter(name string, logf func(string, ...any)) (*tunAdapter, error) {
+func openTunAdapter(name string, logf func(string, ...any), lost func(error)) (*tunAdapter, error) {
 	unlock, err := acquireTunLock()
 	if err != nil {
 		return nil, err
@@ -102,7 +102,7 @@ func openTunAdapter(name string, logf func(string, ...any)) (*tunAdapter, error)
 		release()
 		return nil, err
 	}
-	bridge := startBridge(dev, link, logf)
+	bridge := startBridge(dev, link, logf, lost)
 	routes := tunRoutes
 	dnsSet := false
 

@@ -2,6 +2,7 @@ package datapath
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"sync"
@@ -22,6 +23,16 @@ type packetDevice interface {
 // впустую, пока сбой не пройдёт или мост не остановят.
 const bridgeRetry = 100 * time.Millisecond
 
+// bridgeGiveUp — сколько сбой одной стороны может идти без перерыва, прежде
+// чем мост сочтёт адаптер сломанным. Повторы лечат занятое кольцо, но не
+// испорченное («Send ring corrupt» у wireguard-go): такой сбой не проходит.
+// Переменная — ради тестов.
+var bridgeGiveUp = 10 * time.Second
+
+// errAdapterGone — адаптер закрыт не мостом: система закрыла его сама.
+var errAdapterGone = errors.New("система закрыла адаптер: его отключили или удалили, " +
+	"сбросили сетевой стек или обновили драйвер")
+
 // tunBridge возит пакеты между адаптером и ядром, пока адаптер жив (Windows:
 // Wintun открыт в процессе оболочки, architecture.md §05). От адаптера к
 // ядру — Link.WritePacket: он же отбрасывает IPv6 программ и пакеты, пока
@@ -29,17 +40,23 @@ const bridgeRetry = 100 * time.Millisecond
 // пакеты IPv4 с порта ядра, так что служебные ответы сервера и чужие
 // датаграмы в адаптер не попадают.
 //
-// Мост переживает попытки: ядро меняется, Link и адаптер — нет.
+// Мост переживает попытки: ядро меняется, Link и адаптер — нет. Адаптер,
+// закрытый не мостом (os.ErrClosed без stop), или сбой дольше bridgeGiveUp —
+// конец моста: он зовёт lost с причиной, один раз, и выходит.
 type tunBridge struct {
 	done     chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup
+
+	lost     func(error)
+	lostOnce sync.Once
 }
 
 // startBridge запускает мост. Остановка — stop, затем закрыть адаптер и
-// Link (они разбудят ждущие Read и ReadPacket), затем wait.
-func startBridge(dev packetDevice, link *Link, logf func(string, ...any)) *tunBridge {
-	b := &tunBridge{done: make(chan struct{})}
+// Link (они разбудят ждущие Read и ReadPacket), затем wait. lost узнаёт, что
+// адаптер сломался сам; nil — молчать.
+func startBridge(dev packetDevice, link *Link, logf func(string, ...any), lost func(error)) *tunBridge {
+	b := &tunBridge{done: make(chan struct{}), lost: lost}
 	b.wg.Add(2)
 	go func() {
 		defer b.wg.Done()
@@ -110,20 +127,37 @@ func (b *tunBridge) toAdapter(dev packetDevice, link *Link, logf func(string, ..
 	}
 }
 
-// failed решает, что делать после ошибки адаптера: true — выйти (адаптер
-// закрыт или мост остановлен), false — повторить после паузы. О сбое
+// failed решает, что делать после ошибки адаптера: true — выйти (мост
+// остановлен или адаптер сломался), false — повторить после паузы. О сбое
 // пишется один раз, пока он не пройдёт.
 func (b *tunBridge) failed(fail *bridgeFailure, what string, err error, logf func(string, ...any)) bool {
-	if errors.Is(err, os.ErrClosed) || b.stopped() {
+	if b.stopped() {
 		return true
 	}
-	fail.report(logf, what, err)
+	if errors.Is(err, os.ErrClosed) {
+		b.lose(fmt.Errorf("%s: %w", what, errAdapterGone))
+		return true
+	}
+	if fail.report(logf, what, err) >= bridgeGiveUp {
+		b.lose(fmt.Errorf("%s: %w — сбой не проходит дольше %s", what, err, bridgeGiveUp))
+		return true
+	}
 	select {
 	case <-b.done:
 		return true
 	case <-time.After(bridgeRetry):
 		return false
 	}
+}
+
+// lose — адаптер сломался: сказать один раз и остановить обе стороны.
+func (b *tunBridge) lose(err error) {
+	b.lostOnce.Do(func() {
+		if b.lost != nil {
+			b.lost(err)
+		}
+	})
+	b.stop()
 }
 
 func (b *tunBridge) stopped() bool {
@@ -135,14 +169,23 @@ func (b *tunBridge) stopped() bool {
 	}
 }
 
-// bridgeFailure — идущий сбой одной стороны моста: сколько раз подряд.
-type bridgeFailure struct{ count int }
+// bridgeFailure — идущий сбой одной стороны моста: сколько раз подряд и с
+// какого времени.
+type bridgeFailure struct {
+	count int
+	since time.Time
+}
 
-func (f *bridgeFailure) report(logf func(string, ...any), what string, err error) {
-	if f.count == 0 && logf != nil {
-		logf("[TUN] мост: %s: %v — повторяю", what, err)
+// report отмечает сбой и отдаёт, сколько идёт серия.
+func (f *bridgeFailure) report(logf func(string, ...any), what string, err error) time.Duration {
+	if f.count == 0 {
+		f.since = time.Now()
+		if logf != nil {
+			logf("[TUN] мост: %s: %v — повторяю", what, err)
+		}
 	}
 	f.count++
+	return time.Since(f.since)
 }
 
 func (f *bridgeFailure) ok(logf func(string, ...any), what string) {

@@ -76,7 +76,7 @@ func (t *Tun) SendFD(ctx context.Context, socket string, pid int) error {
 // после падения процесса исчезает. Поэтому чужой интерфейс с тем же
 // именем — не остаток прошлого csqtt-cli, а чей-то ещё, и он не удаляется, а
 // называется в ошибке.
-func openTunAdapter(name string, logf func(string, ...any)) (*tunAdapter, error) {
+func openTunAdapter(name string, logf func(string, ...any), _ func(error)) (*tunAdapter, error) {
 	unlock, err := acquireTunLock()
 	if err != nil {
 		return nil, err

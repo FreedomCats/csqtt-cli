@@ -77,10 +77,22 @@ func fakeCore(mode string) int {
 	}
 	hashes := strings.Split(secrets.VK, ",")
 	event := func(kind, payload string) { fmt.Printf("__CSQTT_EVENT__|%s|%s\n", kind, payload) }
+	// Интерфейс сокетов — из --bind-if; BIND_IF: его меняет, как у
+	// настоящего (bind_if.rs).
+	bound := ""
+	for _, a := range os.Args {
+		if v, ok := strings.CutPrefix(a, "--bind-if="); ok {
+			bound = v
+		}
+	}
 	waitStop := func() int {
 		for in.Scan() {
 			if in.Text() == "STOP" {
 				break
+			}
+			if index, ok := strings.CutPrefix(in.Text(), "BIND_IF:"); ok {
+				fmt.Fprintf(os.Stderr, "[П3] Интерфейс %s → %s: новые сокеты — через него\n", bound, index)
+				bound = index
 			}
 		}
 		event("STOPPED", "{}")

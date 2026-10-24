@@ -30,6 +30,13 @@ const (
 // если ядро запущено с Config.BindIf; отказ ядро пишет в журнал.
 func BindIf(index uint32) string { return "BIND_IF:" + strconv.FormatUint(uint64(index), 10) }
 
+// BindIfRejected — строка журнала ядра об отказе BIND_IF: ядро запущено без
+// -bind-if, индекс негоден или интерфейса нет. Сокеты тогда остались на
+// прежнем интерфейсе (bind_if.rs). Отдельного события у отказа нет.
+func BindIfRejected(text string) bool {
+	return strings.Contains(text, "[П3] BIND_IF") && strings.Contains(text, "отклонён")
+}
+
 // CaptchaResult — ответ на CaptchaRequest: токен решённой капчи.
 func CaptchaResult(token string) string { return "CAPTCHA_RESULT|" + token }
 

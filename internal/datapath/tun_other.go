@@ -11,7 +11,7 @@ var errTunUnsupported = errors.New("datapath tun работает только �
 func tunUnsupported() error { return errTunUnsupported }
 
 // openTunAdapter не создаёт ничего.
-func openTunAdapter(string, func(string, ...any)) (*tunAdapter, error) {
+func openTunAdapter(string, func(string, ...any), func(error)) (*tunAdapter, error) {
 	return nil, errTunUnsupported
 }
 

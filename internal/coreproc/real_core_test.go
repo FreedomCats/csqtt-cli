@@ -180,11 +180,25 @@ func TestRealCoreBindIf(t *testing.T) {
 	t.Cleanup(func() { _ = p.stop(0) })
 	bound := fmt.Sprintf("[П3] Сокеты ядра — через интерфейс %d", lo)
 	changed := fmt.Sprintf("[П3] Интерфейс %d → %d", lo, lo)
+	// Негодный индекс — первым: отказ должна узнать BindIfRejected, а
+	// принятая следом команда — нет.
 	msgs, seen, drained := collect(p, func(m Message) bool { l, ok := m.(Log); return ok && strings.HasPrefix(l.Text, changed) })
+	if err := p.Send(BindIf(0x7fff_fff0)); err != nil {
+		t.Fatal(err)
+	}
 	if err := p.Send(BindIf(lo)); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, seen, changed)
+	var rejected []string
+	for _, m := range msgs() {
+		if l, ok := m.(Log); ok && BindIfRejected(l.Text) {
+			rejected = append(rejected, l.Text)
+		}
+	}
+	if len(rejected) != 1 || !strings.Contains(rejected[0], "2147483632") {
+		t.Errorf("отказ BIND_IF в журнале: %q", rejected)
+	}
 	if !slices.Contains(msgs(), Message(Log{Text: bound})) {
 		t.Errorf("в журнале нет %q", bound)
 	}

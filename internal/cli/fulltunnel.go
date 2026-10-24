@@ -112,8 +112,8 @@ func (plan *connectPlan) openTun(e *env, out *printer, verbose bool) (_ *session
 		note:       "весь трафик системы — через адаптер " + datapath.TunName,
 		prepare:    binding.prepare,
 		killSwitch: setup.killSwitch.lockedFunc(),
-		watch: func(restart func(error)) func() {
-			stop, ok := watchNetwork(out, guard, restart)
+		watch: func(sw netSwitcher) func() {
+			stop, ok := watchNetwork(out, guard, sw, plan.netSwitch == netSwitchBindIf)
 			binding.watching = ok
 			return stop
 		},

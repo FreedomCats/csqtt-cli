@@ -73,7 +73,7 @@ type TunFD interface {
 // весь сеанс: строит и закрывает его вызывающий, цикл зовёт Start на первый
 // TUNCONF каждой попытки и UpdateDNS — на повторный. Если он ещё и
 // datapath.Persistent, после неудачной попытки, до задержки, цикл зовёт
-// Suspend.
+// Suspend. Если datapath.Failing — его отказ кончает Run этой ошибкой.
 type Datapath interface {
 	Start(ctx context.Context, conf datapath.TunConf) error
 	UpdateDNS(dns []netip.Addr) error
@@ -292,6 +292,15 @@ type Tunnel struct {
 	// restart — просьба о перезапуске (Restart), ещё не исполненная. Одной
 	// достаточно: перезапуск, попрошенный дважды, — всё равно один.
 	restart chan error
+	// rebind — просьба перевести ядро на другой интерфейс (Rebind), ещё не
+	// исполненная: последняя заменяет прежнюю, rebindMu — чтобы замена была
+	// одной.
+	rebind   chan rebindRequest
+	rebindMu sync.Mutex
+
+	// failed — datapath сломался насовсем (datapath.Failing); nil — сказать
+	// об этом datapath не умеет.
+	failed <-chan error
 
 	// abort — второй Ctrl+C (OnAbort): убить ядро, не дожидаясь уборки.
 	// abortable — контекст Run его передаёт (WithAbort), и об этом можно
@@ -327,7 +336,7 @@ func NewTunnel(opts Options) (*Tunnel, error) {
 		opts.DegradedRestart = DefaultDegradedRestart
 	}
 	path := opts.CorePath
-	return &Tunnel{
+	t := &Tunnel{
 		opts:    opts,
 		machine: New(),
 		hashes:  hashes,
@@ -337,8 +346,13 @@ func NewTunnel(opts Options) (*Tunnel, error) {
 		sleep:     sleepCtx,
 		fdTimeout: defaultFDTimeout,
 		restart:   make(chan error, 1),
+		rebind:    make(chan rebindRequest, 1),
 		abort:     make(chan struct{}, 1),
-	}, nil
+	}
+	if f, ok := opts.Datapath.(datapath.Failing); ok {
+		t.failed = f.Failed()
+	}
+	return t, nil
 }
 
 // Restart обрывает идущую попытку с причиной reason и начинает новую сразу:
@@ -355,6 +369,36 @@ func (t *Tunnel) Restart(reason error) {
 	default:
 		// Просьба уже ждёт.
 	}
+}
+
+// Rebind переводит работающее ядро на физический интерфейс index без
+// перезапуска — командой BIND_IF (правка П3): новые сокеты ядра пойдут через
+// него, а воркеры на старых переподключатся сами, когда те умрут
+// (architecture.md §06). Зовётся из любой горутины — при смене сети; reason —
+// причина для перезапуска, если до него дойдёт.
+//
+// Перевести можно только ядро, которое уже работает (PROCESS: раньше оно
+// команд не читает) и не останавливается. Иначе — то же, что Restart(reason),
+// и так же — если ядро команду отклонило. Между попытками — тоже как Restart:
+// задержка прерывается, а индекс новое ядро получит в Prepare. Не поднимется
+// туннель на новом интерфейсе — ядро перезапустит таймер деградации.
+//
+// Вторая просьба до исполнения первой её заменяет: нужен последний
+// интерфейс.
+func (t *Tunnel) Rebind(index uint32, reason error) {
+	t.rebindMu.Lock()
+	defer t.rebindMu.Unlock()
+	select {
+	case <-t.rebind:
+	default:
+	}
+	t.rebind <- rebindRequest{index: index, reason: reason}
+}
+
+// rebindRequest — просьба Rebind.
+type rebindRequest struct {
+	index  uint32
+	reason error
 }
 
 // State — текущее состояние подключения. Нужно строке состояния, которая
@@ -423,35 +467,55 @@ func (t *Tunnel) Run(ctx context.Context) error {
 			delay = t.backoff.next()
 		}
 		t.report(t.machine.Reconnect(res.err, delay))
-		if !t.pause(ctx, delay) {
+		ok, err := t.pause(ctx, delay)
+		if err != nil {
+			final = err
+			return err
+		}
+		if !ok {
 			return nil
 		}
 	}
 }
 
-// pause ждёт задержку перед следующей попыткой. Restart её прерывает и
-// сбрасывает счётчик неудач. false — цикл остановлен.
-func (t *Tunnel) pause(ctx context.Context, delay time.Duration) bool {
+// pause ждёт задержку перед следующей попыткой. Restart и Rebind её
+// прерывают и сбрасывают счётчик неудач. false — цикл остановлен: отменой
+// ctx или отказом datapath (тогда err — его причина).
+func (t *Tunnel) pause(ctx context.Context, delay time.Duration) (bool, error) {
 	sctx, wake := context.WithCancel(ctx)
-	woken := make(chan bool, 1)
+	type wakeup struct {
+		early bool  // прервана просьбой
+		err   error // отказ datapath
+	}
+	woken := make(chan wakeup, 1)
 	go func() {
 		select {
 		case <-t.restart:
-			woken <- true
+			woken <- wakeup{early: true}
+			wake()
+		case <-t.rebind:
+			woken <- wakeup{early: true}
+			wake()
+		case err := <-t.failed:
+			woken <- wakeup{err: err}
 			wake()
 		case <-sctx.Done():
-			woken <- false
+			woken <- wakeup{}
 		}
 	}()
 	slept := t.sleep(sctx, delay)
 	wake()
 	// Горутина должна кончиться здесь: иначе она забрала бы просьбу,
 	// пришедшую уже следующей попытке.
-	if <-woken {
+	w := <-woken
+	switch {
+	case w.err != nil:
+		return false, w.err
+	case w.early:
 		t.backoff.reset()
-		return ctx.Err() == nil
+		return ctx.Err() == nil, nil
 	}
-	return slept && ctx.Err() == nil
+	return slept && ctx.Err() == nil, nil
 }
 
 // result — чем кончилась попытка. final — следующей не будет; restart —
@@ -469,9 +533,14 @@ type result struct {
 // возвращает причину конца.
 func (t *Tunnel) attempt(ctx context.Context) result {
 	t.report(t.machine.BeginAttempt())
-	// Эта попытка и есть перезапуск, о котором могли попросить раньше.
+	// Эта попытка и есть перезапуск, о котором могли попросить раньше, а
+	// интерфейс, на который просили перейти, её ядро получит в Prepare.
 	select {
 	case <-t.restart:
+	default:
+	}
+	select {
+	case <-t.rebind:
 	default:
 	}
 
@@ -607,6 +676,10 @@ type attempt struct {
 
 	degraded *time.Timer
 	lastLog  []string
+
+	// rebound — ядру послан BIND_IF с этой причиной, и отказ в его журнале
+	// перезапускает попытку; nil — не посылали.
+	rebound error
 }
 
 // run читает вывод ядра до конца — иначе оно встанет на записи — и решает,
@@ -632,11 +705,16 @@ func (a *attempt) run(cancelled <-chan struct{}) result {
 			a.byUser = true
 			a.stop(result{})
 		case reason := <-a.tunnel.restart:
+			a.restart(reason)
+		case req := <-a.tunnel.rebind:
+			a.rebind(req)
+		case err := <-a.tunnel.failed:
+			// Datapath сломался насовсем: следующей попытке не на чем
+			// работать. Остановка по Ctrl+C, если шла, — тоже конец.
 			if a.stopping {
-				// Попытка и так кончается — следующая начнётся сразу.
-				a.res.restart = true
+				a.res = result{err: err, final: true}
 			} else {
-				a.stop(result{err: reason, restart: true})
+				a.stop(result{err: err, final: true})
 			}
 		case <-degradedC:
 			a.stopDegradedTimer()
@@ -673,6 +751,31 @@ func (a *attempt) run(cancelled <-chan struct{}) result {
 	default:
 		return result{err: errors.New("ядро завершилось само")}
 	}
+}
+
+// restart — просьба Restart посреди попытки.
+func (a *attempt) restart(reason error) {
+	if a.stopping {
+		// Попытка и так кончается — следующая начнётся сразу.
+		a.res.restart = true
+		return
+	}
+	a.stop(result{err: reason, restart: true})
+}
+
+// rebind — просьба Rebind посреди попытки: работающему ядру — BIND_IF, иначе
+// перезапуск (см. Rebind).
+func (a *attempt) rebind(req rebindRequest) {
+	if a.stopping || !a.started {
+		a.restart(req.reason)
+		return
+	}
+	if err := a.core.Send(coreproc.BindIf(req.index)); err != nil {
+		a.restart(req.reason)
+		return
+	}
+	a.rebound = req.reason
+	a.tunnel.logf("ядро переходит на интерфейс %d без перезапуска: новые соединения — через него", req.index)
 }
 
 // autoJSStartup — выход до PROCESS в auto_js: до него ядро открывает сессию
@@ -762,6 +865,11 @@ func (a *attempt) handle(m coreproc.Message) {
 			if len(a.lastLog) > startupLogLines {
 				a.lastLog = slices.Delete(a.lastLog, 0, 1)
 			}
+		}
+		if a.rebound != nil && coreproc.BindIfRejected(e.Text) {
+			// Сокеты остались на прежнем интерфейсе: новое ядро получит
+			// новый в Prepare.
+			a.restart(fmt.Errorf("%w; ядро не перешло на новый интерфейс", a.rebound))
 		}
 	}
 }

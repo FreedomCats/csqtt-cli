@@ -88,7 +88,7 @@ func (f *fakeAdapter) state() (configured []netip.Addr, added, removed, closed i
 func fakeTun(f *fakeAdapter, openErr error) (*Tun, *int) {
 	opens := 0
 	w := NewTun(TunOptions{})
-	w.openAdapter = func(string, func(string, ...any)) (*tunAdapter, error) {
+	w.openAdapter = func(string, func(string, ...any), func(error)) (*tunAdapter, error) {
 		opens++
 		if openErr != nil {
 			return nil, openErr
@@ -271,5 +271,47 @@ func TestTunRequires(t *testing.T) {
 	}
 	if w := NewTun(TunOptions{}); w.opts.Name != TunName {
 		t.Errorf("имя по умолчанию %q", w.opts.Name)
+	}
+}
+
+var _ Failing = (*Tun)(nil)
+
+// Адаптер сломался сам: Failed отдаёт причину один раз, с именем адаптера.
+func TestTunFailed(t *testing.T) {
+	f := &fakeAdapter{}
+	w := NewTun(TunOptions{Name: "csqtt-test"})
+	var lost func(error)
+	w.openAdapter = func(_ string, _ func(string, ...any), l func(error)) (*tunAdapter, error) {
+		lost = l
+		return f.adapter(), nil
+	}
+	if err := w.Open(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-w.Failed():
+		t.Fatalf("Failed до пропажи: %v", err)
+	default:
+	}
+	gone := errors.New("система закрыла адаптер")
+	lost(gone)
+	lost(errors.New("второй раз"))
+	var err error
+	select {
+	case err = <-w.Failed():
+	case <-time.After(time.Second):
+		t.Fatal("Failed молчит")
+	}
+	var le *AdapterLostError
+	if !errors.As(err, &le) || le.Name != "csqtt-test" || !errors.Is(err, gone) {
+		t.Errorf("Failed: %v", err)
+	}
+	select {
+	case err := <-w.Failed():
+		t.Errorf("Failed второй раз: %v", err)
+	default:
+	}
+	if err := w.Close(); err != nil {
+		t.Errorf("Close: %v", err)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -175,6 +176,69 @@ func TestWintunAdapter(t *testing.T) {
 	}
 	if n := log.count("IPv6 системы уходит в адаптер и отбрасывается"); n != 1 {
 		t.Errorf("строк об IPv6 %d, ждали одну", n)
+	}
+}
+
+// Адаптер, отключённый в системе (netsh, как «Отключить» в «Сетевых
+// подключениях»), мост замечает сам: Failed отдаёт AdapterLostError, а Close
+// после этого всё равно убирает адаптер. Трафик машины тест не трогает —
+// маршрутов у адаптера нет.
+func TestWintunAdapterDisabled(t *testing.T) {
+	if os.Getenv(wintunTestEnv) != "1" {
+		t.Skipf("тест с настоящим адаптером Wintun: %s=1, права администратора и %s рядом с тестовым бинарём", wintunTestEnv, WintunDLL)
+	}
+	if !windows.GetCurrentProcessToken().IsElevated() {
+		t.Fatal("нужны права администратора")
+	}
+	savedGUID := tunGUID
+	tunGUID = wintunTestGUID
+	t.Cleanup(func() { tunGUID = savedGUID })
+
+	const name = "csqtt-cli-test"
+	w := NewTun(TunOptions{Name: name, Logf: t.Logf})
+	closed := false
+	t.Cleanup(func() {
+		if !closed {
+			_ = w.Close()
+		}
+	})
+	if err := w.Open(); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	select {
+	case err := <-w.Failed():
+		t.Fatalf("Failed до отключения: %v", err)
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	disabled := time.Now()
+	if out, err := exec.Command("netsh", "interface", "set", "interface", "name="+name, "admin=disabled").CombinedOutput(); err != nil {
+		t.Fatalf("netsh: %v: %s", err, out)
+	}
+	var lost error
+	select {
+	case lost = <-w.Failed():
+	case <-time.After(10 * time.Second):
+		t.Fatal("отключённый адаптер мост не заметил за 10 с")
+	}
+	t.Logf("мост заметил за %v: %v", time.Since(disabled).Round(time.Millisecond), lost)
+	var le *AdapterLostError
+	if !errors.As(lost, &le) || le.Name != name {
+		t.Errorf("Failed: %v", lost)
+	}
+
+	err := w.Close()
+	closed = true
+	t.Logf("Close после отключения: %v", err)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := winipcfg.LUIDFromGUID(&wintunTestGUID); err != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("адаптер остался после Close")
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
