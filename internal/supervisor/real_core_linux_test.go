@@ -63,7 +63,6 @@ func TestRealCoreTunFD(t *testing.T) {
 			Peer:     "192.0.2.1:46000",
 			Password: "real-core-password",
 			Hashes:   []string{"real-core-hash"},
-			DeviceID: "test",
 		},
 		TunFD:    fd,
 		Datapath: &fakeDatapath{},

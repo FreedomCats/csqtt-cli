@@ -19,7 +19,6 @@ func TestArgs(t *testing.T) {
 		Obfs:          "video",
 		TurnTransport: "tcp_tls",
 		ClientIDs:     []string{"1", "2"},
-		DeviceID:      "dev",
 		Listen:        "127.0.0.1:0",
 		ListenPeer:    "127.0.0.1:40000",
 		BindIf:        7,
@@ -28,11 +27,10 @@ func TestArgs(t *testing.T) {
 	want := []string{
 		"--secrets-stdin",
 		"--peer=203.0.113.10:46000",
-		"--workers=45",
+		"--workers=50",
 		"--obfs=video",
 		"--turn-transport=tcp_tls",
 		"--client-ids=1,2",
-		"--device-id=dev",
 		"--listen=127.0.0.1:0",
 		"--listen-peer=127.0.0.1:40000",
 		"--bind-if=7",
@@ -67,24 +65,31 @@ func TestSecretsLine(t *testing.T) {
 // Те же значения, что в worker_count_tests ядра (main.rs).
 func TestNormalizeWorkers(t *testing.T) {
 	for groups := 1; groups <= maxWorkers/workersPerGroup; groups++ {
-		if n := groups * workersPerGroup; NormalizeWorkers(n, maxHashes) != n {
-			t.Errorf("NormalizeWorkers(%d) = %d", n, NormalizeWorkers(n, maxHashes))
+		if n := groups * workersPerGroup; NormalizeWorkers(n) != n {
+			t.Errorf("NormalizeWorkers(%d) = %d", n, NormalizeWorkers(n))
 		}
 	}
 	for requested := -1; requested <= 1000; requested++ {
-		n := NormalizeWorkers(requested, maxHashes)
+		n := NormalizeWorkers(requested)
+		if requested <= minWorkers {
+			if n != minWorkers {
+				t.Errorf("NormalizeWorkers(%d) = %d, want %d", requested, n, minWorkers)
+			}
+			continue
+		}
 		if n < workersPerGroup || n > maxWorkers || n%workersPerGroup != 0 {
 			t.Errorf("NormalizeWorkers(%d) = %d", requested, n)
 		}
 	}
-	for _, c := range []struct{ hashes, want int }{
-		{0, 27}, {1, 27}, {4, 108}, {5, 126}, {6, 126}, {100, 126},
+	for _, c := range []struct{ requested, want int }{
+		{math.MaxInt, 100}, {math.MaxInt - 1, 100}, {126, 100}, {48, 40}, {18, 10}, {9, 10}, {5, 5}, {4, 5},
 	} {
-		if got := NormalizeWorkers(math.MaxInt, c.hashes); got != c.want {
-			t.Errorf("NormalizeWorkers(max, %d хешей) = %d, want %d", c.hashes, got, c.want)
+		if got := NormalizeWorkers(c.requested); got != c.want {
+			t.Errorf("NormalizeWorkers(%d) = %d, want %d", c.requested, got, c.want)
 		}
 	}
-	if got := NormalizeWorkers(50, 1); got != 27 {
-		t.Errorf("NormalizeWorkers(50, 1) = %d, want 27", got)
+	// Предела на хеш у ядра 2.5.0 нет: хеши на число воркеров не влияют.
+	if got := (Config{Workers: 50, Hashes: []string{"h"}}).NormalizedWorkers(); got != 50 {
+		t.Errorf("NormalizedWorkers(50, 1 хеш) = %d, want 50", got)
 	}
 }

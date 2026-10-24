@@ -11,9 +11,13 @@ var vendoredDirs = []string{"rust-client", "shared"}
 
 // vendoredFiles — отдельные файлы апстрима: путь в апстриме → путь в core/.
 // Лицензия ядра лежит в корне апстрима, а PolyForm требует, чтобы её текст
-// шёл вместе с каждой копией кода.
+// шёл вместе с каждой копией кода. domains.txt — список доменов для
+// маршрутизации мимо туннеля (2.5.0): sni.rs вшивает его
+// include_str!("../domains.txt") из корня апстрима, без него ядро не
+// собирается, хотя оболочка эту маршрутизацию не включает.
 var vendoredFiles = map[string]string{
-	"LICENSE": "LICENSE",
+	"LICENSE":     "LICENSE",
+	"domains.txt": "domains.txt",
 }
 
 // addedDir — каталог репозитория с нашими файлами для core/: правками,
@@ -64,7 +68,8 @@ type rule struct {
 // to — Replace правила: строка, в том числе пустая.
 func to(s string) *string { return &s }
 
-// rules — правки П1–П6. Набор пополняется задачами C3, C4, W2, L1.
+// rules — правки П1–П5. Набор пополнялся задачами C3, C4, W2, L1; П6 (отброс
+// пакета, который ОС не приняла в TUN) с ядра 2.5.0 делает сам апстрим.
 var rules = []rule{
 	// П1: флаг -secrets-stdin — пароль и хеши VK первой строкой stdin. Сам
 	// разбор — в files/rust-client/secrets_stdin.rs; здесь только подключение.
@@ -74,9 +79,20 @@ var rules = []rule{
 		InsertAfter: "mod secrets_stdin;",
 	},
 	{
+		// Поле password — не аргумент (skip): апстрим с 2.5.0 берёт пароль
+		// из переменной окружения CSQTT_PASSWORD, флага --password у него нет,
+		// и возвращать его в командную строку незачем.
 		File: "rust-client/main.rs", Count: 1,
-		Pattern:     `(?m)^( +)validate_vk_hashes: bool,$`,
-		InsertAfter: "#[arg(long, default_value_t = false)]\n${1}secrets_stdin: bool,",
+		Pattern: `(?m)^( +)validate_vk_hashes: bool,$`,
+		InsertAfter: "#[arg(long, default_value_t = false)]\n${1}secrets_stdin: bool,\n" +
+			"${1}#[arg(skip)]\n${1}password: String,",
+	},
+	{
+		// С -secrets-stdin пароль — из строки SECRETS, без флага — из
+		// окружения, как у апстрима.
+		File: "rust-client/main.rs", Count: 1,
+		Pattern: `(?m)^( +)let password = std::env::var\("CSQTT_PASSWORD"\)\.unwrap_or_default\(\);$`,
+		Replace: to("${1}let password = secrets_stdin::password(&arguments);"),
 	},
 	{
 		// normalize_cli_argument: одиночный дефис -secrets-stdin, как у
@@ -121,8 +137,8 @@ var rules = []rule{
 	},
 	{
 		File: "rust-client/main.rs", Count: 1,
-		Pattern: `(?m)^( +)let dispatcher_result = Dispatcher::start\(\n( +)&arguments\.listen,$`,
-		Replace: to("${1}let dispatcher_result = Dispatcher::start_with_peer(\n${2}&arguments.listen,\n${2}listen_peer,"),
+		Pattern: `(?m)^( +)let dispatcher_result = Dispatcher::start_with_domain_routing\(\n( +)&arguments\.listen,$`,
+		Replace: to("${1}let dispatcher_result = Dispatcher::start_with_domain_routing(\n${2}&arguments.listen,\n${2}listen_peer,"),
 	},
 	{
 		File: "rust-client/main.rs", Count: 1,
@@ -130,14 +146,17 @@ var rules = []rule{
 		InsertAfter: "listen_peer::report_port(&events, &local_port);",
 	},
 	{
-		// start остаётся для тестов апстрима — без закрепления; в сборке его
-		// больше никто не зовёт.
+		// Второй параметр start_with_domain_routing — закреплённый адрес
+		// оболочки. Тестовый start апстрима (#[cfg(test)]) зовёт её без
+		// закрепления.
 		File: "rust-client/dispatcher.rs", Count: 1,
-		Pattern: `(?m)^( +)pub async fn start\(\n( +)listen: &str,\n( +tun_uds: Option<String>,\n +pool: Arc<PacketPool>,\n +stats: Arc<Stats>,\n +cancel: CancellationToken,\n +\) -> Result<\(Arc<Self>, String\)> \{)$`,
-		Replace: to("${1}#[cfg(test)]\n${1}pub async fn start(\n${2}listen: &str,\n${3}\n" +
-			"${2}Self::start_with_peer(listen, None, tun_uds, pool, stats, cancel).await\n" +
-			"${1}}\n\n" +
-			"${1}pub async fn start_with_peer(\n${2}listen: &str,\n${2}listen_peer: Option<SocketAddr>,\n${3}"),
+		Pattern: `(?m)^( +)pub async fn start_with_domain_routing\(\n( +)listen: &str,$`,
+		Replace: to("${1}pub async fn start_with_domain_routing(\n${2}listen: &str,\n${2}listen_peer: Option<SocketAddr>,"),
+	},
+	{
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern: `(?m)^( +)Self::start_with_domain_routing\(\n( +)listen,$`,
+		Replace: to("${1}Self::start_with_domain_routing(\n${2}listen,\n${2}None,"),
 	},
 	{
 		File: "rust-client/dispatcher.rs", Count: 1,
@@ -183,6 +202,23 @@ var rules = []rule{
 		InsertBefore: "#[cfg(test)]\n#[path = \"captcha_window_tests.rs\"]\nmod window_tests;\n",
 	},
 
+	// П7: выключатель решателя капчи ядра — переменная окружения
+	// ONLY_PRINT_URL. До 2.5.0 её проверяло само ядро в начале solve_once, и
+	// оболочка на этом строит Р7: с ONLY_PRINT_URL=1 ядро не ходит на страницу
+	// капчи, а сразу отдаёт её окну оболочки строкой CAPTCHA_SOLVE. Апстрим
+	// проверку убрал; без неё ядро само делало бы попытки Rust v2 и портило
+	// сессию капчи (ERROR_LIMIT). Сторож — TestCoreSolverSwitchInCore в
+	// internal/coreproc.
+	{
+		File: "rust-client/captcha.rs", Count: 1,
+		Pattern: `(?m)^( +)async fn solve_once\(&self, captcha: &VkCaptchaError\) -> Result<String> \{$`,
+		Replace: to("${1}async fn solve_once(&self, captcha: &VkCaptchaError) -> Result<String> {\n" +
+			"${1}    // Правка П7 csqtt-cli: выключатель решателя ядра, как было до 2.5.0.\n" +
+			"${1}    if std::env::var_os(\"ONLY_PRINT_URL\").is_some() {\n" +
+			"${1}        bail!(\"ONLY_PRINT_URL active, skipping solve\");\n" +
+			"${1}    }"),
+	},
+
 	// П3: -bind-if <индекс>, -mark <метка> и команда BIND_IF:<индекс> —
 	// собственные сокеты ядра идут через физический интерфейс, мимо туннеля.
 	// Флаги, проверка и сокеты точек 1–3 — files/rust-client/bind_if.rs;
@@ -225,9 +261,10 @@ var rules = []rule{
 		Replace: to("${1}let socket = crate::bind_if::udp_socket((Ipv4Addr::UNSPECIFIED, 0).into())"),
 	},
 	{
+		// UdpSocket остаётся нужен тестам апстрима в этом же файле.
 		File: "rust-client/dns.rs", Count: 1,
 		Pattern: `(?m)^()use tokio::\{net::UdpSocket, time::timeout\};$`,
-		Replace: to("use tokio::time::timeout;"),
+		Replace: to("use tokio::time::timeout;\n#[cfg(test)]\nuse tokio::net::UdpSocket;"),
 	},
 	// Точка 2 — TURN по UDP.
 	{
@@ -239,8 +276,8 @@ var rules = []rule{
 	// Точка 3 — TURN по TCP и TLS: привязка до connect.
 	{
 		File: "rust-client/turn_stream.rs", Count: 1,
-		Pattern: `(?m)^( +)let socket = TcpStream::connect\(server\)$`,
-		Replace: to("${1}let socket = crate::bind_if::connect_tcp(server)"),
+		Pattern: `(?m)^( +)let socket = timeout\(STREAM_CONNECT_TIMEOUT, TcpStream::connect\(server\)\)$`,
+		Replace: to("${1}let socket = timeout(STREAM_CONNECT_TIMEOUT, crate::bind_if::connect_tcp(server))"),
 	},
 	{
 		File: "rust-client/turn_stream.rs", Count: 1,
@@ -326,46 +363,11 @@ var rules = []rule{
 	{
 		// Сразу после accept, до чтения: отказ — не ошибка receive, так что
 		// у вызывающего нет ни ошибки в журнале, ни паузы перед повтором.
+		// continue — к ожиданию следующего соединения (внутренний loop).
 		File: "rust-client/tun.rs", Count: 1,
-		Pattern: `(?m)^( +)configure_nonblocking\(descriptor\.as_raw_fd\(\)\)\?;$`,
-		InsertBefore: "// Правка П4 csqtt-cli: чужой uid — закрыть соединение и ждать следующего.\n" +
+		Pattern: `(?m)^( +)let descriptor = unsafe \{ OwnedFd::from_raw_fd\(descriptor\) \};$`,
+		InsertAfter: "// Правка П4 csqtt-cli: чужой uid — закрыть соединение и ждать следующего.\n" +
 			"${1}if !self.peer_check.admit(&descriptor) {\n${1}    continue;\n${1}}",
-	},
-
-	// П6: пакет, который ОС не приняла в TUN (запись 0 байт или ошибка, кроме
-	// повторяемых и «закрыт»), отбрасывается, а писатель берёт следующий; у
-	// апстрима он останавливался до нового дескриптора. Счёт и приглушённый
-	// журнал — files/rust-client/tun_drop.rs, дочерний модуль dispatcher.rs:
-	// тестам нужен закрытый write_tun.
-	{
-		File: "rust-client/dispatcher.rs", Count: 1,
-		Pattern: `(?m)^()#\[cfg\(unix\)\]\nfn is_closed_tun_error\(`,
-		InsertBefore: "// Правка П6 csqtt-cli: отброс пакетов, которые ОС не приняла в TUN.\n" +
-			"#[cfg(unix)]\n#[path = \"tun_drop.rs\"]\nmod tun_drop;\n",
-	},
-	{
-		// Complete — пакет обработан: write_tun берёт следующий с нуля.
-		File: "rust-client/dispatcher.rs", Count: 1,
-		Pattern: `(?m)^( +)crate::log_error!\("\[ОШИБКА\] Запись TUN вернула 0 байт"\);\n +TunWriteState::Failed$`,
-		Replace: to("${1}// Правка П6 csqtt-cli: пакет отброшен, дальше — следующий.\n" +
-			"${1}tun_drop::rejected(packet.len(), *written, None);\n${1}TunWriteState::Complete"),
-	},
-	{
-		File: "rust-client/dispatcher.rs", Count: 1,
-		Pattern: `(?m)^( +)crate::log_error!\("\[ОШИБКА\] Запись TUN завершена: \{error\}"\);\n +TunWriteState::Failed$`,
-		Replace: to("${1}// Правка П6 csqtt-cli: пакет отброшен, дальше — следующий.\n" +
-			"${1}tun_drop::rejected(packet.len(), *written, Some(&error));\n${1}TunWriteState::Complete"),
-	},
-	{
-		// Failed больше никто не возвращает.
-		File: "rust-client/dispatcher.rs", Count: 1,
-		Pattern: `(?m)^( +)Closed,\n +Failed,\n\}$`,
-		Replace: to("${1}Closed,\n}"),
-	},
-	{
-		File: "rust-client/dispatcher.rs", Count: 1,
-		Pattern: `(?m)^( +)TunWriteState::Closed \| TunWriteState::Failed => return,$`,
-		Replace: to("${1}TunWriteState::Closed => return,"),
 	},
 }
 

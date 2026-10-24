@@ -33,8 +33,13 @@ func EffectiveDatapath(value string) string {
 	return value
 }
 
-// DefaultWorkers — воркеров, если в профиле не сказано: умолчание ядра (-n).
-const DefaultWorkers = 18
+// DefaultWorkers — воркеров, если в профиле не сказано: столько запускает
+// ядро по своему умолчанию (-n 18, округлённые до целой группы).
+const DefaultWorkers = 10
+
+// DefaultObfs — маскировка RTP, если в профиле не сказано: умолчание ядра
+// 2.5.0 (до него было audio).
+const DefaultObfs = "unified"
 
 // File — разобранный profiles.toml целиком.
 type File struct {
@@ -99,10 +104,10 @@ type Profile struct {
 	// выглядел бы как чужое устройство.
 	DeviceID string `toml:"device_id"`
 
-	// Workers — число воркеров: кратно 9, от 9 до 126. Не больше 27 на хеш,
-	// а в auto_js — не больше 72: это урезает coreproc.Config.NormalizedWorkers.
+	// Workers — число воркеров: 5 или кратно 10, от 10 до 100. В auto_js —
+	// не больше 70: это урезает coreproc.Config.NormalizedWorkers.
 	Workers int `toml:"workers"`
-	// Obfs — маскировка RTP: audio или video.
+	// Obfs — маскировка RTP: audio, video или unified (умолчание ядра).
 	Obfs string `toml:"obfs"`
 	// TurnTransport — до TURN по udp или tcp_tls. TCP помогает в сетях, где
 	// душат UDP.
@@ -158,7 +163,6 @@ func (p *Profile) Core() coreproc.Config {
 		Workers:       p.Workers,
 		Obfs:          strings.TrimSpace(p.Obfs),
 		TurnTransport: strings.TrimSpace(p.TurnTransport),
-		DeviceID:      strings.TrimSpace(p.DeviceID),
 	}
 	if p.AutoJS() {
 		cfg.VKHashMode = coreproc.VKHashModeAutoJS

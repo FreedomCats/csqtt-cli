@@ -30,7 +30,7 @@ type Config struct {
 	Hashes   []string
 	// Workers — число воркеров; в аргумент идёт NormalizeWorkers.
 	Workers int
-	// Obfs — audio или video; TurnTransport — udp или tcp_tls.
+	// Obfs — audio, video или unified; TurnTransport — udp или tcp_tls.
 	Obfs          string
 	TurnTransport string
 	// TurnHost и TurnPort — свой TURN вместо выданного VK.
@@ -46,15 +46,12 @@ type Config struct {
 	CaptchaMode string
 	// VKHashMode — пусто (хеши из Hashes) или VKHashModeAutoJS: звонок
 	// создаёт ядро. В auto_js ядро получает оба своих режима — хешей и
-	// авторизации — и --allow-hash-redistribution; Hashes ему не уходят.
+	// авторизации; Hashes ему не уходят.
 	VKHashMode string
 	// VKToken — access token VK для auto_js. Секрет: идёт только в stdin,
 	// строкой VK_JS_BOOTSTRAP: той же записью, что SecretsLine, и только
 	// ядру в auto_js.
 	VKToken string
-	// DeviceID — постоянный на профиль: сервер может закрепить пароль за
-	// первым устройством (§10).
-	DeviceID string
 	// Listen — адрес UDP, где ядро ждёт пакеты оболочки (datapath socks);
 	// ListenPeer — адрес сокета оболочки: ядро принимает датаграмы только
 	// с него и отвечает только ему (правка П2), свой порт сообщает
@@ -92,16 +89,13 @@ func (c Config) Args() []string {
 	add("client-ids", strings.Join(c.ClientIDs, ","))
 	if c.AutoJS() {
 		// Режим авторизации auto_js ядро без такого же режима хешей не
-		// принимает, поэтому они идут парой. Перераспределение хешей ядро в
-		// auto_js включает и само, флаг — как у других клиентов CSQTT.
+		// принимает, поэтому они идут парой.
 		add("vk-hash-mode", VKHashModeAutoJS)
 		add("vk-auth-mode", VKHashModeAutoJS)
-		args = append(args, "--allow-hash-redistribution")
 	} else {
 		add("vk-auth-mode", c.VKAuthMode)
 	}
 	add("captcha-mode", c.CaptchaMode)
-	add("device-id", c.DeviceID)
 	add("listen", c.Listen)
 	add("listen-peer", c.ListenPeer)
 	add("tun-uds", c.TunUDS)
@@ -182,44 +176,41 @@ func (c Config) startInput() (string, error) {
 
 // Постоянные распределения воркеров — из ядра (main.rs, worker.rs).
 const (
-	workersPerGroup = 9
-	maxWorkers      = 126
-	maxHashes       = 6
-	groupsPerHash   = 3
+	workersPerGroup = 10
+	maxWorkers      = 100
+	// minWorkers — особый случай ядра: запрос не больше пяти даёт пять
+	// воркеров, а не целую группу.
+	minWorkers = 5
 )
 
-// MaxWorkersAutoJS — предел воркеров в auto_js. Ядро допускает 126, но
+// MaxWorkersAutoJS — предел воркеров в auto_js. Ядро допускает 100, но
 // каждый запрос кредов открывает новую сессию аккаунта VK, и чем больше
-// воркеров, тем больше следов в аккаунте; 72 — как у Android-клиента CSQTT.
-const MaxWorkersAutoJS = 72
+// воркеров, тем больше следов в аккаунте; до ядра 2.5.0 предел был 72, как у
+// Android-клиента CSQTT, теперь — ближайшее число, которое ядро запустит.
+const MaxWorkersAutoJS = 70
 
-// NormalizedWorkers — сколько воркеров получит ядро: NormalizeWorkers по
-// хешам, а в auto_js — NormalizeWorkersAutoJS.
+// NormalizedWorkers — сколько воркеров получит ядро: NormalizeWorkers, а в
+// auto_js — NormalizeWorkersAutoJS.
 func (c Config) NormalizedWorkers() int {
 	if c.AutoJS() {
 		return NormalizeWorkersAutoJS(c.Workers)
 	}
-	return NormalizeWorkers(c.Workers, len(c.Hashes))
+	return NormalizeWorkers(c.Workers)
 }
 
-// NormalizeWorkers — сколько воркеров ядро запустит на самом деле: целые
-// группы по 9, от 9 до 126 и не больше 27 на хеш (берутся первые шесть
-// хешей). Повторяет normalize_worker_count_for_hashes ядра без
-// перераспределения хешей — его оболочка включает только в auto_js
-// (NormalizeWorkersAutoJS).
-func NormalizeWorkers(requested, hashes int) int {
-	return min(normalizeGroups(requested), min(max(hashes, 1), maxHashes)*groupsPerHash*workersPerGroup)
-}
-
-// NormalizeWorkersAutoJS — число воркеров в auto_js: целые группы по 9, от 9
-// до MaxWorkersAutoJS. Предела на хеш нет: ядро в auto_js перераспределяет
-// хеш созданного звонка всегда.
-func NormalizeWorkersAutoJS(requested int) int {
-	return min(normalizeGroups(requested), MaxWorkersAutoJS)
-}
-
-// normalizeGroups — целые группы по 9, от 9 до 126 (normalize_worker_count
-// ядра).
-func normalizeGroups(requested int) int {
+// NormalizeWorkers — сколько воркеров ядро запустит на самом деле
+// (normalize_worker_count ядра): запрос не больше пяти — пять, иначе целые
+// группы по 10, от 10 до 100. Предела на хеш нет: группы раздаются по хешам
+// по кругу, сколько бы их ни было (worker.rs).
+func NormalizeWorkers(requested int) int {
+	if requested <= minWorkers {
+		return minWorkers
+	}
 	return min(max(requested, workersPerGroup), maxWorkers) / workersPerGroup * workersPerGroup
+}
+
+// NormalizeWorkersAutoJS — число воркеров в auto_js: как NormalizeWorkers,
+// но не больше MaxWorkersAutoJS.
+func NormalizeWorkersAutoJS(requested int) int {
+	return min(NormalizeWorkers(requested), MaxWorkersAutoJS)
 }

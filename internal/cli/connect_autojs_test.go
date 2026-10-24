@@ -88,12 +88,12 @@ func TestConnectAutoJSTokenUnreadable(t *testing.T) {
 }
 
 // Подключение в auto_js: токен уходит ядру в stdin, а не в аргументах; хешей
-// нет, воркеров не больше 72; по Ctrl+C звонок завершается. Ни токена, ни
+// нет, воркеров не больше 70; по Ctrl+C звонок завершается. Ни токена, ни
 // хеша созданного звонка в выводе.
 func TestConnectAutoJS(t *testing.T) {
 	te := newTestEnv(t)
 	autoJSHome(t, te, true)
-	if code, _, stderr := te.run("profile", "set", "home", "-workers", "126"); code != exitOK {
+	if code, _, stderr := te.run("profile", "set", "home", "-workers", "100"); code != exitOK {
 		t.Fatalf("profile set -workers: код %d, stderr:\n%s", code, stderr)
 	}
 	te.core = "autojs"
@@ -127,9 +127,9 @@ func TestConnectAutoJS(t *testing.T) {
 	noAutoJSSecrets(t, "stdout", got)
 	noAutoJSSecrets(t, "stderr", errOut.String())
 	for _, want := range []string{
-		"профиль home: сервер 203.0.113.10:46000, звонок VK создаёт ядро (auto_js), воркеров 72",
-		"воркеров в профиле 126, а ядро запустит 72 (в auto_js не больше 72)",
-		"--workers=72", "--vk-hash-mode=auto_js", "--vk-auth-mode=auto_js", "--allow-hash-redistribution",
+		"профиль home: сервер 203.0.113.10:46000, звонок VK создаёт ядро (auto_js), воркеров 70",
+		"воркеров в профиле 100, а ядро запустит 70 (в auto_js не больше 70)",
+		"--workers=70", "--vk-hash-mode=auto_js", "--vk-auth-mode=auto_js",
 		"VK_JS_BOOTSTRAP:<скрыт",
 		"(хеш: <хеш>...)",
 		"завершаем звонок VK… (до 38 с)",

@@ -104,12 +104,12 @@ fn listen_event(local_port: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::{
-        dispatcher::{Dispatcher, PacketReceiver, WorkerChannels, packet_channel},
+        dispatcher::{Dispatcher, DomainRoutingConfig},
         packet::PacketPool,
         stats::Stats,
     };
     use clap::Parser;
-    use std::time::Duration;
+    use std::{sync::atomic::Ordering, time::Duration};
     use tokio::net::UdpSocket;
     use tokio_util::sync::CancellationToken;
 
@@ -198,45 +198,49 @@ mod tests {
         assert_eq!(listen_event("70000"), None);
     }
 
+    /// Диспетчер без воркеров: что датаграм принят в туннель, видно по счётчику
+    /// stats.total_bytes_up — он растёт после PeerGate::admit и до раздачи
+    /// воркерам. Ответы (return_packet) уходят адресату из client — его и
+    /// проверяем.
     struct Fixture {
         dispatcher: Arc<Dispatcher>,
         core: SocketAddr,
-        latency: PacketReceiver,
+        stats: Arc<Stats>,
         pool: Arc<PacketPool>,
-        cancel: CancellationToken,
     }
 
     async fn start(pinned: Option<SocketAddr>) -> Fixture {
         let pool = PacketPool::new(32);
-        let cancel = CancellationToken::new();
-        let (dispatcher, port) = Dispatcher::start_with_peer(
+        let stats = Arc::new(Stats::default());
+        let (dispatcher, port) = Dispatcher::start_with_domain_routing(
             "127.0.0.1:0",
             pinned,
             None,
             pool.clone(),
-            Arc::new(Stats::default()),
-            cancel.clone(),
+            stats.clone(),
+            CancellationToken::new(),
+            DomainRoutingConfig::default(),
+            10,
         )
         .await
         .unwrap();
-        let (latency, latency_rx) = packet_channel(32, true);
-        let (priority, _) = packet_channel(32, true);
-        let (bulk, _) = packet_channel(32, true);
-        dispatcher.register(WorkerChannels {
-            id: 0,
-            incarnation_id: 1,
-            turn_path: Arc::from("test"),
-            latency,
-            priority,
-            bulk,
-        });
         Fixture {
             dispatcher,
             core: address(&format!("127.0.0.1:{port}")),
-            latency: latency_rx,
+            stats,
             pool,
-            cancel,
         }
+    }
+
+    /// Датаграм оболочки в ядро: read_udp пропускает только то, что похоже на
+    /// IP-пакет, — заголовок IPv4 с адресатом вне loopback и байт полезной
+    /// нагрузки.
+    fn uplink(byte: u8) -> Vec<u8> {
+        let mut packet = vec![
+            0x45, 0, 0, 21, 0, 0, 0, 0, 64, 17, 0, 0, 10, 0, 0, 2, 10, 0, 0, 1,
+        ];
+        packet.push(byte);
+        packet
     }
 
     impl Fixture {
@@ -248,13 +252,11 @@ mod tests {
             self.dispatcher.return_packet(packet);
         }
 
-        async fn next_dispatched(&self) -> Vec<u8> {
-            tokio::time::timeout(Duration::from_secs(1), self.latency.recv(&self.cancel))
-                .await
-                .expect("датаграм не дошёл до воркера")
-                .expect("вход воркера закрыт")
-                .as_slice()
-                .to_vec()
+        /// Сколько байт вошло в туннель; ждёт, пока читатель обработает
+        /// отправленное.
+        async fn uplink_bytes(&self) -> i64 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            self.stats.total_bytes_up.load(Ordering::Relaxed)
         }
     }
 
@@ -279,12 +281,10 @@ mod tests {
         let (shell, stranger) = sockets().await;
         let fixture = start(Some(shell.local_addr().unwrap())).await;
 
-        stranger.send_to(&[0xee], fixture.core).await.unwrap();
-        shell.send_to(&[0x01], fixture.core).await.unwrap();
-        stranger.send_to(&[0xef], fixture.core).await.unwrap();
-        assert_eq!(fixture.next_dispatched().await, [0x01]);
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(fixture.latency.try_recv().is_none(), "чужой датаграм ушёл в туннель");
+        stranger.send_to(&uplink(0xee), fixture.core).await.unwrap();
+        shell.send_to(&uplink(0x01), fixture.core).await.unwrap();
+        stranger.send_to(&uplink(0xef), fixture.core).await.unwrap();
+        assert_eq!(fixture.uplink_bytes().await, 21, "чужой датаграм ушёл в туннель");
 
         fixture.reply(0x80);
         assert_eq!(receive(&shell, Duration::from_secs(1)).await, Some(vec![0x80]));
@@ -296,8 +296,8 @@ mod tests {
     async fn pinned_peer_gets_replies_before_its_first_datagram() {
         let (shell, stranger) = sockets().await;
         let fixture = start(Some(shell.local_addr().unwrap())).await;
-        stranger.send_to(&[0xee], fixture.core).await.unwrap();
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        stranger.send_to(&uplink(0xee), fixture.core).await.unwrap();
+        assert_eq!(fixture.uplink_bytes().await, 0);
 
         fixture.reply(0x80);
         assert_eq!(receive(&shell, Duration::from_secs(1)).await, Some(vec![0x80]));
@@ -312,10 +312,10 @@ mod tests {
         let (shell, stranger) = sockets().await;
         let fixture = start(None).await;
 
-        shell.send_to(&[0x01], fixture.core).await.unwrap();
-        assert_eq!(fixture.next_dispatched().await, [0x01]);
-        stranger.send_to(&[0xee], fixture.core).await.unwrap();
-        assert_eq!(fixture.next_dispatched().await, [0xee]);
+        shell.send_to(&uplink(0x01), fixture.core).await.unwrap();
+        assert_eq!(fixture.uplink_bytes().await, 21);
+        stranger.send_to(&uplink(0xee), fixture.core).await.unwrap();
+        assert_eq!(fixture.uplink_bytes().await, 42);
 
         fixture.reply(0x80);
         assert_eq!(receive(&stranger, Duration::from_secs(1)).await, Some(vec![0x80]));

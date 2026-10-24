@@ -2,6 +2,7 @@ package cli
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -16,7 +17,7 @@ const testLink = "csqtt://connect?v=2&host=203.0.113.20&peer=46001&password=" + 
 func TestProfileAddByFields(t *testing.T) {
 	te := newTestEnv(t)
 	te.answer(testPassword, testPassword, testHashA+", https://vk.com/call/join/"+testHashB)
-	code, stdout, stderr := te.run("profile", "add", "home", "-peer", "203.0.113.10", "-workers", "27", "-datapath", "socks")
+	code, stdout, stderr := te.run("profile", "add", "home", "-peer", "203.0.113.10", "-workers", "30", "-datapath", "socks")
 	if code != exitOK {
 		t.Fatalf("код %d, stderr:\n%s", code, stderr)
 	}
@@ -38,7 +39,7 @@ func TestProfileAddByFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Peer != "203.0.113.10" || p.Workers != 27 || p.Datapath != "socks" || p.DeviceID == "" {
+	if p.Peer != "203.0.113.10" || p.Workers != 30 || p.Datapath != "socks" || p.DeviceID == "" {
 		t.Errorf("профиль записан неверно: %+v", p)
 	}
 	// В файле — только ссылки; в хранилище — разобранные хеши.
@@ -239,7 +240,7 @@ func TestProfileSet(t *testing.T) {
 
 	te.asked = nil
 	te.answer(testHashC)
-	code, stdout, stderr := te.run("profile", "set", "home", "-workers", "9", "-hashes", "-socks-listen", "127.0.0.1:1081")
+	code, stdout, stderr := te.run("profile", "set", "home", "-workers", "10", "-hashes", "-socks-listen", "127.0.0.1:1081")
 	if code != exitOK {
 		t.Fatalf("код %d, stderr:\n%s", code, stderr)
 	}
@@ -249,7 +250,7 @@ func TestProfileSet(t *testing.T) {
 	}
 	file, _ := config.Load(te.configPath())
 	p := file.Profiles["home"]
-	if p.Workers != 9 || p.Socks.Listen != "127.0.0.1:1081" || p.Peer != "203.0.113.10" || p.DeviceID != id {
+	if p.Workers != 10 || p.Socks.Listen != "127.0.0.1:1081" || p.Peer != "203.0.113.10" || p.DeviceID != id {
 		t.Errorf("профиль после set: %+v", p)
 	}
 	if got, _ := te.store.Get(p.VkHashesRef); got != testHashC {
@@ -276,7 +277,7 @@ func TestProfileSetUsage(t *testing.T) {
 	if code, _, stderr := te.run("profile", "set", "home"); code != exitUsage || !strings.Contains(stderr, "не названо, что менять") {
 		t.Errorf("set без флагов: код %d, stderr:\n%s", code, stderr)
 	}
-	if code, _, stderr := te.run("profile", "set", "work", "-workers", "9"); code != exitError ||
+	if code, _, stderr := te.run("profile", "set", "work", "-workers", "10"); code != exitError ||
 		!strings.Contains(stderr, "в файле есть: home") || !strings.Contains(stderr, "profile add <имя>") {
 		t.Errorf("set чужого профиля: код %d, stderr:\n%s", code, stderr)
 	}
@@ -290,7 +291,7 @@ func TestProfileSetSecretAsNameNotEchoed(t *testing.T) {
 	for _, args := range [][]string{
 		{"profile", "set", "-password", testPassword},
 		{"profile", "set", "-hashes", testHashA},
-		{"profile", "set", "-workers", "9", "-hashes", testHashB},
+		{"profile", "set", "-workers", "10", "-hashes", testHashB},
 	} {
 		te.asked = nil
 		code, stdout, stderr := te.run(args...)
@@ -316,7 +317,7 @@ func TestProfileExactName(t *testing.T) {
 	}
 	for _, name := range []string{"", " home", "home "} {
 		for _, args := range [][]string{
-			{"profile", "set", name, "-workers", "9"},
+			{"profile", "set", name, "-workers", "10"},
 			{"profile", "show", name},
 			{"profile", "rm", name, "-y"},
 		} {
@@ -340,7 +341,7 @@ func TestProfileExactName(t *testing.T) {
 
 func TestProfileShowHidesSecrets(t *testing.T) {
 	te := newTestEnv(t)
-	te.addHome("-workers", "126")
+	te.addHome("-workers", "100")
 	code, stdout, stderr := te.run("profile", "show", "home")
 	if code != exitOK {
 		t.Fatalf("код %d, stderr:\n%s", code, stderr)
@@ -351,12 +352,18 @@ func TestProfileShowHidesSecrets(t *testing.T) {
 		"tun", "(умолчание)",
 		"password", "задан",
 		"vk_hashes", "3 (",
-		// 126 воркеров на трёх хешах ядро урежет до 81.
-		"запустит 81",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("в show нет %q:\n%s", want, stdout)
 		}
+	}
+	// obfs не задан — показано умолчание ядра 2.5.0, а не прежнее audio.
+	if !regexp.MustCompile(`obfs\s+unified\s+\(умолчание\)`).MatchString(stdout) {
+		t.Errorf("в show нет obfs с умолчанием unified:\n%s", stdout)
+	}
+	// Предела на хеш у ядра нет: 100 воркеров на трёх хешах — без предупреждения.
+	if strings.Contains(stdout, "запустит") {
+		t.Errorf("лишнее предупреждение о воркерах:\n%s", stdout)
 	}
 }
 
@@ -463,7 +470,7 @@ func TestProfileSetKillSwitch(t *testing.T) {
 		show string
 	}{
 		{[]string{"-kill-switch=false"}, boolPtr(false), "kill_switch false"},
-		{[]string{"-workers", "9"}, boolPtr(false), "kill_switch false"},
+		{[]string{"-workers", "10"}, boolPtr(false), "kill_switch false"},
 		{[]string{"-kill-switch"}, boolPtr(true), "kill_switch true"},
 	} {
 		if code, _, stderr := te.run(append([]string{"profile", "set", "home"}, tc.args...)...); code != exitOK {
@@ -486,14 +493,14 @@ func boolPtr(v bool) *bool { return &v }
 func TestProfileAddAutoJS(t *testing.T) {
 	te := newTestEnv(t)
 	te.answer(testPassword, testPassword)
-	code, stdout, stderr := te.run("profile", "add", "js", "-peer", "203.0.113.10", "-vk-hash-mode", "auto_js", "-workers", "126")
+	code, stdout, stderr := te.run("profile", "add", "js", "-peer", "203.0.113.10", "-vk-hash-mode", "auto_js", "-workers", "100")
 	if code != exitOK {
 		t.Fatalf("код %d, stderr:\n%s", code, stderr)
 	}
 	if len(te.asked) != 2 {
 		t.Errorf("вопросы: %q — хеши в auto_js не нужны", te.asked)
 	}
-	for _, want := range []string{"vk_hash_mode = auto_js", "в режиме auto_js ядро запустит 72", "vk login"} {
+	for _, want := range []string{"vk_hash_mode = auto_js", "в режиме auto_js ядро запустит 70", "vk login"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("в выводе нет %q:\n%s", want, stdout)
 		}
@@ -502,7 +509,7 @@ func TestProfileAddAutoJS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p := file.Profiles["js"]; !p.AutoJS() || p.VkHashesRef != "" || p.Workers != 126 {
+	if p := file.Profiles["js"]; !p.AutoJS() || p.VkHashesRef != "" || p.Workers != 100 {
 		t.Errorf("профиль: %+v", p)
 	}
 }
@@ -570,13 +577,13 @@ func TestProfileSetVKHashMode(t *testing.T) {
 
 func TestProfileShowAutoJS(t *testing.T) {
 	te := newTestEnv(t)
-	te.addHome("-vk-hash-mode", "auto_js", "-workers", "81")
+	te.addHome("-vk-hash-mode", "auto_js", "-workers", "80")
 	code, stdout, stderr := te.run("profile", "show", "home")
 	if code != exitOK {
 		t.Fatalf("код %d, stderr:\n%s", code, stderr)
 	}
 	noSecrets(t, "show", stdout+stderr)
-	for _, want := range []string{"vk_hash_mode   auto_js", "в режиме auto_js не нужны", "запустит 72"} {
+	for _, want := range []string{"vk_hash_mode   auto_js", "в режиме auto_js не нужны", "запустит 70"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("в show нет %q:\n%s", want, stdout)
 		}

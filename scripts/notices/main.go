@@ -38,7 +38,8 @@
 // LICENCE*, COPYING*, COPYRIGHT*, UNLICENSE*, PATENTS* и NOTICE* (регистр не
 // важен) и кладутся целиком. Команда останавливается, если у модуля или crate
 // нет файла лицензии (для crates — если случай не разобран ниже, в
-// licenseFromCrate и storedLicense), вид лицензии модуля Go не распознан или
+// licenseFromCrate, storedLicense и repoLicense), вид лицензии модуля Go не
+// распознан или
 // у crate в Cargo.toml не указана лицензия: новая зависимость должна пройти
 // через человека, а не тихо уехать в релиз. Текст лицензии там, где его нет в
 // исходниках, не придумывается.
@@ -78,6 +79,8 @@ const self = "github.com/FreedomCats/csqtt-cli"
 // licenseFromCrate — crates без файла лицензии в опубликованных исходниках,
 // у которых он есть у другого crate из того же репозитория с той же
 // лицензией. Ключ — имя@версия: новая версия снова пройдёт через человека.
+// Донор (From) — имя, если crate с таким именем в графе один, или имя@версия,
+// если тёзок несколько (прослойка совместимости и её настоящая версия).
 var licenseFromCrate = map[string]struct{ From, Note string }{
 	"alloc-stdlib@0.2.4": {
 		From: "alloc-no-stdlib",
@@ -85,6 +88,37 @@ var licenseFromCrate = map[string]struct{ From, Note string }{
 			"из одного репозитория (github.com/dropbox/rust-alloc-no-stdlib), у них один\n" +
 			"автор и одна лицензия (BSD-3-Clause); ниже — файл LICENSE этого репозитория\n" +
 			"из исходников alloc-no-stdlib.",
+	},
+	// Прослойка совместимости: весь её код — реэкспорт defmt 1.1.1.
+	"defmt@0.3.100": {
+		From: "defmt@1.1.1",
+		Note: "В опубликованном crate нет файла лицензии. defmt 0.3.100 — прослойка\n" +
+			"совместимости, которая реэкспортирует defmt 1.1.1 из того же репозитория\n" +
+			"(github.com/knurling-rs/defmt) и под той же лицензией; ниже — файлы\n" +
+			"LICENSE-MIT и LICENSE-APACHE из исходников defmt 1.1.1.",
+	},
+}
+
+// repoLicense — crates, у которых файла лицензии нет ни в опубликованном
+// архиве, ни у соседа по репозиторию в графе ядра: копия файлов из
+// репозитория проекта на теге (или коммите) этой версии лежит в
+// scripts/notices/licenses/<имя>-<версия>/. Rev — как назвать этот тег или
+// коммит в примечании. Ключ — имя@версия.
+var repoLicense = map[string]struct {
+	Repo, Rev string
+	Files     []string
+}{
+	"etherparse@0.16.0": {
+		Repo:  "github.com/JulianSchmid/etherparse",
+		Rev:   "тег v0.16.0",
+		Files: []string{"LICENSE-MIT", "LICENSE-APACHE"},
+	},
+	// Тега на 0.5.2 в репозитории нет — взят коммит выпуска, в котором
+	// Cargo.toml называет эту версию.
+	"yasna@0.5.2": {
+		Repo:  "github.com/qnighy/yasna.rs",
+		Rev:   "коммит b7e65f9a4c317494cce2d18ea02b3d6eaaea7985 «Release 0.5.2»; тега на эту версию нет",
+		Files: []string{"LICENSE-MIT", "LICENSE-APACHE"},
 	},
 }
 
@@ -510,8 +544,20 @@ func crateFiles(c crate) ([]licenseText, error) {
 	return readAll(paths)
 }
 
+// storedFiles читает сохранённые копии файлов лицензии crate из
+// scripts/notices/licenses/<имя>-<версия>/ под корнем репозитория root.
+func storedFiles(root string, c crate, names []string) ([]licenseText, error) {
+	dir := filepath.Join(root, "scripts", "notices", "licenses", c.Name+"-"+c.Version)
+	paths := make([]string, len(names))
+	for i, f := range names {
+		paths[i] = filepath.Join(dir, f)
+	}
+	return readAll(paths)
+}
+
 // collectCrates — разделы ядра: стандартная библиотека Rust из sysroot, затем
-// crates. root — корень репозитория: там лежат storedLicense и vendor.
+// crates. root — корень репозитория: там лежат storedLicense, repoLicense и
+// vendor.
 func collectCrates(crates []crate, sysroot, root string) ([]section, error) {
 	std, err := readAll([]string{filepath.Join(sysroot, "share", "doc", "rust", "licenses", "Apache-2.0.txt")})
 	if err != nil {
@@ -527,9 +573,12 @@ func collectCrates(crates []crate, sysroot, root string) ([]section, error) {
 		Files: std,
 	}}
 
+	// Доноры лицензии: по имени — если crate с таким именем один, по
+	// имени@версии — всегда ровно он.
 	byName := map[string][]crate{}
 	for _, c := range crates {
 		byName[c.Name] = append(byName[c.Name], c)
+		byName[c.key()] = []crate{c}
 	}
 	vendor := filepath.Join(root, "core", "rust-client", "vendor")
 
@@ -559,6 +608,7 @@ func collectCrates(crates []crate, sysroot, root string) ([]section, error) {
 
 		from, fromOK := licenseFromCrate[c.key()]
 		stored, storedOK := storedLicense[c.key()]
+		repo, repoOK := repoLicense[c.key()]
 		switch {
 		case len(s.Files) > 0:
 		case fromOK:
@@ -576,16 +626,18 @@ func collectCrates(crates []crate, sysroot, root string) ([]section, error) {
 			}
 			s.Note = joinNotes(s.Note, from.Note)
 		case storedOK:
-			dir := filepath.Join(root, "scripts", "notices", "licenses", c.Name+"-"+c.Version)
-			paths := make([]string, len(stored.Files))
-			for i, f := range stored.Files {
-				paths[i] = filepath.Join(dir, f)
-			}
-			if s.Files, err = readAll(paths); err != nil {
+			if s.Files, err = storedFiles(root, c, stored.Files); err != nil {
 				return nil, fmt.Errorf("%s: %w", c.key(), err)
 			}
 			s.Note = joinNotes(s.Note, fmt.Sprintf("В исходниках crate нет файла лицензии, в Cargo.toml указано license = %q.\n"+
 				"Ниже — файл из опубликованного архива %s %s на crates.io, без изменений.", c.License, c.Name, c.Version))
+		case repoOK:
+			if s.Files, err = storedFiles(root, c, repo.Files); err != nil {
+				return nil, fmt.Errorf("%s: %w", c.key(), err)
+			}
+			s.Note = joinNotes(s.Note, fmt.Sprintf("В опубликованном crate нет файла лицензии, в Cargo.toml указано license = %q.\n"+
+				"Ниже — файлы %s из репозитория проекта\n%s (%s), без изменений.",
+				c.License, strings.Join(repo.Files, " и "), repo.Repo, repo.Rev))
 		default:
 			problems = append(problems, fmt.Sprintf("%s: нет файла лицензии в %s", c.key(), c.Dir))
 			continue

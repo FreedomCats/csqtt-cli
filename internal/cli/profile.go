@@ -110,8 +110,8 @@ type profileFlags struct {
 func addProfileFlags(fs *flag.FlagSet) *profileFlags {
 	return &profileFlags{
 		peer:          fs.String("peer", "", "сервер CSQTT: host или host:port (порт по умолчанию "+config.DefaultPeerPort+")"),
-		workers:       fs.Int("workers", 0, "число воркеров: кратно 9, от 9 до 126, не больше 27 на хеш (в auto_js — не больше 72)"),
-		obfs:          fs.String("obfs", "", "маскировка RTP: audio или video"),
+		workers:       fs.Int("workers", 0, "число воркеров: 5 или кратно 10, от 10 до 100 (в auto_js — не больше "+strconv.Itoa(coreproc.MaxWorkersAutoJS)+")"),
+		obfs:          fs.String("obfs", "", "маскировка RTP: audio, video или unified (по умолчанию "+config.DefaultObfs+")"),
 		turnTransport: fs.String("turn-transport", "", "до TURN по udp или tcp_tls"),
 		datapath:      fs.String("datapath", "", "как отдавать трафик: tun (весь трафик системы, нужен root; на Windows пока только с connect -allow-leak) или socks"),
 		socksListen:   fs.String("socks-listen", "", "адрес SOCKS5 при datapath = socks, только loopback (по умолчанию "+datapath.DefaultSocksListen+")"),
@@ -444,9 +444,7 @@ func storeProfile(e *env, path string, file *config.File, p *config.Profile, exi
 		if !file.VK.LoggedIn() {
 			fmt.Fprintf(e.stdout, "Входа VK нет, а без него профиль не подключится: %s vk login\n", app.Name)
 		}
-		warnWorkers(e.stdout, p, 0)
-	} else if len(secrets.hashes) > 0 {
-		warnWorkers(e.stdout, p, len(secrets.hashes))
+		warnWorkers(e.stdout, p)
 	}
 	if file.DefaultProfile == p.Name {
 		fmt.Fprintf(e.stdout, "Профиль по умолчанию: %s\n", p.Name)
@@ -455,22 +453,18 @@ func storeProfile(e *env, path string, file *config.File, p *config.Profile, exi
 }
 
 // warnWorkers предупреждает, если воркеров в профиле больше, чем ядро
-// запустит на этих хешах (27 на хеш, coreproc.NormalizeWorkers), а в auto_js
-// — больше 72 (coreproc.NormalizeWorkersAutoJS; хеши тогда не считаются).
-// Урежет число coreproc сам; предупреждение — чтобы число в профиле не
-// вводило в заблуждение.
-func warnWorkers(w io.Writer, p *config.Profile, hashes int) {
+// запустит в auto_js (coreproc.NormalizeWorkersAutoJS, не больше 70). Урежет
+// число coreproc сам; предупреждение — чтобы число в профиле не вводило в
+// заблуждение. Вне auto_js число из профиля ядро запускает как есть: предел
+// на хеш у ядра 2.5.0 снят, а негодное число не проходит проверку профиля.
+func warnWorkers(w io.Writer, p *config.Profile) {
 	want := p.Core().Workers
-	if p.AutoJS() {
-		if got := coreproc.NormalizeWorkersAutoJS(want); got < want {
-			fmt.Fprintf(w, "Предупреждение: воркеров в профиле %d, а в режиме auto_js ядро запустит %d (не больше %d).\n",
-				want, got, coreproc.MaxWorkersAutoJS)
-		}
+	if !p.AutoJS() {
 		return
 	}
-	if got := coreproc.NormalizeWorkers(want, hashes); got < want {
-		fmt.Fprintf(w, "Предупреждение: воркеров в профиле %d, а на %d хеш(ах) ядро запустит %d (не больше 27 на хеш).\n",
-			want, hashes, got)
+	if got := coreproc.NormalizeWorkersAutoJS(want); got < want {
+		fmt.Fprintf(w, "Предупреждение: воркеров в профиле %d, а в режиме auto_js ядро запустит %d (не больше %d).\n",
+			want, got, coreproc.MaxWorkersAutoJS)
 	}
 }
 
@@ -538,7 +532,7 @@ func runProfileShow(_ context.Context, e *env, args []string) error {
 	printField(e.stdout, "peer", config.PeerWithPort(p.Peer), "")
 	printSetting(e.stdout, "datapath", p.Datapath, config.DefaultDatapath)
 	printSetting(e.stdout, "workers", numberOrEmpty(p.Workers), strconv.Itoa(config.DefaultWorkers))
-	printSetting(e.stdout, "obfs", p.Obfs, "audio")
+	printSetting(e.stdout, "obfs", p.Obfs, config.DefaultObfs)
 	printSetting(e.stdout, "turn_transport", p.TurnTransport, "udp")
 	printSetting(e.stdout, "vk_hash_mode", p.VkHashMode, config.VKHashModeManual)
 	if p.KillSwitch == nil {
@@ -555,14 +549,14 @@ func runProfileShow(_ context.Context, e *env, args []string) error {
 
 	fmt.Fprintln(e.stdout)
 	printField(e.stdout, "password", passwordNote(store, p.PasswordRef), "")
-	hashesText, hashes := hashesNote(store, p.VkHashesRef)
+	hashesText, _ := hashesNote(store, p.VkHashesRef)
 	note := ""
 	if p.AutoJS() {
 		note = "(в режиме auto_js не нужны)"
 	}
 	printField(e.stdout, "vk_hashes", hashesText, note)
-	if hashes > 0 || p.AutoJS() {
-		warnWorkers(e.stdout, p, hashes)
+	if p.AutoJS() {
+		warnWorkers(e.stdout, p)
 	}
 	return nil
 }

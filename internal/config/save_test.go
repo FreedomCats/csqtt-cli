@@ -18,7 +18,7 @@ func sampleFile() *File {
 				PasswordRef:   "dpapi:8f2a1c",
 				VkHashesRef:   "dpapi:1c9bd4",
 				DeviceID:      "3f9c2a71d04be658",
-				Workers:       27,
+				Workers:       30,
 				Obfs:          "video",
 				TurnTransport: "tcp_tls",
 				Datapath:      DatapathSocks,
@@ -198,7 +198,7 @@ func TestSaveCreatesDeviceIDOnce(t *testing.T) {
 	if got := loaded.Profiles["home"].DeviceID; got != id {
 		t.Fatalf("device_id в файле = %q, в памяти %q", got, id)
 	}
-	loaded.Profiles["home"].Workers = 36
+	loaded.Profiles["home"].Workers = 40
 	if err := Save(path, loaded); err != nil {
 		t.Fatal(err)
 	}

@@ -115,7 +115,7 @@ func TestConnectUpThenInterrupt(t *testing.T) {
 		t.Errorf("токен сессии капчи в выводе:\n%s", got)
 	}
 	for _, want := range []string{
-		"профиль home: сервер 203.0.113.10:46000, хешей 3, воркеров 18, SOCKS5 " + listen,
+		"профиль home: сервер 203.0.113.10:46000, хешей 3, воркеров 10, SOCKS5 " + listen,
 		"== туннель работает · SOCKS5 на " + listen,
 		"session_token=<скрыт",
 		"хеш <хеш №1>",
@@ -166,11 +166,8 @@ func TestConnectServerRejectedAuth(t *testing.T) {
 			[]string{"неверный пароль подключения", "проверьте пароль подключения: csqtt-cli profile set home -password"}, "панел"},
 		{"expired", "FATAL_AUTH: срок действия пароля истёк",
 			[]string{"срок действия пароля истёк", "новый пароль из панели сервера", "profile set home -password"}, "проверьте"},
-		{"device_mismatch", "FATAL_AUTH: пароль привязан к другому устройству",
-			[]string{"привязан к другому устройству", "повторный ввод не поможет", "отдельный пароль",
-				"profile set home -password", "снимите привязку"}, "проверьте"},
-		{"прочее", "FATAL_AUTH: доступ запрещён (deactivated)",
-			[]string{"доступ запрещён (deactivated)", "состояние в панели сервера", "profile set home -password"}, "устройств"},
+		{"deactivated", "FATAL_AUTH: аккаунт деактивирован",
+			[]string{"аккаунт деактивирован", "состояние в панели сервера", "profile set home -password"}, "устройств"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -200,14 +197,12 @@ func TestConnectServerRejectedAuth(t *testing.T) {
 // причины, если ядро передаст его как есть.
 func TestRejectHint(t *testing.T) {
 	cases := map[string]string{
-		"FATAL_AUTH: Пароль привязан к другому устройству": "занят другим устройством",
-		"FATAL_AUTH: доступ запрещён (device_mismatch)":    "занят другим устройством",
-		"FATAL_AUTH: срок действия пароля истек":           "новый пароль",
-		"FATAL_AUTH: доступ запрещён (expired)":            "новый пароль",
-		"FATAL_AUTH: доступ запрещён (wrong_password)":     "проверьте пароль подключения: ",
-		"FATAL_AUTH: доступ запрещён (deactivated)":        "состояние в панели",
-		"FATAL_PROTOCOL: разные версии протокола":          "другой версии",
-		"что-то без метки":                                 "или сервер другой версии",
+		"FATAL_AUTH: срок действия пароля истек":       "новый пароль",
+		"FATAL_AUTH: доступ запрещён (expired)":        "новый пароль",
+		"FATAL_AUTH: доступ запрещён (wrong_password)": "проверьте пароль подключения: ",
+		"FATAL_AUTH: доступ запрещён (deactivated)":    "состояние в панели",
+		"FATAL_PROTOCOL: разные версии протокола":      "другой версии",
+		"что-то без метки":                             "или сервер другой версии",
 	}
 	for msg, want := range cases {
 		if got := rejectHint(msg, "home"); !strings.Contains(got, want) {

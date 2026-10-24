@@ -18,7 +18,7 @@ peer           = "203.0.113.10:46000"
 password_ref   = "dpapi:8f2a1c"
 vk_hashes_ref  = "dpapi:1c9bd4"
 device_id      = "3f9c2a71d04be658"
-workers        = 27
+workers        = 30
 obfs           = "video"
 turn_transport = "tcp_tls"
 datapath       = "socks"
@@ -67,7 +67,7 @@ func TestParseFullFile(t *testing.T) {
 		PasswordRef:   "dpapi:8f2a1c",
 		VkHashesRef:   "dpapi:1c9bd4",
 		DeviceID:      "3f9c2a71d04be658",
-		Workers:       27,
+		Workers:       30,
 		Obfs:          "video",
 		TurnTransport: "tcp_tls",
 		Datapath:      DatapathSocks,
@@ -202,6 +202,28 @@ func TestParseWrongType(t *testing.T) {
 	}
 }
 
+// Профиль от csqtt-cli 0.3.0 с прежним числом воркеров (кратным 9) не
+// переводится молча: ошибка называет файл, объясняет, почему число не
+// годится, и что сделать. Число, которого не было и раньше, — без отсылки к
+// прежним версиям.
+func TestParseOldWorkersExplained(t *testing.T) {
+	const head = "[profile.home]\npeer = \"203.0.113.10\"\npassword_ref = \"dpapi:8f2a1c\"\nvk_hashes_ref = \"dpapi:1c9bd4\"\n"
+	_, err := Parse([]byte(head+"workers = 18\n"), "тест.toml")
+	if err == nil {
+		t.Fatal("профиль с workers = 18 принят")
+	}
+	for _, want := range []string{"тест.toml", "workers = 18", "группы по 10", "кратные 9", "csqtt-cli 0.3.0", "2.1.9", "удалите ключ", "умолчание 10"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("в сообщении нет %q:\n%v", want, err)
+		}
+	}
+
+	_, err = Parse([]byte(head+"workers = 25\n"), "тест.toml")
+	if err == nil || !strings.Contains(err.Error(), "удалите ключ") || strings.Contains(err.Error(), "0.3.0") {
+		t.Errorf("workers = 25 — без отсылки к прежним версиям, с подсказкой: %v", err)
+	}
+}
+
 // Ошибки проверки собираются все разом и с именем профиля.
 func TestParseReportsAllProblems(t *testing.T) {
 	text := `
@@ -209,14 +231,14 @@ func TestParseReportsAllProblems(t *testing.T) {
 peer          = "203.0.113.10:0"
 password_ref  = "dpapi:8f2a1c"
 vk_hashes_ref = "dpapi:1c9bd4"
-workers       = 20
+workers       = 25
 obfs          = "noise"
 `
 	_, err := Parse([]byte(text), "тест.toml")
 	if err == nil {
 		t.Fatal("негодный профиль разобран")
 	}
-	for _, want := range []string{`профиль "home"`, "peer", "workers = 20", `obfs = "noise"`} {
+	for _, want := range []string{`профиль "home"`, "peer", "workers = 25", `obfs = "noise"`} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("в сообщении нет %q:\n%v", want, err)
 		}

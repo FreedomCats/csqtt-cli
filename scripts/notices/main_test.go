@@ -163,7 +163,7 @@ func TestParseCrates(t *testing.T) {
 	registry := str("registry+https://github.com/rust-lang/crates.io-index")
 	lib := []map[string]any{{"kind": []string{"lib"}}}
 	pkgs := []metaPkg{
-		{ID: "core", Name: "csqtt-client", Version: "2.1.9", ManifestPath: "/r/core/rust-client/Cargo.toml", Targets: []map[string]any{{"kind": []string{"bin"}}}},
+		{ID: "core", Name: "csqtt-client", Version: "2.5.0", ManifestPath: "/r/core/rust-client/Cargo.toml", Targets: []map[string]any{{"kind": []string{"bin"}}}},
 		{ID: "a", Name: "a", Version: "1.0.0", License: str("MIT"), ManifestPath: "/reg/a-1.0.0/Cargo.toml", Source: registry, Targets: lib},
 		{ID: "b", Name: "B", Version: "0.2.0", License: str("MIT"), ManifestPath: "/reg/b-0.2.0/Cargo.toml", Source: registry, Targets: lib},
 		{ID: "macro", Name: "serde_derive", Version: "1.0.0", License: str("MIT"), ManifestPath: "/reg/m/Cargo.toml", Source: registry, Targets: []map[string]any{{"kind": []string{"proc-macro"}}}},
@@ -217,18 +217,29 @@ func TestCollectCrates(t *testing.T) {
 	vendored := filepath.Join(root, "core", "rust-client", "vendor", "primp")
 	write(t, vendored, "Cargo.toml", "")
 	write(t, filepath.Join(root, "scripts", "notices", "licenses", "primp-1.3.1"), "LICENSE-MIT", "Copyright (c) someone\r\n\r\nPermission is hereby granted")
+	shim := filepath.Join(reg, "defmt-0.3.100")
+	write(t, shim, "README.md", "readme")
+	shimDonor := filepath.Join(reg, "defmt-1.1.1")
+	write(t, shimDonor, "LICENSE-MIT", "Copyright (c) Ferrous Systems")
+	write(t, shimDonor, "LICENSE-APACHE", "apache text")
+	repoDir := filepath.Join(root, "scripts", "notices", "licenses", "etherparse-0.16.0")
+	write(t, repoDir, "LICENSE-MIT", "MIT License\r\n\r\nCopyright (c) 2024 Julian Schmid")
+	write(t, repoDir, "LICENSE-APACHE", "apache text")
 
 	sections, err := collectCrates([]crate{
 		{Name: "alloc-no-stdlib", Version: "2.0.4", License: "BSD-3-Clause", Dir: donor},
 		{Name: "alloc-stdlib", Version: "0.2.4", License: "BSD-3-Clause", Dir: orphan},
 		{Name: "deep", Version: "0.1.0", LicenseFile: "legal/TERMS.txt", Dir: deep},
+		{Name: "defmt", Version: "0.3.100", License: "MIT OR Apache-2.0", Dir: shim},
+		{Name: "defmt", Version: "1.1.1", License: "MIT OR Apache-2.0", Dir: shimDonor},
 		{Name: "dual", Version: "1.0.0", License: "MIT OR Apache-2.0", Dir: dual},
+		{Name: "etherparse", Version: "0.16.0", License: "MIT OR Apache-2.0", Dir: orphan},
 		{Name: "primp", Version: "1.3.1", License: "MIT", Dir: vendored, Vendored: true},
 	}, sysroot, root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sections) != 6 || sections[0].Kind != "MIT OR Apache-2.0" || sections[0].Files[0].Name != "Apache-2.0.txt" {
+	if len(sections) != 9 || sections[0].Kind != "MIT OR Apache-2.0" || sections[0].Files[0].Name != "Apache-2.0.txt" {
 		t.Fatalf("раздел Rust: %+v", sections)
 	}
 	if s := sections[2]; s.Kind != "BSD-3-Clause" || len(s.Files) != 1 || !strings.Contains(s.Files[0].Text, "Dropbox") || !strings.Contains(s.Note, "alloc-no-stdlib") {
@@ -237,10 +248,22 @@ func TestCollectCrates(t *testing.T) {
 	if s := sections[3]; s.Kind != "см. TERMS.txt" || len(s.Files) != 1 || s.Files[0].Name != "TERMS.txt" {
 		t.Errorf("license-file глубже корня: %+v", s)
 	}
-	if s := sections[4]; s.Kind != "MIT OR Apache-2.0" || len(s.Files) != 2 || s.Note != "" {
+	// Прослойка defmt 0.3.100 берёт оба файла у тёзки 1.1.1 — донора по
+	// имени@версии; сам донор — как обычный crate, без примечания.
+	if s := sections[4]; s.Title != "defmt 0.3.100" || len(s.Files) != 2 || s.Files[1].Name != "LICENSE-MIT" || !strings.Contains(s.Files[1].Text, "Ferrous") || !strings.Contains(s.Note, "defmt 1.1.1") {
+		t.Errorf("defmt 0.3.100 — файлы defmt 1.1.1 с пояснением: %+v", s)
+	}
+	if s := sections[5]; s.Title != "defmt 1.1.1" || len(s.Files) != 2 || s.Note != "" {
+		t.Errorf("defmt 1.1.1 — обычный crate: %+v", s)
+	}
+	if s := sections[6]; s.Kind != "MIT OR Apache-2.0" || len(s.Files) != 2 || s.Note != "" {
 		t.Errorf("crate с двумя файлами: %+v", s)
 	}
-	s := sections[5]
+	if s := sections[7]; s.Kind != "MIT OR Apache-2.0" || len(s.Files) != 2 || s.Files[0].Name != "LICENSE-MIT" || s.Files[0].Text != "MIT License\n\nCopyright (c) 2024 Julian Schmid" ||
+		!strings.Contains(s.Note, "github.com/JulianSchmid/etherparse") || !strings.Contains(s.Note, "тег v0.16.0") || !strings.Contains(s.Note, "LICENSE-MIT и LICENSE-APACHE") {
+		t.Errorf("etherparse — файлы из репозитория с пояснением: %+v", s)
+	}
+	s := sections[8]
 	if s.Kind != "MIT" || len(s.Files) != 1 || s.Files[0].Text != "Copyright (c) someone\n\nPermission is hereby granted" ||
 		!strings.Contains(s.Note, "core/rust-client/vendor/primp") || !strings.Contains(s.Note, "crates.io") {
 		t.Errorf("primp — сохранённый файл с пояснением: %+v", s)
@@ -265,10 +288,25 @@ func TestCollectCrates(t *testing.T) {
 		}
 	}
 
+	// Донор имя@версия — только ровно эта версия: без неё в графе (или с
+	// другой лицензией) — ошибка, а не файлы случайного тёзки.
+	for _, d := range []crate{
+		{Name: "defmt", Version: "1.2.0", License: "MIT OR Apache-2.0", Dir: shimDonor},
+		{Name: "defmt", Version: "1.1.1", License: "MIT", Dir: shimDonor},
+	} {
+		_, err := collectCrates([]crate{{Name: "defmt", Version: "0.3.100", License: "MIT OR Apache-2.0", Dir: shim}, d}, sysroot, root)
+		if err == nil || !strings.Contains(err.Error(), "defmt@0.3.100: лицензию брать у defmt@1.1.1") {
+			t.Errorf("defmt с донором %s (%s): %v", d.key(), d.License, err)
+		}
+	}
+
 	// Сохранённый файл — только для той же версии: новая проходит через
 	// человека.
 	if _, err := collectCrates([]crate{{Name: "primp", Version: "1.3.2", License: "MIT", Dir: vendored, Vendored: true}}, sysroot, root); err == nil {
 		t.Error("primp другой версии без файла лицензии прошёл")
+	}
+	if _, err := collectCrates([]crate{{Name: "etherparse", Version: "0.17.0", License: "MIT OR Apache-2.0", Dir: orphan}}, sysroot, root); err == nil {
+		t.Error("etherparse другой версии без файла лицензии прошёл")
 	}
 
 	// Crate не из реестра и не из vendor — ошибка.
@@ -295,6 +333,47 @@ func TestStoredPrimpLicense(t *testing.T) {
 				t.Errorf("%s: %v", key, err)
 			}
 		}
+	}
+}
+
+// Копии LICENSE-MIT/LICENSE-APACHE из repoLicense — те, что в репозиториях
+// проектов на названных теге или коммите (sha256 файлов оттуда; LF). У
+// каждой записи карты файлы на месте, и каждый — та лицензия, что обещана
+// именем.
+func TestStoredRepoLicenses(t *testing.T) {
+	sums := map[string]string{
+		"etherparse-0.16.0/LICENSE-MIT":    "4be7e6a9b3e7293807bbebfd081941c2d87fa445733e1ad0a9fc6efbc4f3029a",
+		"etherparse-0.16.0/LICENSE-APACHE": "affcd3a3acd2a70d6405c6a5088413da8f97b91f5074ae313fbaa2ec4b45b19f",
+		"yasna-0.5.2/LICENSE-MIT":          "2a7df90e60fd5512b8bca35d3ce90e068f21c52d962855053fd1d9e2e7ca0f16",
+		"yasna-0.5.2/LICENSE-APACHE":       "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+	}
+	kinds := map[string]string{"LICENSE-MIT": "MIT", "LICENSE-APACHE": "Apache-2.0"}
+	seen := 0
+	for key, r := range repoLicense {
+		name, version, _ := strings.Cut(key, "@")
+		if r.Repo == "" || r.Rev == "" || len(r.Files) == 0 {
+			t.Errorf("%s: в записи нужны репозиторий, тег/коммит и файлы: %+v", key, r)
+		}
+		for _, f := range r.Files {
+			rel := name + "-" + version + "/" + f
+			b, err := os.ReadFile(filepath.Join("licenses", filepath.FromSlash(rel)))
+			if err != nil {
+				t.Errorf("%s: %v", key, err)
+				continue
+			}
+			seen++
+			text := strings.ReplaceAll(string(b), "\r\n", "\n")
+			sum := sha256.Sum256([]byte(text))
+			if got := hex.EncodeToString(sum[:]); got != sums[rel] {
+				t.Errorf("licenses/%s изменён или не учтён в тесте: sha256 %s", rel, got)
+			}
+			if got := classify(text); got != kinds[f] {
+				t.Errorf("licenses/%s: вид лицензии %q, по имени файла ждём %q", rel, got, kinds[f])
+			}
+		}
+	}
+	if seen != len(sums) {
+		t.Errorf("в repoLicense учтено файлов: %d, в тесте: %d", seen, len(sums))
 	}
 }
 

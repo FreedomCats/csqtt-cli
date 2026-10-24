@@ -91,12 +91,14 @@ func fakeUpstream(t *testing.T) string {
 	withCrates(t)
 	withSockets(t)
 	up := t.TempDir()
-	write(t, filepath.Join(up, "LICENSE"), "PolyForm\r\n")
+	for _, name := range upstreamFileNames() {
+		write(t, filepath.Join(up, filepath.FromSlash(name)), name+"\r\n")
+	}
 	write(t, filepath.Join(up, "rust-client", "Cargo.toml"), "[package]\r\nname = \"csqtt-client\"\r\nversion = \"9.9.9\"\r\n")
 	write(t, filepath.Join(up, "rust-client", "main.rs"), "#[path = \"../shared/wire_protocol.rs\"]\r\nmod wire_protocol;\r\nconst T: u64 = 60;\r\n")
 	write(t, filepath.Join(up, "rust-client", "dispatcher", "tests.rs"), "// tests\r\n")
 	write(t, filepath.Join(up, "rust-client", "target", "release", "client.exe"), "MZ\x00\x00")
-	write(t, filepath.Join(up, "shared", "wire_protocol.rs"), "pub const WIRE_PROTOCOL_REVISION: &str = \"TEST-WIRE-1\";\r\n")
+	write(t, filepath.Join(up, "shared", "wire_protocol.rs"), "pub const CSQTT_FRAG_MAGIC: u8 = 0xCF;\r\n")
 	for _, f := range excludedFiles {
 		write(t, filepath.Join(up, filepath.FromSlash(f.Path)), "android\r\n")
 	}
@@ -123,11 +125,11 @@ func TestRunWriteAndCheck(t *testing.T) {
 	if got := read(t, filepath.Join(core, "rust-client", "main.rs")); got != "#[path = \"../shared/wire_protocol.rs\"]\nmod wire_protocol;\nconst T: u64 = 180;\n" {
 		t.Errorf("main.rs: правило не применилось или остался CRLF:\n%q", got)
 	}
-	if got := read(t, filepath.Join(core, "LICENSE")); got != "PolyForm\n" {
+	if got := read(t, filepath.Join(core, "LICENSE")); got != "LICENSE\n" {
 		t.Errorf("LICENSE: %q", got)
 	}
 	version := read(t, filepath.Join(core, "CORE_VERSION"))
-	for _, line := range []string{"version  = 9.9.9\n", "protocol = TEST-WIRE-1\n", "files    = 5\n", "rules    = 1\n"} {
+	for _, line := range []string{"version  = 9.9.9\n", "files    = 6\n", "rules    = 1\n"} {
 		if !strings.Contains(version, line) {
 			t.Errorf("CORE_VERSION без %q:\n%s", line, version)
 		}
@@ -151,7 +153,7 @@ func TestRunWriteAndCheck(t *testing.T) {
 
 	// git на Windows может выложить core/ с CRLF — это не расхождение. Выход
 	// сборки cargo — тоже.
-	write(t, filepath.Join(core, "shared", "wire_protocol.rs"), "pub const WIRE_PROTOCOL_REVISION: &str = \"TEST-WIRE-1\";\r\n")
+	write(t, filepath.Join(core, "shared", "wire_protocol.rs"), "pub const CSQTT_FRAG_MAGIC: u8 = 0xCF;\r\n")
 	write(t, filepath.Join(core, "rust-client", "target", "debug", "client"), "ELF")
 	if code := mustRun(t, root, up, true); code != 0 {
 		t.Errorf("-check на CRLF и target/: код %d", code)
@@ -211,7 +213,7 @@ func TestRunAddedFiles(t *testing.T) {
 	if got := read(t, filepath.Join(core, "rust-client", "own.rs")); got != "// своё\n" {
 		t.Errorf("own.rs: %q", got)
 	}
-	if version := read(t, filepath.Join(core, "CORE_VERSION")); !strings.Contains(version, "files    = 6\n") || !strings.Contains(version, "added    = 1\n") {
+	if version := read(t, filepath.Join(core, "CORE_VERSION")); !strings.Contains(version, "files    = 7\n") || !strings.Contains(version, "added    = 1\n") {
 		t.Errorf("CORE_VERSION:\n%s", version)
 	}
 	if code := mustRun(t, root, up, true); code != 0 {
@@ -274,12 +276,6 @@ func TestRunUpstreamErrors(t *testing.T) {
 				}
 			},
 			want: "нет каталога shared",
-		},
-		"нет ревизии протокола": {
-			spoil: func(t *testing.T, up string) {
-				write(t, filepath.Join(up, "shared", "wire_protocol.rs"), "// пусто\n")
-			},
-			want: "shared/wire_protocol.rs",
 		},
 	}
 	for name, c := range cases {

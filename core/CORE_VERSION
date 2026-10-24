@@ -2,11 +2,10 @@
 # Файл создаётся командой go run ./scripts/vendorcore — руками не править.
 
 upstream = https://github.com/amurcanov/csqtt
-commit   = 71712b07dbabe16fa43f5a248dc69e1ab9f3a270
-date     = 2026-10-03T04:20:28+03:00
-version  = 2.1.9
-protocol = CSQTT-WIRE-3
-files    = 113
-rules    = 45
-added    = 8
+commit   = d02da9bd9d8926969b766e197c434d830a83dbd8
+date     = 2026-10-20T03:47:42+03:00
+version  = 2.5.0
+files    = 123
+rules    = 43
+added    = 7
 crate    = primp-hyper-util 0.1.22 sha256:bac29e007d9b369dc0429269955a7adeb63dd9be67beb96a17d2ce311c511763

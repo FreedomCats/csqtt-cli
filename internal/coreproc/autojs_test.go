@@ -43,10 +43,9 @@ func TestArgsAutoJS(t *testing.T) {
 	want := []string{
 		"--secrets-stdin",
 		"--peer=203.0.113.10:46000",
-		"--workers=72",
+		"--workers=70",
 		"--vk-hash-mode=auto_js",
 		"--vk-auth-mode=auto_js",
-		"--allow-hash-redistribution",
 	}
 	if got := cfg.Args(); !slices.Equal(got, want) {
 		t.Errorf("Args() = %q, want %q", got, want)
@@ -56,30 +55,30 @@ func TestArgsAutoJS(t *testing.T) {
 			t.Errorf("секрет в аргументах: %q", arg)
 		}
 	}
-	// Режим с хешами — как был: ни режимов auto_js, ни перераспределения.
+	// Режим с хешами — как был: без режимов auto_js и без предела 70.
 	plain := cfg
 	plain.VKHashMode = ""
 	if got := plain.Args(); slices.ContainsFunc(got, func(a string) bool {
-		return strings.Contains(a, "auto_js") || a == "--allow-hash-redistribution"
-	}) || !slices.Contains(got, "--workers=27") || !slices.Contains(got, "--vk-auth-mode=legacy") {
+		return strings.Contains(a, "auto_js")
+	}) || !slices.Contains(got, "--workers=100") || !slices.Contains(got, "--vk-auth-mode=legacy") {
 		t.Errorf("Args() без auto_js = %q", got)
 	}
 }
 
 func TestNormalizeWorkersAutoJS(t *testing.T) {
 	for _, c := range []struct{ requested, want int }{
-		{-1, 9}, {0, 9}, {9, 9}, {10, 9}, {50, 45}, {63, 63}, {71, 63}, {72, 72}, {81, 72}, {126, 72}, {math.MaxInt, 72},
+		{-1, 5}, {0, 5}, {5, 5}, {9, 10}, {10, 10}, {50, 50}, {63, 60}, {70, 70}, {71, 70}, {80, 70}, {100, 70}, {math.MaxInt, 70},
 	} {
 		if got := NormalizeWorkersAutoJS(c.requested); got != c.want {
 			t.Errorf("NormalizeWorkersAutoJS(%d) = %d, want %d", c.requested, got, c.want)
 		}
 	}
-	// Без хешей предел 27 на хеш в auto_js не действует.
-	if got := (Config{Workers: 54, VKHashMode: VKHashModeAutoJS}).NormalizedWorkers(); got != 54 {
-		t.Errorf("NormalizedWorkers в auto_js без хешей = %d, want 54", got)
+	// Предел 70 — только в auto_js.
+	if got := (Config{Workers: 80, VKHashMode: VKHashModeAutoJS}).NormalizedWorkers(); got != 70 {
+		t.Errorf("NormalizedWorkers в auto_js = %d, want 70", got)
 	}
-	if got := (Config{Workers: 54}).NormalizedWorkers(); got != 27 {
-		t.Errorf("NormalizedWorkers без хешей = %d, want 27", got)
+	if got := (Config{Workers: 80}).NormalizedWorkers(); got != 80 {
+		t.Errorf("NormalizedWorkers без auto_js = %d, want 80", got)
 	}
 }
 
@@ -402,7 +401,7 @@ func TestCallState(t *testing.T) {
 func TestAutoJSStringsInCore(t *testing.T) {
 	want := map[string][]string{
 		"main.rs": {
-			`crate::log_error!("[ФАТАЛ] {failure}")`,
+			`crate::log_error!("[ФАТАЛ] {error:#}")`,
 			`.context("ошибка разбора пира")`,
 			"let peer = resolve_peer(&arguments.peer).await?;",
 			`.context("тайм-аут передачи данных Auto JS")?`,
@@ -436,15 +435,15 @@ func TestAutoJSStringsInCore(t *testing.T) {
 			`"[КРЕД #{}] Ошибка: {error:#}. Повторяем через {delay:?}...",`,
 		},
 		"auth.rs": {
-			`query_escape(&format!("https://vk.com/call/join/{link}"))`,
-			`fb.do?joinLink={link}`,
+			`query_escape(&format!("https://vk.ru/call/join/{link}"))`,
+			`fb.do?joinLink={}&`,
 			`const HEX: &[u8; 16] = b"0123456789ABCDEF";`,
 			// Ключи гостевого пути в адресах (guestKeyParams): шаги 2–3,
 			// шаг 5 и проверка хешей. Новый ключ в адресе — дополнить список.
 			"&anonymous_token={anonymous_token_encoded}&",
 			"&secret={}&lang=en\",\n            query_escape(secret)",
-			"&anonymToken={ok_anonymous_token}&",
-			"&session_key={session_key}\"",
+			"&anonymToken={}&method=vchat.joinConversationByLink",
+			"&session_key={}\",\n            query_escape(link),",
 			"&anonymous_token={anonymous_token}&",
 			// Сам HTTP-клиент: адрес попадает в текст ошибки.
 			"let response = client.post(endpoint).headers(headers).send().await?;",
@@ -502,7 +501,7 @@ func fakeAutoJSCore() int {
 		return 1
 	}
 	for _, arg := range []string{"--secrets-stdin", "--vk-hash-mode=auto_js", "--vk-auth-mode=auto_js",
-		"--allow-hash-redistribution", "--workers=72"} {
+		"--workers=70"} {
 		if !slices.Contains(os.Args, arg) {
 			return fatal("нет аргумента " + arg)
 		}

@@ -418,8 +418,7 @@ func (plan *connectPlan) run(ctx context.Context, e *env, verbose bool) error {
 		out.line("предупреждение: воркеров в профиле %d, а ядро запустит %d (в auto_js не больше %d)",
 			cfg.Workers, workers, coreproc.MaxWorkersAutoJS)
 	default:
-		out.line("предупреждение: воркеров в профиле %d, а на %d хеш(ах) ядро запустит %d (не больше 27 на хеш)",
-			cfg.Workers, len(cfg.Hashes), workers)
+		out.line("предупреждение: воркеров в профиле %d, а ядро запустит %d", cfg.Workers, workers)
 	}
 
 	stopRefresh := out.refreshEvery(statusRefresh)
@@ -542,7 +541,11 @@ func startupHint(fatal *coreproc.FatalError) string {
 // (DENIED:<причина>) ядро передаёт только текстом сообщения: метка FATAL_* и
 // фраза по-русски (core/rust-client/protocol.rs). Поэтому различаем по тексту —
 // без учёта регистра и по коду причины тоже, на случай если ядро передаст его
-// как есть («доступ запрещён (<причина>)»).
+// как есть («доступ запрещён (<причина>)»). Отказом (handshake_rejected) ядро
+// 2.5.0 считает только причины с меткой: wrong_password, expired, deactivated
+// (FATAL_AUTH) и protocol_mismatch (FATAL_PROTOCOL); прочие (server_busy и
+// др.) оно пишет в журнал и ждёт дальше. Отказа «пароль у другого
+// устройства» у сервера 2.5.0 нет.
 func rejectHint(message, profile string) string {
 	setPassword := fmt.Sprintf("%s profile set %s -password", app.Name, profile)
 	msg := strings.ReplaceAll(strings.ToLower(message), "ё", "е")
@@ -554,11 +557,6 @@ func rejectHint(message, profile string) string {
 		return "сервер CSQTT другой версии, чем ядро клиента: нужен сервер той же версии (деплой из неё)"
 	case !has("fatal_auth"):
 		return fmt.Sprintf("неверный пароль (%s) или сервер другой версии", setPassword)
-	case has("другому устройству", "device_mismatch"):
-		// Сервер привязывает пароль к устройству, первым подключившемуся с
-		// ним: тот же пароль ещё раз не поможет.
-		return fmt.Sprintf("пароль занят другим устройством, повторный ввод не поможет: заведите для этого устройства "+
-			"отдельный пароль в панели сервера (%s) или снимите привязку пароля в панели", setPassword)
 	case has("истек", "expired"):
 		return fmt.Sprintf("нужен новый пароль из панели сервера: %s", setPassword)
 	case has("неверный пароль", "wrong_password"):

@@ -11,14 +11,17 @@ import (
 
 // Пределы воркеров — те же, что у ядра (coreproc.NormalizeWorkers): ядро
 // молча округлило бы негодное число, а человек должен знать, сколько
-// воркеров запустится на самом деле.
+// воркеров запустится на самом деле. minWorkers — особый случай ядра: пять
+// воркеров без целой группы.
 const (
-	workersPerGroup = 9
-	maxWorkers      = 126
+	minWorkers      = 5
+	workersPerGroup = 10
+	maxWorkers      = 100
 )
 
-// maxDeviceID — предел длины device_id. Ядро шлёт его серверу в служебных
-// строках через «:» и «|», поэтому и набор знаков закрыт (deviceIDProblem).
+// maxDeviceID — предел длины device_id. Ядро до 2.5.0 слало его серверу в
+// служебных строках через «:» и «|», поэтому и набор знаков закрыт
+// (deviceIDProblem); ядро 2.5.0 его не передаёт, поле остаётся в профиле.
 const maxDeviceID = 64
 
 // Validate проверяет файл целиком. Вызывается при разборе; отдельно нужен тем,
@@ -168,7 +171,7 @@ func profileProblems(p *Profile) []string {
 	add(oneOfProblem("vk_hash_mode", p.VkHashMode, VKHashModeManual, VKHashModeAutoJS))
 	add(deviceIDProblem(p.DeviceID))
 	add(workersProblem(p.Workers))
-	add(oneOfProblem("obfs", p.Obfs, "audio", "video"))
+	add(oneOfProblem("obfs", p.Obfs, "audio", "video", "unified"))
 	add(oneOfProblem("turn_transport", p.TurnTransport, "udp", "tcp_tls"))
 	add(oneOfProblem("datapath", p.Datapath, DatapathTun, DatapathSocks))
 	if strings.TrimSpace(p.Socks.Listen) != "" {
@@ -292,12 +295,26 @@ func deviceIDProblem(id string) string {
 	return ""
 }
 
+// Прежние пределы воркеров — ядра 2.1.9 и csqtt-cli 0.3.0: группы по 9, до
+// 126. Профиль с таким числом не переводится молча (решение пользователя),
+// но ошибка объясняет, откуда оно и что с ним делать.
+const (
+	oldWorkersPerGroup = 9
+	oldMaxWorkers      = 126
+)
+
 func workersProblem(n int) string {
-	if n == 0 || n >= workersPerGroup && n <= maxWorkers && n%workersPerGroup == 0 {
+	if n == 0 || n == minWorkers || n >= workersPerGroup && n <= maxWorkers && n%workersPerGroup == 0 {
 		return ""
 	}
-	return fmt.Sprintf("workers = %d: воркеры идут группами по %d — допустимы %d, %d, %d … %d",
-		n, workersPerGroup, workersPerGroup, 2*workersPerGroup, 3*workersPerGroup, maxWorkers)
+	problem := fmt.Sprintf("workers = %d: ядро 2.5.0 делит воркеров на группы по %d — допустимы %d, %d, %d, %d … %d",
+		n, workersPerGroup, minWorkers, workersPerGroup, 2*workersPerGroup, 3*workersPerGroup, maxWorkers)
+	if n > 0 && n <= oldMaxWorkers && n%oldWorkersPerGroup == 0 {
+		problem += fmt.Sprintf("; прежние значения (кратные %d) из csqtt-cli 0.3.0 и ядра 2.1.9 больше не подходят",
+			oldWorkersPerGroup)
+	}
+	return problem + fmt.Sprintf(". Исправьте workers в файле профиля или удалите ключ — тогда будет умолчание %d",
+		DefaultWorkers)
 }
 
 func oneOfProblem(key, value string, allowed ...string) string {

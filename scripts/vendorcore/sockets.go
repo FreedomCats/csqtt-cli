@@ -70,10 +70,25 @@ var socketSites = []socketSite{
 		Reason: "обёртка primp: текст ошибки в Client::new; ядро клиентов так не строит"},
 	{File: "rust-client/vendor/primp/src/lib.rs", Call: "Client::builder", Count: 1,
 		Reason: "обёртка primp: primp::get; ядро его не вызывает"},
+	{File: "rust-client/vendor/netstack-smoltcp/src/tcp.rs", Call: "TcpSocket::new", Count: 1,
+		Reason: "smoltcp::socket::tcp::Socket — виртуальный сокет стека в памяти (маршрутизация мимо туннеля), не сокет ОС"},
 
 	// Мимо привязки — по решению (§06).
 	{File: "rust-client/dns.rs", Call: "lookup_host", Count: 1,
 		Reason: "запасной системный DNS: только если DNS Яндекса молчит, а TUNCONF ещё не было; запрос делает система (W5, Э3)"},
+
+	// Маршрутизация мимо туннеля (ядро 2.5.0: --domain-routing, --ip-routing,
+	// команда UPDATE_DOMAINS|): оболочка её не включает, и без неё ни один из
+	// этих сокетов не создаётся — предразрешение доменов идёт только при
+	// enabled, остальное — только из try_handle, который без маршрутизации
+	// сразу возвращает false. Включать её — отдельная задача вместе с
+	// привязкой (решение пользователя при обновлении на 2.5.0).
+	{File: "rust-client/direct_relay.rs", Call: "lookup_host", Count: 1,
+		Reason: "предразрешение прямых доменов: только при маршрутизации мимо туннеля, которую оболочка не включает"},
+	{File: "rust-client/direct_relay.rs", Call: "TcpStream::connect", Count: 1,
+		Reason: "прямое TCP-соединение из стека smoltcp: только при маршрутизации мимо туннеля, которую оболочка не включает"},
+	{File: "rust-client/direct_relay.rs", Call: "UdpSocket::bind", Count: 2,
+		Reason: "прямые UDP-сессии и DNS-запросы для прямых доменов: только при маршрутизации мимо туннеля, которую оболочка не включает"},
 	{File: "rust-client/vendor/primp-hyper-util/src/client/legacy/connect/dns.rs", Call: "to_socket_addrs", Count: 1,
 		Reason: "GaiResolver: в ядре заменён резолвером dns_resolver(dns::global())"},
 	{File: "rust-client/vendor/primp-hyper-util/src/client/legacy/connect/proxy/socks/v4/mod.rs", Call: "to_socket_addrs", Count: 1,

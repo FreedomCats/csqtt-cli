@@ -9,8 +9,13 @@
 // `SECRETS:<base64 json>`, где json — {"password": "…", "vk": "…"}, а vk — то
 // же, что значение -vk (в режиме auto_js его может не быть). Строка читается
 // из std::io::stdin(): то, что пришло следом (VK_JS_BOOTSTRAP:, команды),
-// остаётся в его общем буфере, и tokio::io::stdin, который читает через тот же
+// остаётся в его общем буфере, и читатель stdin ядра, который берёт тот же
 // std::io::stdin(), получит это следом.
+//
+// Пароль у апстрима (с 2.5.0) — переменная окружения CSQTT_PASSWORD, флага
+// --password нет; поле Arguments::password добавлено правилом как #[arg(skip)]:
+// аргументом его не передать. С -secrets-stdin пароль берётся отсюда, а
+// окружение не читается (password); без флага — как у апстрима.
 //
 // Ни одно сообщение об ошибке не содержит значений: журнал ядра оболочка
 // пишет в файл.
@@ -55,14 +60,25 @@ pub(crate) fn apply_or_exit(arguments: crate::Arguments) -> crate::Arguments {
     }
 }
 
+/// Пароль подключения: с -secrets-stdin — из строки SECRETS (apply), без
+/// флага — из окружения, как у апстрима.
+pub(crate) fn password(arguments: &crate::Arguments) -> String {
+    if arguments.secrets_stdin {
+        arguments.password.clone()
+    } else {
+        std::env::var("CSQTT_PASSWORD").unwrap_or_default()
+    }
+}
+
 fn apply<R: BufRead>(
     mut arguments: crate::Arguments,
     open: impl FnOnce() -> R + Send + 'static,
     timeout: Duration,
 ) -> Result<crate::Arguments> {
-    // Пароль или хеши в аргументах при флаге — значит, оболочка всё же
-    // передала их командной строкой, и прятать уже нечего.
-    if !arguments.password.is_empty() || !arguments.vk.is_empty() {
+    // Хеши в аргументах при флаге — значит, оболочка всё же передала их
+    // командной строкой, и прятать уже нечего. Пароль аргументом не
+    // принимается вовсе (#[arg(skip)]).
+    if !arguments.vk.is_empty() {
         bail!("[КЛИЕНТ] С -secrets-stdin пароль и хеши VK аргументами не передаются");
     }
     let secrets = parse(&read_line_with_timeout(open, timeout)?)?;
@@ -199,13 +215,32 @@ mod tests {
 
     #[test]
     fn secrets_in_arguments_are_rejected() {
-        for extra in [["--password", "p"], ["--vk", "-Wabc"]] {
-            let message = error(apply_input(
-                arguments(&extra),
-                line(r#"{"password":"p","vk":"h"}"#),
-            ));
-            assert!(message.contains("аргументами не передаются"), "{message}");
-        }
+        let message = error(apply_input(
+            arguments(&["--vk", "-Wabc"]),
+            line(r#"{"password":"p","vk":"h"}"#),
+        ));
+        assert!(message.contains("аргументами не передаются"), "{message}");
+        // Пароль — не аргумент: clap его не знает.
+        assert!(
+            crate::Arguments::try_parse_from(["csqtt-client", "--password", "p"]).is_err()
+        );
+        assert!(
+            crate::Arguments::try_parse_from(["csqtt-client", "--password=p"]).is_err()
+        );
+    }
+
+    /// С флагом пароль — из SECRETS, окружение не читается; без флага — как
+    /// у апстрима, из CSQTT_PASSWORD.
+    #[test]
+    fn password_comes_from_secrets_only_with_the_flag() {
+        let got = apply_input(arguments(&[]), line(r#"{"password":"p"}"#)).unwrap();
+        assert_eq!(password(&got), "p");
+        let without = crate::Arguments::try_parse_from(["csqtt-client"]).unwrap();
+        assert!(without.password.is_empty());
+        assert_eq!(
+            password(&without),
+            std::env::var("CSQTT_PASSWORD").unwrap_or_default()
+        );
     }
 
     #[test]

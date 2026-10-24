@@ -13,10 +13,9 @@ func TestCoreMapping(t *testing.T) {
 	got := parse(t, fullFile).Profiles["home"].Core()
 	want := coreproc.Config{
 		Peer:          "203.0.113.10:46000",
-		Workers:       27,
+		Workers:       30,
 		Obfs:          "video",
 		TurnTransport: "tcp_tls",
-		DeviceID:      "3f9c2a71d04be658",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Core = %+v,\nожидалось %+v", got, want)
@@ -24,7 +23,7 @@ func TestCoreMapping(t *testing.T) {
 }
 
 // Пропущенное в профиле ядро возьмёт своё; оболочка подставляет только
-// воркеров (coreproc.NormalizeWorkers из нуля сделал бы девять) и порт
+// воркеров (coreproc.NormalizeWorkers из нуля сделал бы пять) и порт
 // сервера.
 func TestCoreDefaults(t *testing.T) {
 	got := parse(t, minimalFile).Profiles["home"].Core()
@@ -32,8 +31,8 @@ func TestCoreDefaults(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Core = %+v,\nожидалось %+v", got, want)
 	}
-	if args := got.Args(); !slices.Contains(args, "--workers=18") {
-		t.Errorf("аргументы ядра без --workers=18: %q", args)
+	if args := got.Args(); !slices.Contains(args, "--workers=10") {
+		t.Errorf("аргументы ядра без --workers=10: %q", args)
 	}
 }
 

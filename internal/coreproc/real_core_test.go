@@ -20,7 +20,6 @@ var realCoreConfig = Config{
 	Peer:       "192.0.2.1:46000",
 	Password:   "real-core-password",
 	Hashes:     []string{"real-core-hash"},
-	DeviceID:   "test",
 	Listen:     "127.0.0.1:0",
 	ListenPeer: "127.0.0.1:9",
 }

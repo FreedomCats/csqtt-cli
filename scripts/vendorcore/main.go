@@ -19,7 +19,9 @@
 //  5. Сверяет места создания сокетов со списком покрытых правкой П3
 //     (sockets.go): новый сокет — ошибка.
 //  6. Записывает core/CORE_VERSION: коммит апстрима, версию ядра из
-//     Cargo.toml, ревизию протокола и версии крейтов.
+//     Cargo.toml и версии крейтов. Метки протокола у ядра с 2.5.0 нет
+//     (константа WIRE_PROTOCOL_REVISION убрана апстримом): сервер нужен той
+//     же версии, что ядро.
 //  7. Удаляет из core/ всё, чего нет в апстриме, крейтах и addedDir: core/
 //     целиком принадлежит команде, руками туда ничего не кладут. Не трогает
 //     только выход сборки cargo.
@@ -176,10 +178,7 @@ func listFiles(base, dir string) ([]string, error) {
 	return files, err
 }
 
-var (
-	cargoVersion     = regexp.MustCompile(`(?m)^version\s*=\s*"([^"]+)"`)
-	protocolRevision = regexp.MustCompile(`WIRE_PROTOCOL_REVISION: &str = "([^"]+)"`)
-)
+var cargoVersion = regexp.MustCompile(`(?m)^version\s*=\s*"([^"]+)"`)
 
 // field — первая группа первого совпадения re в файле name плана.
 func field(plan map[string][]byte, name string, re *regexp.Regexp) (string, error) {
@@ -300,10 +299,6 @@ func run(root, upstream string, check bool) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	protocol, err := field(plan, "shared/wire_protocol.rs", protocolRevision)
-	if err != nil {
-		return 0, err
-	}
 	header := []string{
 		"# Версия ядра CSQTT, перенесённого в core/.",
 		"# Файл создаётся командой go run ./scripts/vendorcore — руками не править.",
@@ -312,7 +307,6 @@ func run(root, upstream string, check bool) (int, error) {
 		"commit   = " + version.Commit,
 		"date     = " + version.Date,
 		"version  = " + coreVersion,
-		"protocol = " + protocol,
 		fmt.Sprintf("files    = %d", len(plan)),
 		fmt.Sprintf("rules    = %d", len(rules)),
 		fmt.Sprintf("added    = %d", len(added)),
@@ -402,8 +396,8 @@ func run(root, upstream string, check bool) (int, error) {
 		}
 	}
 
-	script.Color(script.Green, fmt.Sprintf("Ядро CSQTT %s (%s) перенесено в core/: файлов %d, правил %d, своих файлов %d.",
-		coreVersion, protocol, len(plan)-1, len(rules), len(added)))
+	script.Color(script.Green, fmt.Sprintf("Ядро CSQTT %s перенесено в core/: файлов %d, правил %d, своих файлов %d.",
+		coreVersion, len(plan)-1, len(rules), len(added)))
 	script.Sayf("Исключено: %d", len(excludedFiles))
 	script.Sayf("Апстрим: %s от %s", version.Commit, version.Date)
 	if version.Dirty {

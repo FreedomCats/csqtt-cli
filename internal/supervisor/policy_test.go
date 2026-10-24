@@ -76,8 +76,8 @@ func TestServerErrorText(t *testing.T) {
 		err  ServerError
 		want string
 	}{
-		{ServerError{"handshake_rejected", "FATAL_AUTH: пароль привязан к другому устройству"},
-			"сервер CSQTT отказал в подключении: пароль привязан к другому устройству"},
+		{ServerError{"handshake_rejected", "FATAL_AUTH: срок действия пароля истёк"},
+			"сервер CSQTT отказал в подключении: срок действия пароля истёк"},
 		{ServerError{"handshake_timeout", "FATAL_HANDSHAKE: сервер не подтвердил конфигурацию"},
 			"сервер не подтвердил конфигурацию"},
 		{ServerError{"other", "что-то: случилось"}, "что-то: случилось"},
