@@ -62,6 +62,10 @@ type DNSGuard struct {
 	appID   string
 	rules   []*wf.Rule // стоят в сессии
 	state   guardState
+
+	// step — ради теста перехода: зовётся после каждого правила, которое
+	// встало (added) или снято, пока g.mu взят.
+	step func(r *wf.Rule, added bool)
 }
 
 // guardState — какой набор правил стоит в сессии.
@@ -158,6 +162,9 @@ func (g *DNSGuard) replaceLocked(state guardState, what string, rules []*wf.Rule
 			g.rules = append(g.rules, left...)
 			return errors.Join(err, derr)
 		}
+		if g.step != nil {
+			g.step(r, true)
+		}
 	}
 	old := g.rules
 	g.rules, g.state = rules, state
@@ -195,6 +202,10 @@ func (g *DNSGuard) deleteLocked(rules []*wf.Rule) ([]*wf.Rule, error) {
 		if err := g.session.DeleteRule(r.ID); err != nil && !errors.Is(err, windows.Errno(fwpEFilterNotFound)) {
 			left = append(left, r)
 			errs = append(errs, err)
+			continue
+		}
+		if g.step != nil {
+			g.step(r, false)
 		}
 	}
 	if err := errors.Join(errs...); err != nil {

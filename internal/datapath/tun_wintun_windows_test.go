@@ -49,7 +49,8 @@ var (
 // Настоящий адаптер: Open создаёт его, Start даёт адрес /32, MTU, маршруты
 // и DNS, пакеты ходят между программой и «ядром» на loopback через мост в
 // обе стороны, IPv6 отбрасывается, Suspend снимает маршруты и DNS, повторный
-// Start возвращает их, Close убирает адаптер целиком.
+// Start возвращает их, UpdateDNS дважды подряд меняет DNS адаптера, Close
+// убирает адаптер целиком.
 func TestWintunAdapter(t *testing.T) {
 	if os.Getenv(wintunTestEnv) != "1" {
 		t.Skipf("тест с настоящим адаптером Wintun: %s=1, права администратора и %s рядом с тестовым бинарём", wintunTestEnv, WintunDLL)
@@ -141,6 +142,18 @@ func TestWintunAdapter(t *testing.T) {
 	}
 	expectWintunState(t, luid, "после Suspend", addr, false, nil)
 	start("Start после Suspend")
+
+	// DNS на ходу дважды подряд: DNS адаптера заменяется, адрес и маршруты
+	// остаются.
+	for i, next := range [][]netip.Addr{
+		{netip.MustParseAddr("192.0.2.54"), netip.MustParseAddr("192.0.2.55")},
+		{netip.MustParseAddr("192.0.2.56")},
+	} {
+		if err := w.UpdateDNS(next); err != nil {
+			t.Fatalf("UpdateDNS %d: %v", i+1, err)
+		}
+		expectWintunState(t, luid, fmt.Sprintf("после UpdateDNS %d", i+1), addr, true, next)
+	}
 
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)

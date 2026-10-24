@@ -3,11 +3,14 @@ package winsys
 import (
 	"net/netip"
 	"runtime"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/tailscale/wf"
+	"golang.org/x/sys/windows"
+	"golang.zx2c4.com/wireguard/windows/tunnel/winipcfg"
 )
 
 // Правила — без WFP: на каждом из четырёх слоёв запрет порта 53 по UDP
@@ -347,6 +350,173 @@ func TestDNSGuardReplaceRollback(t *testing.T) {
 	if inSession := sublayerRules(t, g); inSession != want {
 		t.Errorf("в подслое WFP правил %d, ждали %d — новые не сняты", inSession, want)
 	}
+}
+
+// DNS на ходу на настоящем WFP: резолверы меняются дважды подряд тем же
+// порядком, что у Tun.applyDNS, — сначала пустить прежние и новые, потом
+// только новые. После каждого правила, которое встало или снято, в подслое
+// на каждом слое есть запрет порта 53, разрешение своему процессу и
+// резолверы, к которым ведёт DNS системы на этом шаге, — мига без защиты нет.
+// В конце перехода разрешены ровно новые резолверы.
+//
+// Шагов около сотни, и перебор фильтров WFP после каждого занимает секунды,
+// поэтому к резолверам теста добавлены нынешние резолверы системы: DNS
+// машины на это время не закрывается.
+func TestDNSGuardChangeDNS(t *testing.T) {
+	g, err := OpenDNSGuard()
+	if err != nil {
+		t.Skipf("сессия WFP не открылась (нужны права администратора): %v", err)
+	}
+	defer g.Close()
+	a := netip.MustParseAddr("192.0.2.53")
+	b := netip.MustParseAddr("198.51.100.53")
+	c := netip.MustParseAddr("203.0.113.53")
+	sys := systemResolvers(t)
+	with := func(dns ...netip.Addr) []netip.Addr { return append(dns, sys...) }
+
+	known := map[wf.RuleID]*wf.Rule{}
+	var keep []netip.Addr
+	checking, steps, failed := false, 0, false
+	// В крючке t.Fatal нельзя: g.mu взят, и отложенный Close завис бы.
+	g.step = func(r *wf.Rule, added bool) {
+		if added {
+			known[r.ID] = r
+		}
+		if !checking || failed {
+			return
+		}
+		steps++
+		if problem := guardGap(t, g, known, keep, false); problem != "" {
+			failed = true
+			t.Errorf("шаг %d (%q, встало %v): %s", steps, r.Name, added, problem)
+		}
+	}
+
+	if err := g.Enable(with(a)); err != nil {
+		t.Fatalf("первый Enable: %v", err)
+	}
+	checking = true
+	for _, s := range []struct {
+		what      string
+		dns, keep []netip.Addr
+	}{
+		{"прежние и новые", with(a, b), with(a)},
+		{"только новые", with(b), with(b)},
+		{"второй раз: прежние и новые", with(b, c), with(b)},
+		{"второй раз: только новые", with(c), with(c)},
+	} {
+		keep = s.keep
+		if err := g.Enable(s.dns); err != nil {
+			t.Fatalf("%s: Enable: %v", s.what, err)
+		}
+		if problem := guardGap(t, g, known, s.dns, true); problem != "" {
+			t.Errorf("%s: после перехода %s", s.what, problem)
+		}
+		if n := sublayerRules(t, g); n != 3*len(dnsGuardLayers) {
+			t.Errorf("%s: в подслое правил %d, ждали %d — старые не сняты", s.what, n, 3*len(dnsGuardLayers))
+		}
+	}
+	if steps == 0 {
+		t.Error("крючок перехода не звался")
+	}
+}
+
+// guardGap смотрит, что стоит в подслое WFP, и возвращает, чего не хватает
+// защите DNS: на каждом слое запрет порта 53, разрешение своему процессу,
+// loopback и резолверы keep своего семейства; exact — и никаких других. Правило подслоя, которого нет в known, — тоже
+// ошибка: его поставил не этот тест.
+func guardGap(t *testing.T, g *DNSGuard, known map[wf.RuleID]*wf.Rule, keep []netip.Addr, exact bool) string {
+	t.Helper()
+	all, err := g.session.Rules()
+	if err != nil {
+		return "список правил WFP: " + err.Error()
+	}
+	type layerState struct {
+		block, self, loopback bool
+		permitted             map[netip.Addr]bool
+	}
+	layers := map[wf.LayerID]*layerState{}
+	for _, l := range dnsGuardLayers {
+		layers[l.id] = &layerState{permitted: map[netip.Addr]bool{}}
+	}
+	for _, inSession := range all {
+		if inSession.Sublayer != dnsGuardSublayer {
+			continue
+		}
+		r, ok := known[inSession.ID]
+		if !ok {
+			return "в подслое чужое правило " + inSession.Name
+		}
+		st := layers[r.Layer]
+		switch {
+		case r.Action == wf.ActionBlock:
+			st.block = true
+		case strings.Contains(r.Name, "DNS самого"):
+			st.self = true
+		default:
+			for _, m := range r.Conditions {
+				switch v := m.Value.(type) {
+				case netip.Addr:
+					if v.IsLoopback() {
+						st.loopback = true
+					} else {
+						st.permitted[v] = true
+					}
+				case netip.Prefix:
+					if v.Addr().IsLoopback() {
+						st.loopback = true
+					}
+				}
+			}
+		}
+	}
+	for _, l := range dnsGuardLayers {
+		st := layers[l.id]
+		switch {
+		case !st.block:
+			return l.name + ": нет запрета порта 53"
+		case !st.self:
+			return l.name + ": нет разрешения своему процессу"
+		case !st.loopback:
+			return l.name + ": нет loopback"
+		}
+		want := 0
+		for _, a := range keep {
+			if a.Is6() != l.ipv6 {
+				continue
+			}
+			want++
+			if !st.permitted[a] {
+				return l.name + ": не разрешён резолвер " + a.String()
+			}
+		}
+		if exact && len(st.permitted) != want {
+			return l.name + ": разрешены лишние резолверы"
+		}
+	}
+	return ""
+}
+
+// systemResolvers — резолверы, которые сейчас стоят у интерфейсов системы,
+// без заглушек fec0:0:0:ffff::1–3, которые Windows показывает у интерфейса
+// без DNS IPv6.
+func systemResolvers(t *testing.T) []netip.Addr {
+	t.Helper()
+	placeholder := netip.MustParsePrefix("fec0:0:0:ffff::/64")
+	ifaces, err := winipcfg.GetAdaptersAddresses(windows.AF_UNSPEC, winipcfg.GAAFlagDefault)
+	if err != nil {
+		t.Fatalf("интерфейсы системы: %v", err)
+	}
+	var out []netip.Addr
+	for _, iface := range ifaces {
+		for d := iface.FirstDNSServerAddress; d != nil; d = d.Next {
+			a, ok := netip.AddrFromSlice(d.Address.IP())
+			if a = a.Unmap(); ok && !placeholder.Contains(a) && !slices.Contains(out, a) {
+				out = append(out, a)
+			}
+		}
+	}
+	return out
 }
 
 // sublayerRules — сколько правил стоит в нашем подслое WFP.
