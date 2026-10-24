@@ -39,8 +39,9 @@ var osTitles = map[string]string{"windows": "Windows", "linux": "Linux"}
 
 var archTitles = map[string]string{"amd64": "x86-64", "arm64": "ARM64", "386": "x86"}
 
-// osNotes — оговорка к системе, как в README.
-var osNotes = map[string]string{"windows": "только режим `socks`"}
+// osNotes — оговорка к системе, как в README. Сейчас оговорок нет: с 0.3.0 на
+// Windows работает и режим tun.
+var osNotes = map[string]string{}
 
 func main() {
 	dir := flag.String("dir", "dist", "каталог релиза")

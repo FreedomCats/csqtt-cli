@@ -19,8 +19,12 @@ func writeFiles(t *testing.T, names ...string) string {
 }
 
 // Порядок — Windows, Linux, незнакомая ОС, исходники, суммы, а не
-// алфавит; лишние файлы в каталоге не мешают.
+// алфавит; лишние файлы в каталоге не мешают; оговорка к системе — в скобках
+// после архитектуры.
 func TestRun(t *testing.T) {
+	saved := osNotes
+	osNotes = map[string]string{"freebsd": "не проверялась"}
+	t.Cleanup(func() { osNotes = saved })
 	dir := writeFiles(t,
 		"csqtt-cli_v0.2.0_freebsd_amd64.tar.gz",
 		"csqtt-cli_v0.2.0_linux_arm64.tar.gz",
@@ -35,10 +39,10 @@ func TestRun(t *testing.T) {
 	}
 	const d = "https://github.com/owner/repo/releases/download/v0.2.0/"
 	want := "## Скачать\n\n" +
-		"- **Windows** (x86-64, только режим `socks`): [csqtt-cli_v0.2.0_windows_amd64.zip](" + d + "csqtt-cli_v0.2.0_windows_amd64.zip)\n" +
+		"- **Windows** (x86-64): [csqtt-cli_v0.2.0_windows_amd64.zip](" + d + "csqtt-cli_v0.2.0_windows_amd64.zip)\n" +
 		"- **Linux** (x86-64): [csqtt-cli_v0.2.0_linux_amd64.tar.gz](" + d + "csqtt-cli_v0.2.0_linux_amd64.tar.gz)\n" +
 		"- **Linux** (ARM64): [csqtt-cli_v0.2.0_linux_arm64.tar.gz](" + d + "csqtt-cli_v0.2.0_linux_arm64.tar.gz)\n" +
-		"- **freebsd** (x86-64): [csqtt-cli_v0.2.0_freebsd_amd64.tar.gz](" + d + "csqtt-cli_v0.2.0_freebsd_amd64.tar.gz)\n" +
+		"- **freebsd** (x86-64, не проверялась): [csqtt-cli_v0.2.0_freebsd_amd64.tar.gz](" + d + "csqtt-cli_v0.2.0_freebsd_amd64.tar.gz)\n" +
 		"- **Исходники**: [zip](https://github.com/owner/repo/archive/refs/tags/v0.2.0.zip) · " +
 		"[tar.gz](https://github.com/owner/repo/archive/refs/tags/v0.2.0.tar.gz)\n" +
 		"- **Контрольные суммы SHA-256**: [SHA256SUMS.txt](" + d + "SHA256SUMS.txt)\n" +
