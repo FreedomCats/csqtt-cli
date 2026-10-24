@@ -528,17 +528,21 @@ func TestConnectTunAllowLeak(t *testing.T) {
 
 // Где защиты DNS и kill-switch ещё нет (Windows до W5), tun без -allow-leak —
 // отказ до резерва адаптера, с готовыми командами: тот же запуск с
-// -allow-leak и socks. Меню узнаёт отказ по типу и предложит socks.
+// -allow-leak и socks. Меню узнаёт отказ по типу и предложит socks. Без
+// прав отказ сразу говорит и о них.
 func TestConnectTunWithoutGuardNeedsAllowLeak(t *testing.T) {
 	for _, c := range []struct {
 		name, want string
 		args       []string
+		noRoot     bool
 	}{
-		{"режим из профиля", "csqtt-cli connect -allow-leak -config %s home;", nil},
-		{"режим флагом", "csqtt-cli connect -allow-leak -datapath tun -config %s home;", []string{"-datapath", "tun"}},
+		{"режим из профиля", "подключиться так: csqtt-cli connect -allow-leak -config %s home;", nil, false},
+		{"режим флагом", "подключиться так: csqtt-cli connect -allow-leak -datapath tun -config %s home;", []string{"-datapath", "tun"}, false},
+		{"без прав", "подключиться так, " + adminHint + " csqtt-cli connect -allow-leak -config %s home;", nil, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			s := stubTun(t)
+			s.root = !c.noRoot
 			withTunGuard(t, errors.New("на Windows он пока работает без защиты от утечки DNS и kill-switch"))
 			te := newTestEnv(t)
 			te.addHome()

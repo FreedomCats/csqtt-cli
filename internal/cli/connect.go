@@ -284,9 +284,14 @@ func tunRequirementsError(req datapath.Requirements, from, profile, configPath s
 		if modeNamed {
 			withLeak = "-allow-leak -datapath tun " + args
 		}
+		// Прав нет — сказать сразу и о них, а не следующим отказом.
+		connectSo := "подключиться так:"
+		if req.Admin && !isRoot() {
+			connectSo = "подключиться так, " + adminHint
+		}
 		return &tunRefusal{err: fmt.Errorf("%s: режим tun — весь трафик системы: %w, и DNS-запросы и трафик системы "+
-			"могут уходить мимо туннеля; подключиться так: %s connect %s; или только SOCKS5: %s",
-			from, tunGuardMissing, app.Name, withLeak, socks)}
+			"могут уходить мимо туннеля; %s %s connect %s; или только SOCKS5: %s",
+			from, tunGuardMissing, connectSo, app.Name, withLeak, socks)}
 	}
 	if req.Admin && !isRoot() {
 		return &tunRefusal{needsRoot: true, err: fmt.Errorf("%s: режиму tun — весь трафик системы — %s %s connect %s; "+

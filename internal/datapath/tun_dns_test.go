@@ -431,6 +431,38 @@ func TestTunBlocksIPv6(t *testing.T) {
 	}
 }
 
+// Маршруты IPv6 встали (Windows): IPv6 уходит в адаптер, защите закрывать
+// нечего, и журнал говорит, что IPv6 отбрасывается. Не встали (IPv6 на
+// адаптере выключен) — IPv6 закрывает защита, как на Linux.
+func TestTunDropsIPv6WhenRouted(t *testing.T) {
+	ctx := context.Background()
+	for _, routes6 := range []bool{true, false} {
+		w, f, g := dnsTun(t, true)
+		f.routes6 = routes6
+		blocker := &ipv6DNSGuard{fakeDNSGuard: g, block: routes6}
+		w.opts.DNSGuard = blocker
+		var logged []string
+		w.opts.Logf = func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
+
+		if err := w.Start(ctx, conf("192.0.2.2", "198.51.100.53")); err != nil {
+			t.Fatalf("маршруты IPv6 %v: Start: %v", routes6, err)
+		}
+		events := f.takeEvents()
+		blocked := slices.Contains(events, "block6 true")
+		dropped := countContaining(logged, "IPv6 системы уходит в адаптер и отбрасывается")
+		closed := countContaining(logged, "IPv6 системы наружу закрыт")
+		if routes6 && (blocked || dropped != 1 || closed != 0) {
+			t.Errorf("маршруты IPv6 есть: события %q, журнал %q", events, logged)
+		}
+		if !routes6 && (!blocked || dropped != 0 || closed != 1) {
+			t.Errorf("маршрутов IPv6 нет: события %q, журнал %q", events, logged)
+		}
+		if err := w.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func countContaining(lines []string, sub string) int {
 	n := 0
 	for _, l := range lines {

@@ -31,8 +31,9 @@ const bridgeRetry = 100 * time.Millisecond
 //
 // Мост переживает попытки: ядро меняется, Link и адаптер — нет.
 type tunBridge struct {
-	done chan struct{}
-	wg   sync.WaitGroup
+	done     chan struct{}
+	stopOnce sync.Once
+	wg       sync.WaitGroup
 }
 
 // startBridge запускает мост. Остановка — stop, затем закрыть адаптер и
@@ -52,14 +53,8 @@ func startBridge(dev packetDevice, link *Link, logf func(string, ...any)) *tunBr
 }
 
 // stop говорит горутинам моста выйти на ближайшей ошибке. Повторный вызов
-// безвреден.
-func (b *tunBridge) stop() {
-	select {
-	case <-b.done:
-	default:
-		close(b.done)
-	}
-}
+// безвреден, в том числе одновременный.
+func (b *tunBridge) stop() { b.stopOnce.Do(func() { close(b.done) }) }
 
 // wait ждёт выхода горутин моста.
 func (b *tunBridge) wait() { b.wg.Wait() }

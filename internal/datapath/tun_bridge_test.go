@@ -98,6 +98,19 @@ func (l *bridgeLog) count(sub string) int {
 	return countContaining(l.lines, sub)
 }
 
+// await ждёт до wait, пока строк с sub не станет want, и отдаёт их число:
+// мост пишет в журнал из своей горутины, после того как пакет уже дошёл.
+func (l *bridgeLog) await(sub string, want int, wait time.Duration) int {
+	deadline := time.Now().Add(wait)
+	for {
+		n := l.count(sub)
+		if n >= want || time.Now().After(deadline) {
+			return n
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // runBridge — мост между fakeDevice и Link с поддельным ядром; останавливается
 // в Cleanup так же, как его останавливает адаптер.
 func runBridge(t *testing.T) (*fakeDevice, *Link, *bridgeLog, func() bool) {
@@ -215,7 +228,8 @@ func TestBridgeRetriesDeviceErrors(t *testing.T) {
 	if n := log.count("запись в адаптер: кольцо Wintun занято"); n != 1 {
 		t.Errorf("строк о сбое записи %d, ждали одну", n)
 	}
-	if n := log.count("снова работает после 2 сбоев"); n != 1 {
+	// Строка о восстановлении пишется после Write, а пакет уже в out.
+	if n := log.await("снова работает после 2 сбоев", 1, time.Second); n != 1 {
 		t.Errorf("строк о восстановлении %d", n)
 	}
 

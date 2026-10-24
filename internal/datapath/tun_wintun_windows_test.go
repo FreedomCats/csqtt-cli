@@ -25,9 +25,11 @@ import (
 //	go test -c -o build/out/datapath.test.exe ./internal/datapath
 //	$env:CSQTT_TEST_WINTUN = "1"; build/out/datapath.test.exe -test.run Wintun -test.v
 //
-// Трафик машины тест не трогает: маршруты — на документационные префиксы
+// Трафик машины тест не забирает: маршруты — на документационные префиксы
 // (tunRoutes), GUID и мьютекс — свои, так что работающему csqtt-cli он не
-// мешает.
+// мешает. Но DNS машины на время теста медленнее: у адаптера метрика 0
+// (SetTunnelRoutes), и клиент DNS Windows первым спрашивает его резолвер
+// 192.0.2.53, которого нет, — запросы ждут, пока он не ответит.
 const wintunTestEnv = "CSQTT_TEST_WINTUN"
 
 // wintunTestGUID — GUID тестового адаптера, не winsys.AdapterGUID.

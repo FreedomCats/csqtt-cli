@@ -9,10 +9,6 @@ import (
 	"github.com/FreedomCats/csqtt-cli/internal/app"
 )
 
-// realTunLockName — мьютекс работающего csqtt-cli (tunLockName до
-// TestMain).
-const realTunLockName = `Global\` + app.Name + "-wintun"
-
 func testTunLockName(pid int) string {
 	return `Global\` + app.Name + "-test-wintun-" + strconv.Itoa(pid)
 }

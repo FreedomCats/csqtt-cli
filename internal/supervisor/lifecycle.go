@@ -106,7 +106,8 @@ type Options struct {
 	Config coreproc.Config
 
 	// Link или TunFD — канал пакетов с ядром, ровно один из двух: Link —
-	// loopback (socks), TunFD — дескриптор адаптера (tun на Linux).
+	// loopback (socks и tun на Windows), TunFD — дескриптор адаптера (tun
+	// на Linux).
 	Link  Link
 	TunFD TunFD
 

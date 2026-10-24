@@ -21,6 +21,8 @@ type fakeAdapter struct {
 	configureErr error
 	// closeGate — если задан, close ждёт его закрытия.
 	closeGate chan struct{}
+	// routes6 — addRoutes ставит и маршруты IPv6, как на Windows (dropsIPv6).
+	routes6 bool
 
 	// DNS системы и общий с fakeDNSGuard журнал (tun_dns_test.go).
 	routed    bool
@@ -32,7 +34,8 @@ type fakeAdapter struct {
 }
 
 func (f *fakeAdapter) adapter() *tunAdapter {
-	return &tunAdapter{
+	var a *tunAdapter
+	a = &tunAdapter{
 		configure: func(addr netip.Addr) error {
 			f.mu.Lock()
 			defer f.mu.Unlock()
@@ -48,6 +51,7 @@ func (f *fakeAdapter) adapter() *tunAdapter {
 			f.routesAdded++
 			f.routed = true
 			f.events = append(f.events, "routes")
+			a.dropsIPv6 = f.routes6
 			return nil
 		},
 		removeRoutes: func() error {
@@ -71,6 +75,7 @@ func (f *fakeAdapter) adapter() *tunAdapter {
 			return nil
 		},
 	}
+	return a
 }
 
 func (f *fakeAdapter) state() (configured []netip.Addr, added, removed, closed int) {

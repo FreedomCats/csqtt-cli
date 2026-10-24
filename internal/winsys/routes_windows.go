@@ -21,18 +21,17 @@ import (
 // префикса, а снять их можно, не трогая чужого.
 //
 // Если на адаптере нет IPv6 (протокол отвязан от него или выключен в системе),
-// маршруты IPv6 пропускаются, и logf получает строку об этом: блокировать
-// IPv6 через туннель тогда нечем.
-func SetTunnelRoutes(luid uint64, routes []netip.Prefix, logf func(string, ...any)) error {
+// маршруты IPv6 пропускаются. routed6 говорит, встали ли маршруты IPv6:
+// без них IPv6 машины идёт мимо адаптера, и закрывать его — дело защиты DNS.
+func SetTunnelRoutes(luid uint64, routes []netip.Prefix) (routed6 bool, err error) {
 	l := winipcfg.LUID(luid)
 	for _, family := range routeFamilies(routes) {
 		ipif, err := l.IPInterface(family)
 		if family == windows.AF_INET6 && errors.Is(err, windows.ERROR_NOT_FOUND) {
-			logf("[TUN] IPv6 на адаптере выключен: маршруты IPv6 не поставлены, IPv6 машины идёт мимо туннеля")
 			continue
 		}
 		if err != nil {
-			return fmt.Errorf("параметры интерфейса %s: %w", familyName(family), err)
+			return false, fmt.Errorf("параметры интерфейса %s: %w", familyName(family), err)
 		}
 		for _, r := range routes {
 			if r.Addr().Is4() != (family == windows.AF_INET) {
@@ -40,16 +39,19 @@ func SetTunnelRoutes(luid uint64, routes []netip.Prefix, logf func(string, ...an
 			}
 			err := l.AddRoute(r.Masked(), unspecified(family), 0)
 			if err != nil && !errors.Is(err, windows.ERROR_OBJECT_ALREADY_EXISTS) {
-				return fmt.Errorf("маршрут %s: %w", r, err)
+				return false, fmt.Errorf("маршрут %s: %w", r, err)
 			}
 		}
 		ipif.UseAutomaticMetric = false
 		ipif.Metric = 0
 		if err := ipif.Set(); err != nil {
-			return fmt.Errorf("метрика интерфейса %s: %w", familyName(family), err)
+			return false, fmt.Errorf("метрика интерфейса %s: %w", familyName(family), err)
+		}
+		if family == windows.AF_INET6 {
+			routed6 = true
 		}
 	}
-	return nil
+	return routed6, nil
 }
 
 // ClearTunnelRoutes снимает то, что поставил SetTunnelRoutes, и возвращает

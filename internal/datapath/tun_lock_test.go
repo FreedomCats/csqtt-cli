@@ -19,6 +19,10 @@ const tunHelperEnv = "CSQTT_TUN_HELPER"
 // tunLockEnv — имя блокировки адаптера, которое тест передаёт помощнику.
 const tunLockEnv = "CSQTT_TUN_LOCK"
 
+// realTunLockName — блокировка работающего csqtt-cli: tunLockName до того,
+// как TestMain подменит его тестовым.
+var realTunLockName string
+
 // helperRefused — код выхода помощника, которому отказали.
 const helperRefused = 3
 
@@ -26,6 +30,7 @@ const helperRefused = 3
 // (realTunLockName) держит работающий csqtt-cli, и тесты падали бы ложно, а
 // заняв её, мешали бы ему. Помощник берёт имя у теста.
 func TestMain(m *testing.M) {
+	realTunLockName = tunLockName
 	tunLockName = testTunLockName(os.Getpid())
 	if name, ok := os.LookupEnv(tunLockEnv); ok {
 		tunLockName = name

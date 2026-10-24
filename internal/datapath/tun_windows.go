@@ -106,14 +106,12 @@ func openTunAdapter(name string, logf func(string, ...any)) (*tunAdapter, error)
 	routes := tunRoutes
 	dnsSet := false
 
-	return &tunAdapter{
+	adapter := &tunAdapter{
 		configure: func(addr netip.Addr) error {
 			return winsys.ConfigureAdapter(luid, []netip.Addr{addr}, TunnelMTU, logf)
 		},
-		addRoutes:    func() error { return winsys.SetTunnelRoutes(luid, routes, logf) },
 		removeRoutes: func() error { return winsys.ClearTunnelRoutes(luid, routes) },
 		routes:       routes,
-		dropsIPv6:    true,
 		setDNS: func(servers []netip.Addr) error {
 			if err := winsys.SetAdapterDNS(luid, servers); err != nil {
 				return err
@@ -153,7 +151,16 @@ func openTunAdapter(name string, logf func(string, ...any)) (*tunAdapter, error)
 			release()
 			return err
 		},
-	}, nil
+	}
+	// IPv6 уходит в адаптер и отбрасывается мостом, только если маршруты
+	// IPv6 встали: с IPv6, выключенным на адаптере, их нет, и закрывать IPv6
+	// машины должна защита DNS (Tun.blockIPv6).
+	adapter.addRoutes = func() error {
+		routed6, err := winsys.SetTunnelRoutes(luid, routes)
+		adapter.dropsIPv6 = routed6
+		return err
+	}
+	return adapter, nil
 }
 
 // explainWintun дописывает к отказу создания адаптера, где должна лежать
