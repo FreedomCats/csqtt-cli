@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	csqttcli "github.com/FreedomCats/csqtt-cli"
 	"github.com/FreedomCats/csqtt-cli/internal/config"
 )
 
@@ -154,6 +155,35 @@ func TestConnectServerRejected(t *testing.T) {
 	}
 	if strings.Contains(stdout, "переподключение") {
 		t.Errorf("отказ сервера повторяли:\n%s", stdout)
+	}
+}
+
+// Сервер молчит на первом подключении: VK выдал креды, а ответа нет — connect
+// останавливает ядро и выходит с ошибкой, версией ядра и причинами, без
+// повторов.
+func TestConnectServerSilent(t *testing.T) {
+	te := newTestEnv(t)
+	socksHome(t, te)
+	te.core = "silent"
+	te.serverSilence = 100 * time.Millisecond
+	code, stdout, stderr := te.run("connect", "-v")
+	if code != exitError {
+		t.Fatalf("код %d:\n%s\n%s", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		"сервер CSQTT не отвечает", "VK выдал креды TURN",
+		"ядро csqtt-cli 1.2.3 — CSQTT " + csqttcli.CoreVersion, "сервер нужен той же версии",
+		"неверный адрес или порт", "csqtt-cli profile show home", "выключен или недоступен",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("нет %q:\n%s", want, stderr)
+		}
+	}
+	if strings.Contains(stdout, "переподключение") {
+		t.Errorf("молчание на первом подключении повторяли:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "ядро остановилось") {
+		t.Errorf("ядру не послали STOP:\n%s", stdout)
 	}
 }
 

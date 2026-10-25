@@ -5,6 +5,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	csqttcli "github.com/FreedomCats/csqtt-cli"
 )
 
 // runCLI прогоняет команду с буферами вместо потоков процесса.
@@ -214,6 +216,10 @@ func TestVersion(t *testing.T) {
 	}
 	if !strings.HasPrefix(stdout, "csqtt-cli 1.2.3 (abcdef0)\n") {
 		t.Errorf("первая строка версии:\n%s", stdout)
+	}
+	// Версия ядра — из core/CORE_VERSION, как у сборки ядра.
+	if want := "\nядро: CSQTT " + csqttcli.CoreVersion + " — сервер CSQTT нужен той же версии\n"; !strings.Contains(stdout, want) {
+		t.Errorf("нет строки о ядре %q:\n%s", want, stdout)
 	}
 }
 

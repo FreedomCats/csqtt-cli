@@ -21,7 +21,9 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"time"
 
+	csqttcli "github.com/FreedomCats/csqtt-cli"
 	"github.com/FreedomCats/csqtt-cli/internal/app"
 	"github.com/FreedomCats/csqtt-cli/internal/captcha"
 	"github.com/FreedomCats/csqtt-cli/internal/config"
@@ -98,6 +100,9 @@ type env struct {
 	// ownsConsole подменяет проверку «csqtt-cli один в своей консоли, и её
 	// видит человек» (pause.go). Пусто — настоящая проверка.
 	ownsConsole func() bool
+	// serverSilence — supervisor.Options.ServerSilence: сколько connect
+	// ждёт ответа сервера. Ноль — умолчание супервизора; короче — в тестах.
+	serverSilence time.Duration
 }
 
 // command — одна команда csqtt-cli.
@@ -513,7 +518,7 @@ func addVerboseFlag(fs *flag.FlagSet) *bool {
 func versionCommand() *command {
 	return &command{
 		name:    "version",
-		summary: "версия и коммит сборки",
+		summary: "версия и коммит сборки, версия ядра CSQTT",
 		run:     runVersion,
 	}
 }
@@ -528,6 +533,7 @@ func runVersion(_ context.Context, e *env, args []string) error {
 	}
 
 	fmt.Fprintf(e.stdout, "%s %s (%s)\n", app.Name, e.build.Version, e.build.Commit)
+	fmt.Fprintf(e.stdout, "ядро: CSQTT %s — сервер CSQTT нужен той же версии\n", csqttcli.CoreVersion)
 	fmt.Fprintf(e.stdout, "сборка: %s %s/%s\n", runtime.Version(), runtime.GOOS, runtime.GOARCH)
 	return nil
 }

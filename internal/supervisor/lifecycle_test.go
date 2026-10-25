@@ -127,10 +127,13 @@ func TestServerRejects(t *testing.T) {
 	}
 }
 
-// Молчание сервера — повод повторить: задержки растут 1, 2, 4 секунды.
-func TestServerSilentRetriesWithBackoff(t *testing.T) {
+// Фатальная ошибка ядра, кроме отказа сервера, — повод повторить: задержки
+// растут 1, 2, 4 секунды. Так ядро 2.5.0 кончает попытку, когда сервер не
+// выдал адрес (handshake_no_config); молчание сервера ошибкой оно не
+// называет вовсе (silence_test.go).
+func TestFatalErrorRetriesWithBackoff(t *testing.T) {
 	silent := join(recStart, recCredentials, []string{
-		fatalLine("handshake_timeout", "FATAL_HANDSHAKE: сервер не подтвердил конфигурацию после 3 попыток"),
+		fatalLine("handshake_no_config", "сервер не выдал TUNCONF для слота; проверьте адресный пул"),
 	})
 	h := newHarness(t, Options{}, silent, silent, silent)
 	if err := h.result(h.run()); err != nil {
@@ -147,7 +150,7 @@ func TestServerSilentRetriesWithBackoff(t *testing.T) {
 	if !errors.As(recs[0].Cause, &se) || se.Rejected() || recs[0].Delay != time.Second {
 		t.Errorf("переподключение: %+v", recs[0])
 	}
-	if got := recs[0].Cause.Error(); got != "сервер не подтвердил конфигурацию после 3 попыток" {
+	if got := recs[0].Cause.Error(); got != "сервер не выдал TUNCONF для слота; проверьте адресный пул" {
 		t.Errorf("причина %q", got)
 	}
 	for i, c := range h.attempts()[:3] {

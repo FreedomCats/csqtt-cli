@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/FreedomCats/csqtt-cli/internal/captcha"
 	"github.com/FreedomCats/csqtt-cli/internal/config"
@@ -142,6 +143,16 @@ func fakeCore(mode string) int {
 		}
 		event("STOPPED", "{}")
 		return 0
+
+	// silent — VK выдал креды, а сервер молчит: ни TUNCONF, ни READY, ни
+	// выхода — ядро ждёт до STOP, как настоящее против сервера другой версии.
+	case "silent":
+		event("PROCESS", fmt.Sprintf(`{"pid":%d}`, os.Getpid()))
+		event("LISTEN", `{"port":9}`)
+		event("PROGRESS", `{"kind":"credentials"}`)
+		fmt.Fprintln(os.Stderr, "[СЕССИЯ #1] DTLS: таймаут рукопожатия за 8000 мс (состояние ClientHello, входящих 0, повторов 16)")
+		event("DTLS", `{"worker":1,"message":"AUTO fallback -> WRAP-SRTP"}`)
+		return waitStop()
 
 	// connected — туннель поднимается и работает до STOP.
 	case "connected":
@@ -337,6 +348,8 @@ type testEnv struct {
 	pipe bool
 	// core — режим поддельного ядра; пусто — ядра нет вовсе.
 	core string
+	// serverSilence — env.serverSilence: срок ответа сервера в connect.
+	serverSilence time.Duration
 
 	// tty — притвориться терминалом: без аргументов и командой menu
 	// открывается меню (menu_test.go).
@@ -407,6 +420,7 @@ func (te *testEnv) env(stdout, stderr io.Writer) *env {
 		e.tty = func() bool { return true }
 	}
 	e.connectRun = te.connectRun
+	e.serverSilence = te.serverSilence
 	e.vkLogin = te.vkLogin
 	if e.vkLogin == nil {
 		e.vkLogin = func(captcha.LoginOptions) (captcha.LoginWindow, error) {

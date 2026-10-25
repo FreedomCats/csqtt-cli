@@ -77,7 +77,9 @@ func (e exitError) ExitCode() int { return int(e) }
 //	                     остановленным, как настоящее, закрывающее сессии;
 //	"hold"             — не выходить и по Stop, пока не убьют (Kill): так
 //	                     ядро в auto_js создаёт звонок или застряло в уборке;
-//	"exit <код>"       — выйти самому, 0 — без ошибки.
+//	"exit <код>"       — выйти самому, 0 — без ошибки;
+//	"sleep <срок>"     — помолчать срок (time.ParseDuration), как ядро,
+//	                     которое ждёт сервер; Stop прерывает.
 //
 // Кончилась запись — ядро живёт до Stop, как настоящее: тогда шлёт STOPPED и
 // выходит.
@@ -137,6 +139,19 @@ func (c *fakeCore) play(script []string) {
 		}
 		if prefix, ok := strings.CutPrefix(step, "wait "); ok {
 			if !c.waitCommand(prefix) {
+				c.msgs <- coreproc.StoppedEvent{}
+				return
+			}
+			continue
+		}
+		if d, ok := strings.CutPrefix(step, "sleep "); ok {
+			pause, err := time.ParseDuration(d)
+			if err != nil {
+				panic("запись ядра: " + step)
+			}
+			select {
+			case <-time.After(pause):
+			case <-c.stopReq:
 				c.msgs <- coreproc.StoppedEvent{}
 				return
 			}

@@ -25,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	csqttcli "github.com/FreedomCats/csqtt-cli"
 	"github.com/FreedomCats/csqtt-cli/internal/coreproc"
 	"github.com/FreedomCats/csqtt-cli/internal/datapath"
 )
@@ -34,6 +35,15 @@ import (
 // перезапуском не лечится; долгий — значит, ядро застряло. Порог —
 // предварительный, его уточнит живой прогон.
 const DefaultDegradedRestart = 30 * time.Second
+
+// DefaultServerSilence — сколько ждать ответа сервера CSQTT с первых кредов VK
+// попытки (ServerSilentError). На живом сервере от кредов до READY — секунда-
+// две. Круг воркера ядра 2.5.0 до «сервер не ответил» — аллокация TURN,
+// рукопожатие DTLS-SRTP до 8 с, в режиме AUTO (умолчание) переход на WRAP-SRTP
+// и GETCONF с ожиданиями 0,4 + 0,8 + 1,6 + 3 с — около 15 с, и не больше 1 с
+// до следующего круга (session.rs, worker.rs). 30 с — два таких круга: сервер,
+// которому нужен WRAP-SRTP, успевает ответить уже на первом.
+const DefaultServerSilence = 30 * time.Second
 
 // startupLogLines — сколько последних строк журнала ядра показать, если оно
 // вышло, не начав работу.
@@ -161,6 +171,10 @@ type Options struct {
 	// DegradedRestart — сколько терпеть StateDegraded до перезапуска ядра.
 	// 0 — DefaultDegradedRestart.
 	DegradedRestart time.Duration
+
+	// ServerSilence — сколько ждать ответа сервера с первых кредов VK
+	// попытки (ServerSilentError). 0 — DefaultServerSilence.
+	ServerSilence time.Duration
 }
 
 // ErrServerRestart — сервер перезапущен из панели (SERVER_RESTART).
@@ -173,8 +187,8 @@ type ServerError struct {
 }
 
 // Rejected — сервер отказал (handshake_rejected): неверный или просроченный
-// пароль, пароль другого устройства, другая версия протокола. Повтор тут не
-// поможет, в отличие от молчания сервера (handshake_timeout).
+// пароль, другая версия протокола. Повтор тут не поможет. Молчание сервера
+// ядро 2.5.0 ошибкой не называет — его замечает цикл (ServerSilentError).
 func (e *ServerError) Rejected() bool { return e.Code == "handshake_rejected" }
 
 // Error — текст ядра без служебной метки FATAL_*: он уже по-русски.
@@ -187,6 +201,33 @@ func (e *ServerError) Error() string {
 		return "сервер CSQTT отказал в подключении: " + msg
 	}
 	return msg
+}
+
+// ServerSilentError — VK выдал креды TURN, а сервер CSQTT за After не ответил
+// ничем: ни TUNCONF, ни READY воркера, ни лимита воркеров (WORKERS). Ядро при
+// этом не выходит и ошибки не шлёт — повторяет рукопожатие без конца. Так
+// выглядят сервер другой версии (метки версии протокола у ядра 2.5.0 нет, и
+// чужой запрос сервер молча отбрасывает), неверный адрес или порт и
+// выключенный сервер; различить их нельзя.
+//
+// Конец Run — только пока туннель в этом Run ни разу не работал (первое
+// подключение) и сервер ни разу не отвечал. Иначе молчание — строка в выводе,
+// одна на эпизод без связи, а попытки идут дальше: сервер этой версии уже
+// отвечал и мог просто перезагружаться.
+type ServerSilentError struct {
+	After time.Duration
+}
+
+func (e *ServerSilentError) Error() string {
+	return fmt.Sprintf("сервер CSQTT не отвечает: VK выдал креды TURN, а сервер молчит %s", seconds(e.After))
+}
+
+// seconds — «30 с»; меньше секунды (только в тестах) — как есть.
+func seconds(d time.Duration) string {
+	if d < time.Second {
+		return d.String()
+	}
+	return fmt.Sprintf("%d с", int(d/time.Second))
 }
 
 // StartupError — ядро вышло, не начав работу (до PROCESS), а в этом Run оно
@@ -307,6 +348,15 @@ type Tunnel struct {
 	// годны, и выход до PROCESS дальше — не их вина. Только горутина цикла.
 	coreStarted bool
 
+	// worked — туннель в этом Run хоть раз работал (StateConnected); heard —
+	// сервер в этом Run хоть раз ответил (TUNCONF, READY, WORKERS,
+	// SERVER_RESTART), пусть туннель и не поднялся. После любого из двух
+	// молчание сервера — не конец Run, а строка в выводе: сервер этой версии
+	// уже отвечал. silenceShown — строка о молчании в этом эпизоде без связи
+	// уже сказана; снимает отметку снова заработавший туннель. Только
+	// горутина цикла.
+	worked, heard, silenceShown bool
+
 	// restart — просьба о перезапуске (Restart), ещё не исполненная. Одной
 	// достаточно: перезапуск, попрошенный дважды, — всё равно один.
 	restart chan error
@@ -352,6 +402,9 @@ func NewTunnel(opts Options) (*Tunnel, error) {
 	}
 	if opts.DegradedRestart <= 0 {
 		opts.DegradedRestart = DefaultDegradedRestart
+	}
+	if opts.ServerSilence <= 0 {
+		opts.ServerSilence = DefaultServerSilence
 	}
 	path := opts.CorePath
 	t := &Tunnel{
@@ -436,7 +489,8 @@ func (t *Tunnel) Hashes() *HashPool { return t.hashes }
 //
 // Остановка по ctx ошибкой не считается и даёт nil. Ошибка — только когда цикл
 // кончился сам: годных хешей не осталось (*HashesExhaustedError), сервер
-// отказал (*ServerError с Rejected), VK не принял токен или отказал иначе
+// отказал (*ServerError с Rejected), сервер молчит, а туннель ещё ни разу не
+// работал и сервер ни разу не отвечал (*ServerSilentError), VK не принял токен или отказал иначе
 // (*TokenRejectedError, *VKError; auto_js), ядро не запускается
 // (*StartupError и ошибка запуска). Прочие
 // отказы попытки ведут к следующей попытке.
@@ -598,10 +652,11 @@ func (t *Tunnel) attempt(ctx context.Context) result {
 	actx, cancel := context.WithCancel(ctx)
 	a := &attempt{tunnel: t, core: core, ctx: actx, socket: socket,
 		fdSent: t.opts.TunFD == nil, fdDone: make(chan error, 1), refdDone: make(chan error, 1),
-		bindIf: cfg.BindIf}
-	// Порядок снятия: таймер, отмена (капча бросает ожидание), горутины.
+		bindIf: cfg.BindIf, captchaDone: make(chan struct{})}
+	// Порядок снятия: таймеры, отмена (капча бросает ожидание), горутины.
 	defer a.wg.Wait()
 	defer cancel()
+	defer a.stopSilenceTimer()
 	defer a.stopDegradedTimer()
 
 	return a.run(ctx.Done())
@@ -713,6 +768,19 @@ type attempt struct {
 	degraded *time.Timer
 	lastLog  []string
 
+	// Молчание сервера (ServerSilentError): silence — срок, который идёт с
+	// первых кредов VK попытки, пока сервер не ответил; credentials — креды
+	// были; answered — сервер ответил, и срок больше не нужен; silent — срок
+	// вышел. captchas — сколько капч решается сейчас: пока решается хоть
+	// одна, срок не идёт, а после — начинается заново. captchaDone — капча
+	// решена (из её горутины).
+	silence     *time.Timer
+	credentials bool
+	answered    bool
+	silent      bool
+	captchas    int
+	captchaDone chan struct{}
+
 	// rebound — ядру послан BIND_IF с этой причиной, и отказ в его журнале
 	// перезапускает попытку; nil — не посылали.
 	rebound error
@@ -726,9 +794,12 @@ type attempt struct {
 func (a *attempt) run(cancelled <-chan struct{}) result {
 	msgs := a.core.Messages()
 	for msgs != nil {
-		var degradedC <-chan time.Time
+		var degradedC, silenceC <-chan time.Time
 		if a.degraded != nil {
 			degradedC = a.degraded.C
+		}
+		if a.silence != nil {
+			silenceC = a.silence.C
 		}
 		select {
 		case m, ok := <-msgs:
@@ -766,6 +837,11 @@ func (a *attempt) run(cancelled <-chan struct{}) result {
 			a.stopDegradedTimer()
 			a.stop(result{err: fmt.Errorf("туннель без связи дольше %s — ядро перезапускается",
 				a.tunnel.opts.DegradedRestart)})
+		case <-silenceC:
+			a.serverSilent()
+		case <-a.captchaDone:
+			a.captchas--
+			a.armSilence()
 		case <-a.tunnel.abort:
 			// Ждать уборку человек не хочет: ядро убивается, а остановка,
 			// если шла, возвращается сразу.
@@ -897,6 +973,17 @@ func (a *attempt) handle(m coreproc.Message) {
 	}
 
 	switch e := m.(type) {
+	case coreproc.ProgressEvent:
+		if e.Kind == "credentials" && !a.credentials {
+			a.credentials = true
+			a.armSilence()
+		}
+	case coreproc.NetworkSuspectEvent:
+		// Серия таймаутов TURN: не доходим до VK, а не сервер молчит —
+		// срок начинается заново.
+		a.armSilence()
+	case coreproc.ReadyEvent, coreproc.WorkersEvent:
+		a.serverAnswered()
 	case coreproc.PIDEvent:
 		a.started, t.coreStarted = true, true
 		a.pid = e.PID
@@ -908,6 +995,7 @@ func (a *attempt) handle(m coreproc.Message) {
 			t.opts.Link.SetCorePort(uint16(e.Port))
 		}
 	case coreproc.ConfigEvent:
+		a.serverAnswered()
 		a.config(e)
 	case coreproc.ErrorEvent:
 		if e.Fatal {
@@ -917,6 +1005,7 @@ func (a *attempt) handle(m coreproc.Message) {
 	case coreproc.CallUnavailableEvent:
 		a.callUnavailable(e)
 	case coreproc.ServerRestartEvent:
+		t.heard = true
 		a.stop(result{err: ErrServerRestart})
 	case coreproc.CaptchaRequest:
 		a.captcha(e)
@@ -939,9 +1028,11 @@ func (a *attempt) handle(m coreproc.Message) {
 func (a *attempt) moved(tr Transition) {
 	if tr.To == StateConnected {
 		// Туннель поднялся: задержки, заработанные прошлыми неудачами,
-		// больше не в счёт — и повторы временных ошибок VK тоже.
+		// больше не в счёт — и повторы временных ошибок VK тоже. Эпизод без
+		// связи, если был, кончился.
 		a.tunnel.backoff.reset()
 		a.tunnel.vkRetries.reset()
+		a.tunnel.worked, a.tunnel.silenceShown = true, false
 	}
 	if tr.From == StateDegraded {
 		a.stopDegradedTimer()
@@ -956,6 +1047,54 @@ func (a *attempt) stopDegradedTimer() {
 		a.degraded.Stop()
 		a.degraded = nil
 	}
+}
+
+// armSilence (пере)запускает срок ответа сервера: с первых кредов, после
+// решённой капчи, после подозрения на сеть. Не нужен, пока кредов нет, когда
+// сервер уже ответил, срок в этой попытке уже выходил, ядро
+// останавливается или решается капча.
+func (a *attempt) armSilence() {
+	a.stopSilenceTimer()
+	if !a.credentials || a.answered || a.silent || a.stopping || a.captchas > 0 {
+		return
+	}
+	a.silence = time.NewTimer(a.tunnel.opts.ServerSilence)
+}
+
+func (a *attempt) stopSilenceTimer() {
+	if a.silence != nil {
+		a.silence.Stop()
+		a.silence = nil
+	}
+}
+
+// serverAnswered — от сервера пришёл ответ (TUNCONF, READY, WORKERS): он не
+// молчит, и срок в этой попытке больше не нужен.
+func (a *attempt) serverAnswered() {
+	a.answered, a.tunnel.heard = true, true
+	a.stopSilenceTimer()
+}
+
+// serverSilent — срок вышел, а сервер так и не ответил. Туннель в этом Run ещё
+// не работал, а сервер ни разу не отвечал — конец Run (*ServerSilentError):
+// ядро останавливается, как по Ctrl+C. Иначе — строка в выводе, одна на
+// эпизод без связи, а ядро продолжает стучаться к серверу (§09).
+func (a *attempt) serverSilent() {
+	a.stopSilenceTimer()
+	a.silent = true
+	t := a.tunnel
+	err := &ServerSilentError{After: t.opts.ServerSilence}
+	if !t.worked && !t.heard {
+		a.stop(result{err: err, final: true})
+		return
+	}
+	if t.silenceShown {
+		return
+	}
+	t.silenceShown = true
+	t.logf("сервер CSQTT молчит %s, хотя VK выдал креды TURN: сервер выключен, недоступен "+
+		"или его версия не CSQTT %s, как у ядра клиента; попытки продолжаются",
+		seconds(err.After), csqttcli.CoreVersion)
 }
 
 // config — TUNCONF: первый в попытке поднимает datapath, повторный с другим
@@ -1126,7 +1265,16 @@ func (a *attempt) captcha(req coreproc.CaptchaRequest) {
 		_ = a.core.Send(coreproc.CaptchaFailed("unsupported"))
 		return
 	}
+	// Пока капчу решает человек, срок ответа сервера не идёт.
+	a.captchas++
+	a.stopSilenceTimer()
 	a.wg.Go(func() {
+		defer func() {
+			select {
+			case a.captchaDone <- struct{}{}:
+			case <-a.ctx.Done():
+			}
+		}()
 		token, err := solve(a.ctx, req)
 		if a.ctx.Err() != nil || errors.Is(err, coreproc.ErrCaptchaNoReply) {
 			return // попытка кончилась или ядро этого ответа уже не ждёт
@@ -1168,6 +1316,7 @@ func (a *attempt) stop(res result) {
 	a.stopping, a.res = true, res
 	t.machine.Drain()
 	a.stopDegradedTimer()
+	a.stopSilenceTimer()
 	if !t.opts.Config.AutoJS() {
 		a.wg.Go(func() { _ = a.core.Stop() })
 		return

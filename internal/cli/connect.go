@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	csqttcli "github.com/FreedomCats/csqtt-cli"
 	"github.com/FreedomCats/csqtt-cli/internal/app"
 	"github.com/FreedomCats/csqtt-cli/internal/captcha"
 	"github.com/FreedomCats/csqtt-cli/internal/config"
@@ -385,17 +386,18 @@ func (plan *connectPlan) run(ctx context.Context, e *env, verbose bool) error {
 		Logf:   out.debugf,
 	})
 	tunnel, err := supervisor.NewTunnel(supervisor.Options{
-		CorePath:     plan.corePath,
-		Config:       cfg,
-		Link:         dp.link,
-		TunFD:        dp.tunFD,
-		Datapath:     dp.datapath,
-		Captcha:      solve,
-		OnMessage:    out.message,
-		OnTransition: out.transition,
-		Logf:         out.logf,
-		KillSwitch:   dp.killSwitch,
-		Prepare:      dp.prepare,
+		CorePath:      plan.corePath,
+		Config:        cfg,
+		Link:          dp.link,
+		TunFD:         dp.tunFD,
+		Datapath:      dp.datapath,
+		Captcha:       solve,
+		OnMessage:     out.message,
+		OnTransition:  out.transition,
+		Logf:          out.logf,
+		KillSwitch:    dp.killSwitch,
+		Prepare:       dp.prepare,
+		ServerSilence: e.serverSilence,
 	})
 	if err != nil {
 		return err
@@ -435,7 +437,7 @@ func (plan *connectPlan) run(ctx context.Context, e *env, verbose bool) error {
 		out.line("недоступные звонки: %s; профиль не менялся — заменить хеши: %s profile set %s -hashes",
 			hashNumbers(dead), app.Name, p.Name)
 	}
-	return explainConnectError(err, p.Name, dead)
+	return explainConnectError(err, p.Name, dead, e.build)
 }
 
 // sessionDatapath — datapath сеанса и то, что от него нужно циклу
@@ -484,8 +486,9 @@ func openSocks(p *config.Profile, out *printer) (*sessionDatapath, error) {
 
 // explainConnectError дописывает к ошибке конца подключения, что делать
 // дальше.
-func explainConnectError(err error, profile string, dead []int) error {
+func explainConnectError(err error, profile string, dead []int, build Build) error {
 	var server *supervisor.ServerError
+	var silent *supervisor.ServerSilentError
 	var exhausted *supervisor.HashesExhaustedError
 	var startup *supervisor.StartupError
 	var token *supervisor.TokenRejectedError
@@ -515,6 +518,9 @@ func explainConnectError(err error, profile string, dead []int) error {
 
 	case errors.As(err, &server) && server.Rejected():
 		return fmt.Errorf("%w\n  %s", err, rejectHint(server.Message, profile))
+
+	case errors.As(err, &silent):
+		return fmt.Errorf("%w\n  %s", err, silenceHint(profile, build))
 
 	case errors.As(err, &startup):
 		return fmt.Errorf("%w%s", err, startupHint(startup.Fatal))
@@ -564,6 +570,22 @@ func rejectHint(message, profile string) string {
 	default:
 		return fmt.Sprintf("проверьте пароль подключения и его состояние в панели сервера: %s", setPassword)
 	}
+}
+
+// silenceHint — что делать, когда сервер молчит на первом подключении
+// (*supervisor.ServerSilentError). Метки версии протокола у ядра нет, и сервер
+// другой версии не отказывает, а молчит — так же, как выключенный или
+// по неверному адресу; чаще всего дело в версии: сервер обновляют из
+// Android-приложения одной кнопкой.
+func silenceHint(profile string, build Build) string {
+	cli := app.Name + " " + build.Version
+	if build.Version == "" || build.Version == "dev" {
+		cli = "этого " + app.Name
+	}
+	return fmt.Sprintf("чаще всего это значит, что у сервера другая версия CSQTT: ядро %s — CSQTT %s, "+
+		"а сервер нужен той же версии (сервер новее — нужен %s с его версией ядра, старше — обновите сервер);\n"+
+		"  ещё возможно: неверный адрес или порт сервера в профиле (%s profile show %s), сервер выключен или недоступен",
+		cli, csqttcli.CoreVersion, app.Name, app.Name, profile)
 }
 
 // hashNumbers — «№1, №3».
