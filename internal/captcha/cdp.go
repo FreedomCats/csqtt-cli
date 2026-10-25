@@ -144,7 +144,7 @@ type cdpCapture struct {
 	target    string                // вкладка капчи
 	session   string                // её сессия
 	setupLeft int                   // команд подготовки вкладки без ответа
-	ready     bool                  // страница капчи открывается
+	ready     bool                  // Page.navigate отправлена: окно открыто
 	children  map[string]int        // фреймы и воркеры: команд подготовки без ответа
 	watched   map[requestKey]string // ответы API капчи, тело которых ждём: метод
 }
@@ -250,6 +250,10 @@ func (c *cdpCapture) reply(p pendingCall, m cdpMessage) ([]cdpCommand, *outcome)
 		if c.setupLeft > 0 {
 			return nil, nil
 		}
+		// Окно открыто с этой команды: ответ на неё браузер шлёт, только
+		// когда пришли заголовки страницы, а это ожидание сети, не запуска.
+		// Медленная страница VK — не сбой браузера, и окно ждёт её дальше.
+		c.ready = true
 		return []cdpCommand{c.call(pendingCall{kind: callNavigate}, c.session, "Page.navigate",
 			map[string]any{"url": c.url})}, nil
 
@@ -263,7 +267,6 @@ func (c *cdpCapture) reply(p pendingCall, m cdpMessage) ([]cdpCommand, *outcome)
 			// показали бы страницу ошибки, и он ждал бы впустую.
 			return nil, &outcome{err: fmt.Errorf("страница капчи не загрузилась: %s", r.ErrorText)}
 		}
-		c.ready = true
 		return nil, nil
 
 	case callBody:

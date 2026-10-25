@@ -93,7 +93,63 @@ func newBrowserStand(t *testing.T) *Browser {
 	if headless() {
 		b.extraArgs = []string{"--headless=new"}
 	}
+	warmBrowser(t, b)
 	return b
+}
+
+var warmOnce sync.Once
+
+// browserWarmup — срок первого запуска браузера в прогоне (warmBrowser).
+const browserWarmup = 2 * time.Minute
+
+// warmBrowser один раз за прогон запускает браузер и открывает в нём
+// страницу стенда — не проверка, а подготовка. Первый запуск в прогоне
+// бывает намного дольше прочих: файлов браузера и его библиотек ещё нет в
+// кэше системы, а в CI рядом собираются и идут с -race другие пакеты. Так в
+// CI первый же тест с браузером не уложился в browserStartup (20 с), а
+// следующие в том же прогоне открывали страницу за секунду с небольшим.
+// Тесты проверяют разговор с браузером, а не скорость холодного диска:
+// первому запуску — свой срок, остальным — рабочий.
+func warmBrowser(t *testing.T, b *Browser) {
+	t.Helper()
+	warmOnce.Do(func() {
+		srv := newStand(t)
+		profile, err := newProfile(profilePrefix)
+		if err != nil {
+			t.Logf("прогрев браузера: каталог профиля: %v", err)
+			return
+		}
+		defer removeProfile(profile)
+		start := time.Now()
+		browser, err := b.start(browserArgs(profile, "", captchaWindowSize))
+		if err != nil {
+			t.Logf("прогрев браузера: %v", err)
+			return
+		}
+		defer browser.stop()
+		ctx, cancel := context.WithTimeout(context.Background(), browserWarmup)
+		defer cancel()
+		_, err = captureToken(ctx, browser.out, browser.in, srv.page("checkbox", "fetch"), browserWarmup, nil)
+		t.Logf("прогрев браузера: %s, %v", time.Since(start).Round(time.Millisecond), err)
+	})
+}
+
+// closeWhenOpened — b.started для проверок закрытия окна: браузер получает
+// SIGTERM, как только opened скажет, что страница в нём открылась. Закрывать
+// через срок от запуска нельзя: на занятой машине страница к тому времени
+// могла ещё не открыться, и закрытие верно считалось бы сбоем запуска, а не
+// закрытием окна.
+func closeWhenOpened(opened func() bool) func(pid int) {
+	return func(pid int) {
+		go func() {
+			for deadline := time.Now().Add(30 * time.Second); !opened(); time.Sleep(20 * time.Millisecond) {
+				if time.Now().After(deadline) {
+					return
+				}
+			}
+			_ = syscall.Kill(pid, syscall.SIGTERM)
+		}()
+	}
 }
 
 func TestBrowserToken(t *testing.T) {
@@ -129,6 +185,25 @@ func TestBrowserToken(t *testing.T) {
 			waitProfilesGone(t, before)
 		})
 	}
+}
+
+// Страница VK отвечает дольше срока запуска браузера (медленная сеть): это не
+// сбой браузера — окно открыто с отправки перехода и ждёт страницу дальше.
+func TestBrowserSlowPage(t *testing.T) {
+	b := newBrowserStand(t)
+	srv := newStand(t)
+	before := profilesNow()
+
+	ctx, cancel := context.WithTimeout(context.Background(), browserStartup+30*time.Second)
+	defer cancel()
+	start := time.Now()
+	page := srv.page("checkbox", "fetch") + "&delay=" + (browserStartup + 5*time.Second).String()
+	token, err := b.Solve(ctx, standRequest(page, browserStartup+30*time.Second))
+	if err != nil || token != standToken("checkbox", "fetch") {
+		t.Fatalf("Solve: %q, %v", token, err)
+	}
+	t.Logf("токен за %s", time.Since(start).Round(time.Millisecond))
+	waitProfilesGone(t, before)
 }
 
 // ERROR_LIMIT — сразу исход: окно закрывается, ядро получит отказ.
@@ -192,14 +267,12 @@ func TestBrowserDeadline(t *testing.T) {
 }
 
 // Человек закрыл окно — Chromium выходит с последним окном. Здесь его
-// закрывает SIGTERM: выход тот же, штатный.
+// закрывает SIGTERM, когда страница стенда открылась: выход тот же, штатный.
 func TestBrowserClosedByUser(t *testing.T) {
 	b := newBrowserStand(t)
 	srv := newStand(t)
 	before := profilesNow()
-	b.started = func(pid int) {
-		time.AfterFunc(3*time.Second, func() { _ = syscall.Kill(pid, syscall.SIGTERM) })
-	}
+	b.started = closeWhenOpened(func() bool { return srv.called("componentDone") > 0 })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -257,9 +330,9 @@ func TestBrowserThroughBridge(t *testing.T) {
 		t.Fatalf("ERROR_LIMIT: %v", err)
 	}
 
-	b.started = func(pid int) {
-		time.AfterFunc(2*time.Second, func() { _ = syscall.Kill(pid, syscall.SIGTERM) })
-	}
+	// Две страницы стенд уже отдал этому тесту — ждать третью.
+	shown := srv.called("componentDone")
+	b.started = closeWhenOpened(func() bool { return srv.called("componentDone") > shown })
 	_, err = bridge.Solve(ctx, req("idle"))
 	if !errors.As(err, &ce) || ce.Reason != "closed" {
 		t.Fatalf("закрытое окно: %v", err)

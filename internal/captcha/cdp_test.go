@@ -85,9 +85,6 @@ func openPage(t *testing.T, c *cdpCapture) string {
 
 	nav := setupPage(t, c, cmds[0])
 	mustStep(t, c, replyTo(nav, `{"frameId":"F1","loaderId":"L1"}`))
-	if !c.ready {
-		t.Fatal("после Page.navigate страница не считается открытой")
-	}
 	return "S1"
 }
 
@@ -110,9 +107,17 @@ func setupPage(t *testing.T, c *cdpCapture, attach cdpCommand) cdpCommand {
 	if cmds := mustStep(t, c, replyTo(setup[1], `{}`)); len(cmds) != 0 {
 		t.Fatalf("до ответа на Network.enable отправлено %v", methods(cmds))
 	}
+	if c.opened() {
+		t.Fatal("окно считается открытым до Page.navigate")
+	}
 	nav := mustStep(t, c, replyTo(setup[0], `{}`))
 	if len(nav) != 1 || nav[0].Method != "Page.navigate" || nav[0].SessionID != "S1" {
 		t.Fatalf("после подготовки вкладки: %+v", nav)
+	}
+	// Ответа на Page.navigate браузер ждёт от сети: окно открыто уже с
+	// отправки.
+	if !c.opened() {
+		t.Fatal("после отправки Page.navigate окно не считается открытым")
 	}
 	if p := params(t, nav[0]); !strings.Contains(p, `"url":"https://id.vk.com/not_robot_captcha`) {
 		t.Errorf("Page.navigate: %s", p)
@@ -378,6 +383,7 @@ type fakeBrowser struct {
 	after      []string // сообщения после Page.navigate
 	exitAfter  bool     // после них — закрыть трубу
 	silent     bool     // не отвечать вовсе
+	slowPage   bool     // не отвечать на Page.navigate: страница грузится
 	exitAtOnce bool     // закрыть трубу сразу
 	body       string   // тело на Network.getResponseBody
 }
@@ -413,6 +419,9 @@ func (f fakeBrowser) run(t *testing.T, cmds io.Reader, out io.WriteCloser) {
 		case "Target.attachToTarget":
 			reply(`{"sessionId":"S1"}`)
 		case "Page.navigate":
+			if f.slowPage {
+				continue
+			}
 			reply(`{"frameId":"F"}`)
 			for _, m := range f.after {
 				write(m)
@@ -472,6 +481,16 @@ func TestCaptureToken(t *testing.T) {
 		_, err := runFake(t, ctx, fakeBrowser{silent: true}, 200*time.Millisecond)
 		if !errors.Is(err, ErrBrowser) || time.Since(start) > 5*time.Second {
 			t.Fatalf("ошибка %v за %s, ожидалась ErrBrowser по сроку запуска", err, time.Since(start))
+		}
+	})
+	t.Run("страница грузится дольше срока запуска", func(t *testing.T) {
+		// Ответа на Page.navigate нет — это ожидание сети, не сбой
+		// браузера: окно ждёт до срока ctx.
+		short, stop := context.WithTimeout(ctx, 500*time.Millisecond)
+		defer stop()
+		_, err := runFake(t, short, fakeBrowser{slowPage: true}, 50*time.Millisecond)
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("ошибка %v, ожидался срок ctx", err)
 		}
 	})
 	t.Run("срок запуска после открытой страницы не действует", func(t *testing.T) {

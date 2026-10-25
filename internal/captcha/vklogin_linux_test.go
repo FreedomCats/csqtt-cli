@@ -108,13 +108,12 @@ func TestBrowserLoginFailures(t *testing.T) {
 }
 
 // Человек закрыл окно — ErrLoginClosed, а не срок. Здесь окно закрывает
-// SIGTERM: Chromium выходит так же, как с последним окном.
+// SIGTERM, когда страница входа запрошена у стенда: Chromium выходит так же,
+// как с последним окном.
 func TestBrowserLoginClosed(t *testing.T) {
 	s := newLoginStand(t)
 	b, _, _ := newLoginBrowser(t, s, "idle")
-	b.started = func(pid int) {
-		time.AfterFunc(3*time.Second, func() { _ = syscall.Kill(pid, syscall.SIGTERM) })
-	}
+	b.started = closeWhenOpened(func() bool { authorized, _ := s.hits("idle"); return authorized > 0 })
 	before := loginProfilesNow()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

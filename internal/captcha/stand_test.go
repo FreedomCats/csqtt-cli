@@ -15,7 +15,8 @@ package captcha
 //	idle     — до галочки дело не доходит (закрытие окна, срок);
 //	webdriver — токен говорит, видит ли страница navigator.webdriver.
 //
-// via=xhr — те же запросы через XMLHttpRequest вместо fetch.
+// via=xhr — те же запросы через XMLHttpRequest вместо fetch; delay=<срок> —
+// страница отвечает через столько (медленная сеть).
 
 import (
 	"encoding/json"
@@ -103,6 +104,13 @@ func standToken(scenario, via string) string { return "stand-token-" + scenario 
 func (s *stand) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/not_robot_captcha", func(w http.ResponseWriter, r *http.Request) {
+		if d, err := time.ParseDuration(r.URL.Query().Get("delay")); err == nil {
+			select {
+			case <-time.After(d):
+			case <-r.Context().Done():
+				return
+			}
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		io.WriteString(w, standPage)
 	})
@@ -165,6 +173,19 @@ func (s *stand) methods() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.calls...)
+}
+
+// called — сколько раз страница звала метод API.
+func (s *stand) called(method string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, m := range s.calls {
+		if m == method {
+			n++
+		}
+	}
+	return n
 }
 
 // page — адрес страницы капчи стенда с вариантом.

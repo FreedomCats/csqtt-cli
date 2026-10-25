@@ -49,7 +49,8 @@ var browserCandidates = []string{
 }
 
 const (
-	// browserStartup — сколько ждать, пока браузер начнёт открывать страницу.
+	// browserStartup — сколько ждать, пока браузер начнёт открывать страницу:
+	// до отправки Page.navigate. Загрузку самой страницы он не ограничивает.
 	// Холодный старт с чистым профилем — одна-три секунды.
 	browserStartup = 20 * time.Second
 	// browserStop — сколько ждать выхода браузера после Browser.close,
@@ -291,8 +292,28 @@ func (r *runningBrowser) stop() {
 		_ = syscall.Kill(-r.cmd.Process.Pid, syscall.SIGKILL)
 		<-r.exited
 	}
+	r.killGroup()
 	r.in.Close()
 	r.out.Close()
+}
+
+// killGroup добивает процессы браузера, которые пережили главный: он вышел, а
+// его дочерние (сеть, отрисовка) в той же группе ещё доделывают своё. На
+// занятой машине такой процесс после закрытия окна успевал записать кэш и
+// создать каталог профиля заново — уже после того, как профиль убрали, и
+// профиль, в том числе окна входа, оставался во временном каталоге. Профиль
+// убирают после stop, поэтому stop ждёт, пока в группе никого не останется.
+func (r *runningBrowser) killGroup() {
+	pgid := r.cmd.Process.Pid
+	if syscall.Kill(-pgid, syscall.SIGKILL) != nil {
+		return // в группе никого
+	}
+	for deadline := time.Now().Add(browserStop); time.Now().Before(deadline); {
+		if syscall.Kill(-pgid, 0) != nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // newProfile заводит пустой временный профиль; prefix — начало имени его
