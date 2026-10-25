@@ -34,6 +34,8 @@ func TestValidateAccepts(t *testing.T) {
 		"auto_js без хешей":         func(p *Profile) { p.VkHashMode, p.VkHashesRef = VKHashModeAutoJS, "" },
 		"auto_js с хешами":          func(p *Profile) { p.VkHashMode = VKHashModeAutoJS },
 		"vk_hash_mode manual":       func(p *Profile) { p.VkHashMode = VKHashModeManual },
+		"auto_js с токеном сервера": func(p *Profile) { p.VkHashMode, p.VkHashesRef, p.VkTokenRef = VKHashModeAutoJS, "", "dpapi:7e1f" },
+		"manual с токеном сервера":  func(p *Profile) { p.VkTokenRef = "secretservice:c3" },
 	}
 	for name, change := range cases {
 		p := validProfile()
@@ -64,6 +66,7 @@ func TestValidateRejects(t *testing.T) {
 		{"auto_js и хеши не ссылкой", func(p *Profile) { p.VkHashMode, p.VkHashesRef = VKHashModeAutoJS, "abcdef" }, "<хранилище>:<идентификатор>"},
 		{"vk_hash_mode", func(p *Profile) { p.VkHashMode = "auto_api" }, `"manual", "auto_js"`},
 		{"пароль вместо ссылки", func(p *Profile) { p.PasswordRef = "хорошийпароль" }, "<хранилище>:<идентификатор>"},
+		{"токен вместо ссылки", func(p *Profile) { p.VkHashMode, p.VkTokenRef = VKHashModeAutoJS, "vk1.a.токен" }, "vk_token_ref"},
 		{"workers не кратно 10", func(p *Profile) { p.Workers = 25 }, "группы по 10"},
 		{"workers мало", func(p *Profile) { p.Workers = 3 }, "группы по 10"},
 		{"workers между пятью и группой", func(p *Profile) { p.Workers = 9 }, "группы по 10"},

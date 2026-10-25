@@ -70,7 +70,9 @@ routing.template и routing.server). Он требует прав root
 программы, настроенные на этот прокси.
 
 В режиме auto_js (vk_hash_mode = "auto_js" в профиле) хеши не нужны: звонок
-VK создаёт ядро от имени аккаунта, в который вошли командой ` + app.Name + ` vk login.
+VK создаёт ядро от имени аккаунта, в который вошли командой ` + app.Name + ` vk login,
+а если профиль заведён из ссылки с токеном VK сервера, — от аккаунта владельца
+сервера.
 При остановке и перед каждым переподключением звонок завершается.
 
 Ход подключения печатается строками в stdout, под ними в терминале — строка
@@ -184,7 +186,7 @@ func (e *env) planConnect(f connectFlags) (*connectPlan, error) {
 
 	// Вход VK — до прав root: без него подключения не будет и под sudo, а
 	// входят без sudo.
-	if p.AutoJS() && !file.VK.LoggedIn() {
+	if p.AutoJS() && !p.ServerVKToken() && !file.VK.LoggedIn() {
 		return nil, fmt.Errorf("профиль %s в режиме auto_js: звонок VK создаётся от имени вашего аккаунта, "+
 			"а входа в VK нет — войдите: %s vk login", p.Name, app.Name)
 	}
@@ -228,12 +230,18 @@ func (e *env) planConnect(f connectFlags) (*connectPlan, error) {
 	if cfg.Password, err = store.Get(p.PasswordRef); err != nil {
 		return nil, fmt.Errorf("пароль профиля %s: %w", p.Name, err)
 	}
-	if p.AutoJS() {
-		// Хешей в auto_js не нужно, даже если они в профиле остались.
+	switch {
+	// Хешей в auto_js не нужно, даже если они в профиле остались. Токен
+	// сервера из ссылки главнее своего входа [vk].
+	case p.AutoJS() && p.ServerVKToken():
+		if cfg.VKToken, err = serverVKToken(store, p); err != nil {
+			return nil, err
+		}
+	case p.AutoJS():
 		if cfg.VKToken, err = vkToken(store, file.VK); err != nil {
 			return nil, err
 		}
-	} else {
+	default:
 		raw, err := store.Get(p.VkHashesRef)
 		if err != nil {
 			return nil, fmt.Errorf("хеши профиля %s: %w", p.Name, err)
@@ -269,6 +277,27 @@ func vkToken(store config.SecretStore, vk config.VKSection) (string, error) {
 		return "", fmt.Errorf("токен входа VK пуст — войдите заново: %s vk login", app.Name)
 	}
 	return strings.TrimSpace(token), nil
+}
+
+// serverVKToken читает токен VK, выданный сервером в ссылке csqtt:// профиля.
+// Самого токена в ошибке нет.
+func serverVKToken(store config.SecretStore, p *config.Profile) (string, error) {
+	token, err := store.Get(p.VkTokenRef)
+	switch {
+	case err != nil:
+		return "", fmt.Errorf("токен VK от сервера (из ссылки csqtt://) профиля %s не читается: %w; %s",
+			p.Name, err, reimportHint(p.Name))
+	case strings.TrimSpace(token) == "":
+		return "", fmt.Errorf("токен VK от сервера профиля %s пуст; %s", p.Name, reimportHint(p.Name))
+	}
+	return strings.TrimSpace(token), nil
+}
+
+// reimportHint — как сменить токен VK от сервера: он приходит только со
+// ссылкой, и профиль заводится из неё заново.
+func reimportHint(profile string) string {
+	return fmt.Sprintf("новый токен приходит с новой ссылкой от владельца сервера — заведите профиль заново: "+
+		"%s profile rm %s, затем %s profile add %s -link", app.Name, profile, app.Name, profile)
 }
 
 // isRoot — запущен ли csqtt-cli с правами root, на Windows — администратора
@@ -413,7 +442,10 @@ func (plan *connectPlan) run(ctx context.Context, e *env, verbose bool) error {
 	out.setConnectedNote(dp.note)
 
 	calls := fmt.Sprintf("хешей %d", len(cfg.Hashes))
-	if cfg.AutoJS() {
+	switch {
+	case cfg.AutoJS() && p.ServerVKToken():
+		calls = "звонок VK создаёт ядро (auto_js) от аккаунта VK, выданного сервером, а не по вашему входу vk login"
+	case cfg.AutoJS():
 		calls = "звонок VK создаёт ядро (auto_js)"
 	}
 	out.line("профиль %s: сервер %s, %s, воркеров %d, %s", p.Name, cfg.Peer, calls, workers, dp.describe)
@@ -452,7 +484,7 @@ func (plan *connectPlan) run(ctx context.Context, e *env, verbose bool) error {
 		out.line("недоступные звонки: %s; профиль не менялся — заменить хеши: %s profile set %s -hashes",
 			hashNumbers(dead), app.Name, p.Name)
 	}
-	return explainConnectError(err, p.Name, dead, e.build)
+	return explainConnectError(err, p.Name, cfg.AutoJS() && p.ServerVKToken(), dead, e.build)
 }
 
 // sessionDatapath — datapath сеанса и то, что от него нужно циклу
@@ -500,8 +532,9 @@ func openSocks(p *config.Profile, out *printer) (*sessionDatapath, error) {
 }
 
 // explainConnectError дописывает к ошибке конца подключения, что делать
-// дальше.
-func explainConnectError(err error, profile string, dead []int, build Build) error {
+// дальше. serverToken — звонки создаются по токену VK от сервера: войти
+// заново своим аккаунтом тут не поможет.
+func explainConnectError(err error, profile string, serverToken bool, dead []int, build Build) error {
 	var server *supervisor.ServerError
 	var silent *supervisor.ServerSilentError
 	var exhausted *supervisor.HashesExhaustedError
@@ -517,8 +550,14 @@ func explainConnectError(err error, profile string, dead []int, build Build) err
 		return fmt.Errorf("%w\n  туннель снят, трафик системы снова идёт напрямую; подключитесь заново — адаптер "+
 			"создастся снова: %s connect %s", err, app.Name, profile)
 
+	case errors.As(err, &token) && serverToken:
+		return fmt.Errorf("%w\n  токен VK выдан сервером и, похоже, отозван или просрочен; %s", err, reimportHint(profile))
+
 	case errors.As(err, &token):
 		return fmt.Errorf("%w\n  токен отозван, просрочен или не тот — войдите заново: %s vk login", err, app.Name)
+
+	case errors.As(err, &vk) && serverToken:
+		return fmt.Errorf("%w\n  попробуйте позже; если повторяется — токен VK выдан сервером: %s", err, reimportHint(profile))
 
 	case errors.As(err, &vk):
 		return fmt.Errorf("%w\n  попробуйте позже, а если повторяется — войдите заново: %s vk login", err, app.Name)

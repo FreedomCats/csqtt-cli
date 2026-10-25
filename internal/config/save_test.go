@@ -114,6 +114,30 @@ func TestSaveAutoJS(t *testing.T) {
 	}
 }
 
+// Токен VK от сервера: ссылка на него пишется после режима и читается обратно.
+func TestSaveServerVKToken(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	want := &Profile{Name: "home", Peer: "203.0.113.10", PasswordRef: "dpapi:8f2a1c",
+		VkHashMode: VKHashModeAutoJS, VkTokenRef: "dpapi:7e1f", DeviceID: "3f9c2a71d04be658"}
+	if err := Save(path, &File{Profiles: map[string]*Profile{"home": want}}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	text, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(text), "vk_hash_mode = \"auto_js\"\nvk_token_ref = \"dpapi:7e1f\"\n") {
+		t.Errorf("файл:\n%s", text)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !sameProfile(got.Profiles["home"], want) || !got.Profiles["home"].ServerVKToken() {
+		t.Errorf("после записи и чтения = %+v,\nожидалось %+v", *got.Profiles["home"], *want)
+	}
+}
+
 // kill_switch пишется, только если задан, и тем значением, что задано:
 // пропуск — «включён» (KillSwitchOn).
 func TestSaveKillSwitch(t *testing.T) {

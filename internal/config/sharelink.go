@@ -1,15 +1,21 @@
 // sharelink.go — профиль из ссылки csqtt://.
 //
 // Ссылку выдаёт панель сервера CSQTT («Скопировать ссылку csqtt://»), её же
-// вставляют в Android-клиент. Два вида:
+// вставляют в Android-клиент. Три вида:
 //
-//	csqtt://connect?v=2&host=<хост>&peer=<порт>&password=<пароль>[&hashes=<хеш>+<хеш>…]
+//	csqtt://<base64url>
+//	csqtt://connect?v=2&host=<хост>&peer=<порт>[&password=<пароль>][&hashes=<хеш>+<хеш>… | &token=<токен VK>]
 //	csqtt://<пароль>@<хост>:<порт>
 //
-// Во втором, старом, хешей нет. В первом peer — не адрес, а только порт
-// сервера; значения закодированы encodeURIComponent, поэтому «+» между хешами —
-// разделитель, а «+» внутри значения пришёл бы как %2B. Пробелом «+» не
-// считается нигде. Хешей — от одного до шести.
+// Первый пишет панель сервера 2.5.0: внутри — второй вид без «csqtt://»,
+// зашифрованный (sealedlink.go). Во втором peer — не адрес, а только порт
+// сервера; значения закодированы (encodeURIComponent у старой панели,
+// процентное кодирование всего, кроме букв, цифр и -_.~, у 2.5.0), поэтому
+// «+» между хешами — разделитель, а «+» внутри значения пришёл бы как %2B.
+// Пробелом «+» не считается нигде. Хешей — от одного до шести. Пароля в
+// ссылке 2.5.0 может не быть — его спрашивают отдельно. Вместо хешей панель
+// 2.5.0 может дать токен VK владельца сервера: звонки тогда создаёт ядро от
+// его аккаунта (auto_js). В третьем, старом, виде хешей нет.
 //
 // В ссылке пароль и хеши — она сама секрет. Принимать её аргументом командной
 // строки нельзя, и сообщения об ошибках её не повторяют.
@@ -30,13 +36,21 @@ import (
 type ShareLink struct {
 	// Peer — адрес сервера, host:port.
 	Peer string
-	// Password — пароль подключения.
+	// Password — пароль подключения; пусто — в ссылке его не было.
 	Password string
 	// Hashes — хеши звонков VK; пусто — в ссылке их не было.
 	Hashes []string
+	// VKToken — access token VK, который сервер выдал вместе с паролем
+	// (параметр token): звонки по нему создаёт ядро в режиме auto_js от
+	// аккаунта владельца сервера. Пусто — в ссылке его не было. С Hashes
+	// вместе не бывает.
+	VKToken string
 }
 
 const linkScheme = "csqtt://"
+
+// maxLinkToken — длиннее токен VK панель сервера не примет.
+const maxLinkToken = 4096
 
 // minLinkHash — короче хеш звонка VK не бывает; более короткий в ссылке
 // значит, что её обрезали при копировании.
@@ -72,11 +86,14 @@ func ParseShareLink(text string) (*ShareLink, error) {
 		}
 		return parseConnectLink(query)
 	}
+	if isSealedLink(rest) {
+		return parseSealedLink(rest)
+	}
 	return parseLegacyLink(rest)
 }
 
 // linkKeys — параметры ссылки connect в том порядке, в каком их пишет панель.
-var linkKeys = []string{"v", "host", "peer", "password", "hashes"}
+var linkKeys = []string{"v", "host", "peer", "password", "hashes", "token"}
 
 func parseConnectLink(query string) (*ShareLink, error) {
 	// Ссылка, побывавшая в HTML, приходит с &amp; вместо &.
@@ -93,7 +110,7 @@ func parseConnectLink(query string) (*ShareLink, error) {
 	}
 	// Хеши раскодируются по одному: %2B внутри хеша — не разделитель.
 	params := map[string]string{}
-	for _, key := range []string{"v", "host", "peer", "password"} {
+	for _, key := range []string{"v", "host", "peer", "password", "token"} {
 		if params[key], err = linkUnescape(key, raw[key]); err != nil {
 			return nil, err
 		}
@@ -104,9 +121,16 @@ func parseConnectLink(query string) (*ShareLink, error) {
 	} else if v := params["v"]; v != "2" {
 		return nil, fmt.Errorf("ссылка формата v=%s, а csqtt-cli понимает только v=2", safeValue(v))
 	}
-	for _, key := range []string{"host", "peer", "password"} {
+	for _, key := range []string{"host", "peer"} {
 		if params[key] == "" {
 			return nil, fmt.Errorf("в ссылке пустой или пропущен параметр %s; скопируйте её целиком ещё раз", key)
+		}
+	}
+	// Без пароля панель 2.5.0 ссылку выдаёт — тогда параметра нет вовсе.
+	// Пустой параметр она не пишет: он значит, что ссылку испортили.
+	for _, key := range []string{"password", "token"} {
+		if _, ok := raw[key]; ok && params[key] == "" {
+			return nil, fmt.Errorf("в ссылке пустой параметр %s; скопируйте её целиком ещё раз", key)
 		}
 	}
 
@@ -124,6 +148,15 @@ func parseConnectLink(query string) (*ShareLink, error) {
 	}
 	if hashes, ok := raw["hashes"]; ok {
 		if link.Hashes, err = linkHashes(hashes); err != nil {
+			return nil, err
+		}
+	}
+	if link.VKToken = params["token"]; link.VKToken != "" {
+		if len(link.Hashes) > 0 {
+			// Панель даёт одно из двух; что из них главнее, не угадать.
+			return nil, errors.New("в ссылке и хеши звонков, и токен VK — панель сервера так не пишет; скопируйте её целиком ещё раз")
+		}
+		if err := checkLinkToken(link.VKToken); err != nil {
 			return nil, err
 		}
 	}
@@ -181,9 +214,9 @@ func splitGlued(query string) (map[string]string, error) {
 	for _, key := range linkKeys {
 		marker := key + "="
 		var i int
-		if key == "hashes" {
-			// Пароль идёт перед хешами и мог бы сам содержать «hashes=»;
-			// последнее вхождение — граница вернее.
+		if key == "hashes" || key == "token" {
+			// Пароль идёт перед хешами и токеном и мог бы сам содержать
+			// «hashes=»; последнее вхождение — граница вернее.
 			i = strings.LastIndex(query[pos:], marker)
 		} else {
 			i = strings.Index(query[pos:], marker)
@@ -222,7 +255,7 @@ func parseLegacyLink(rest string) (*ShareLink, error) {
 	rest = strings.TrimSuffix(rest, "/")
 	at := strings.LastIndex(rest, "@")
 	if at < 0 {
-		return nil, errors.New("ссылка не разбирается: ожидалась csqtt://connect?… или csqtt://<пароль>@<хост>:<порт>")
+		return nil, errors.New("ссылка не разбирается: ожидалась ссылка из панели сервера CSQTT, csqtt://connect?… или csqtt://<пароль>@<хост>:<порт>")
 	}
 	if strings.ContainsAny(rest, "/?") {
 		return nil, errors.New("ссылка повреждена: после адреса сервера лишнее; скопируйте её целиком ещё раз")
@@ -270,6 +303,18 @@ func linkPeer(host, port string) (string, error) {
 func checkLinkPassword(password string) error {
 	if strings.IndexFunc(password, unicode.IsSpace) >= 0 {
 		return errors.New("в пароле из ссылки пробел или перевод строки — ссылка повреждена; скопируйте её целиком ещё раз")
+	}
+	return nil
+}
+
+// checkLinkToken — токен VK из ссылки идёт ядру строкой stdin. Пробелов и
+// управляющих знаков панель в нём не допускает, длиннее maxLinkToken — тоже.
+func checkLinkToken(token string) error {
+	switch {
+	case strings.IndexFunc(token, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0:
+		return errors.New("в токене VK из ссылки пробел или перевод строки — ссылка повреждена; скопируйте её целиком ещё раз")
+	case len(token) > maxLinkToken:
+		return fmt.Errorf("токен VK в ссылке длиннее %d знаков — ссылка повреждена; скопируйте её целиком ещё раз", maxLinkToken)
 	}
 	return nil
 }

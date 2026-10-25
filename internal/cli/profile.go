@@ -188,7 +188,12 @@ func profileAddCommand() *command {
 		summary: "завести профиль из ссылки csqtt:// или по полям",
 		description: `С -link ссылка csqtt:// из панели сервера CSQTT читается скрытым вводом (или
 из stdin: ` + app.Name + ` profile add home -link < файл): в ней адрес сервера,
-пароль и хеши звонков. Хешей в ссылке нет — они спрашиваются отдельно.
+пароль и хеши звонков. Хешей в ссылке нет — они спрашиваются отдельно; пароля
+нет — тоже (из stdin — следующей строкой).
+
+Если вместо хешей в ссылке токен VK, выданный сервером, профиль переводится в
+auto_js: звонки создаёт ядро от аккаунта VK владельца сервера, свой вход
+(` + app.Name + ` vk login) не нужен. Токен уходит в хранилище секретов профиля.
 
 Без -link профиль заводится по полям: адрес сервера — флагом -peer, пароль
 и хеши звонков VK спрашиваются скрытым вводом.
@@ -211,7 +216,7 @@ func runProfileAdd(ctx context.Context, e *env, args []string) error {
 	fs := newFlagSet(cmd)
 	configPath := addConfigFlag(fs)
 	fields := addProfileFlags(fs)
-	fromLink := fs.Bool("link", false, "взять адрес, пароль и хеши из ссылки csqtt:// (скрытым вводом)")
+	fromLink := fs.Bool("link", false, "взять адрес, пароль и хеши или токен VK из ссылки csqtt:// (скрытым вводом)")
 	rest, err := parseWithArgs(e, fs, args)
 	if err != nil {
 		return err
@@ -258,15 +263,29 @@ func runProfileAdd(ctx context.Context, e *env, args []string) error {
 			return err
 		}
 		p.Peer = link.Peer
+		// Токен сервера — для auto_js; явное -vk-hash-mode manual главнее,
+		// а токен всё равно записывается — на случай перехода к auto_js.
+		if link.VKToken != "" && !named["vk-hash-mode"] {
+			p.VkHashMode = config.VKHashModeAutoJS
+		}
 		if err := checkBeforeAsking(p); err != nil {
 			return err
 		}
 		secrets.password = link.Password
 		secrets.hashes = link.Hashes
-		if len(secrets.hashes) == 0 && !p.AutoJS() {
-			fmt.Fprintln(e.stderr, "В ссылке нет хешей звонков VK.")
+		secrets.vkToken = link.VKToken
+		if secrets.password == "" {
+			fmt.Fprintln(e.stderr, "В ссылке нет пароля подключения.")
 		}
-	} else {
+		if len(secrets.hashes) == 0 && !p.AutoJS() {
+			if link.VKToken != "" {
+				fmt.Fprintln(e.stderr, "В ссылке нет хешей звонков VK (в ней токен VK сервера).")
+			} else {
+				fmt.Fprintln(e.stderr, "В ссылке нет хешей звонков VK.")
+			}
+		}
+	}
+	if secrets.password == "" {
 		secrets.password, err = e.askNewSecret(ctx,
 			fmt.Sprintf("Пароль подключения для профиля %q (ввод не отображается): ", name),
 			"Повторите пароль: ", "пароль подключения", true)
@@ -404,6 +423,11 @@ func runProfileSet(ctx context.Context, e *env, args []string) error {
 type profileSecrets struct {
 	password string
 	hashes   []string
+	// vkToken — токен VK, выданный сервером в ссылке csqtt://.
+	vkToken string
+	// dropVKToken — стереть прежний токен VK от сервера: профиль заменён
+	// источником без токена (мастер меню).
+	dropVKToken bool
 }
 
 // storeProfile записывает профиль: секреты — в хранилище, профиль — в файл
@@ -430,6 +454,18 @@ func storeProfile(e *env, path string, file *config.File, p *config.Profile, exi
 		}
 		p.VkHashesRef = ref
 	}
+	// Прежний токен стирается из хранилища только после записи файла:
+	// иначе неудачная запись оставила бы профиль со ссылкой в пустоту.
+	dropToken := ""
+	if secrets.vkToken != "" {
+		ref, err := store.Put(p.Name+".vk_token", secrets.vkToken)
+		if err != nil {
+			return err
+		}
+		p.VkTokenRef = ref
+	} else if secrets.dropVKToken && p.ServerVKToken() {
+		dropToken, p.VkTokenRef = p.VkTokenRef, ""
+	}
 
 	if file.Profiles == nil {
 		file.Profiles = map[string]*config.Profile{}
@@ -437,6 +473,11 @@ func storeProfile(e *env, path string, file *config.File, p *config.Profile, exi
 	file.Profiles[p.Name] = p
 	if err := config.Save(path, file); err != nil {
 		return err
+	}
+	if dropToken != "" {
+		if err := store.Delete(dropToken); err != nil {
+			fmt.Fprintf(e.stderr, "Предупреждение: прежний токен VK %s не удалён: %v\n", dropToken, err)
+		}
 	}
 
 	verb := "изменён"
@@ -451,12 +492,20 @@ func storeProfile(e *env, path string, file *config.File, p *config.Profile, exi
 	if len(secrets.hashes) > 0 {
 		fmt.Fprintf(e.stdout, "  хешей:  %d (%s)\n", len(secrets.hashes), config.SecretRefKind(p.VkHashesRef))
 	}
+	if secrets.vkToken != "" {
+		fmt.Fprintf(e.stdout, "  токен:  токен VK от сервера записан (%s)\n", config.SecretRefKind(p.VkTokenRef))
+	}
 	if p.AutoJS() {
-		fmt.Fprintln(e.stdout, "  звонок: создаёт ядро по входу VK (vk_hash_mode = auto_js)")
+		if p.ServerVKToken() {
+			fmt.Fprintln(e.stdout, "  звонок: создаёт ядро от аккаунта VK, выданного сервером, а не по вашему входу VK "+
+				"(vk_hash_mode = auto_js)")
+		} else {
+			fmt.Fprintln(e.stdout, "  звонок: создаёт ядро по входу VK (vk_hash_mode = auto_js)")
+		}
 		if strings.TrimSpace(p.VkHashesRef) != "" {
 			fmt.Fprintln(e.stdout, "Хеши профиля в режиме auto_js не используются: звонок создаёт ядро.")
 		}
-		if !file.VK.LoggedIn() {
+		if !p.ServerVKToken() && !file.VK.LoggedIn() {
 			fmt.Fprintf(e.stdout, "Входа VK нет, а без него профиль не подключится: %s vk login\n", app.Name)
 		}
 		warnWorkers(e.stdout, p)
@@ -509,8 +558,8 @@ func profileShowCommand() *command {
 		description: `Значения, которых в профиле нет, показаны с пометкой «умолчание» — это то,
 с чем профиль будет работать.
 
-Пароль и хеши не печатаются: показывается только, где они лежат, читаются ли
-на этой машине и сколько хешей.`,
+Пароль, хеши и токен VK от сервера не печатаются: показывается только, где они
+лежат, читаются ли на этой машине и сколько хешей.`,
 		run: runProfileShow,
 	}
 }
@@ -580,6 +629,15 @@ func runProfileShow(_ context.Context, e *env, args []string) error {
 		note = "(в режиме auto_js не нужны)"
 	}
 	printField(e.stdout, "vk_hashes", hashesText, note)
+	switch {
+	case p.ServerVKToken() && p.AutoJS():
+		printField(e.stdout, "vk_token", passwordNote(store, p.VkTokenRef),
+			"(выдан сервером: звонки создаются от аккаунта VK владельца сервера, а не по вашему входу vk login)")
+	case p.ServerVKToken():
+		printField(e.stdout, "vk_token", passwordNote(store, p.VkTokenRef), "(выдан сервером; нужен только в режиме auto_js)")
+	case p.AutoJS():
+		printField(e.stdout, "vk_token", "не задан", "(звонки создаются по вашему входу VK: "+app.Name+" vk login)")
+	}
 	if p.AutoJS() {
 		warnWorkers(e.stdout, p)
 	}
@@ -618,8 +676,8 @@ func profileRmCommand() *command {
 		name:    "profile rm",
 		args:    "<имя> [флаги]",
 		summary: "удалить профиль вместе с его секретами",
-		description: `Удаление необратимо: пароль и хеши стираются из хранилища, и вернуть их
-можно только вводом заново. Поэтому команда спрашивает подтверждение;
+		description: `Удаление необратимо: пароль, хеши и токен VK от сервера стираются из
+хранилища, и вернуть их можно только вводом заново. Поэтому команда спрашивает подтверждение;
 -y отвечает за вас.`,
 		run: runProfileRm,
 	}
@@ -660,7 +718,7 @@ func runProfileRm(ctx context.Context, e *env, args []string) error {
 	}
 
 	store := e.secretsFor(path)
-	for _, ref := range []string{p.PasswordRef, p.VkHashesRef} {
+	for _, ref := range []string{p.PasswordRef, p.VkHashesRef, p.VkTokenRef} {
 		if strings.TrimSpace(ref) == "" {
 			continue
 		}

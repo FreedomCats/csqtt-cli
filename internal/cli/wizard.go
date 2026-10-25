@@ -56,12 +56,21 @@ func (m *menu) wizard(ctx context.Context, path string, file *config.File) error
 	if existed {
 		p = file.Profiles[name]
 	}
-	var secrets profileSecrets
+	// Токен VK от сервера у профиля — только из этой ссылки. Заменяемый
+	// профиль с токеном прежней ссылки возвращается к хешам: звонки от
+	// аккаунта прежнего сервера новому профилю ни к чему.
+	secrets := profileSecrets{dropVKToken: true}
 	if link != nil {
 		p.Peer = link.Peer
-		secrets = profileSecrets{password: link.Password, hashes: link.Hashes}
+		secrets.password, secrets.hashes, secrets.vkToken = link.Password, link.Hashes, link.VKToken
 	} else if p.Peer, err = m.askPeer(ctx); err != nil {
 		return err
+	}
+	switch {
+	case secrets.vkToken != "":
+		p.VkHashMode = config.VKHashModeAutoJS
+	case p.ServerVKToken():
+		p.VkHashMode = ""
 	}
 
 	// Чего в ссылке не было, спрашивается так же, как при вводе вручную.
@@ -70,7 +79,7 @@ func (m *menu) wizard(ctx context.Context, path string, file *config.File) error
 			return err
 		}
 	}
-	if len(secrets.hashes) == 0 {
+	if len(secrets.hashes) == 0 && secrets.vkToken == "" {
 		if secrets.hashes, err = m.askCallLinks(ctx, linksRequired, config.MaxHashes); err != nil {
 			return err
 		}
@@ -122,9 +131,15 @@ func (m *menu) askShareLink(ctx context.Context) (*config.ShareLink, error) {
 		}
 
 		fmt.Fprintf(m.e.stdout, "Ссылка принята: сервер %s", link.Peer)
-		if n := len(link.Hashes); n > 0 {
+		if link.Password == "" {
+			fmt.Fprint(m.e.stdout, ", пароля в ней нет")
+		}
+		switch n := len(link.Hashes); {
+		case link.VKToken != "":
+			fmt.Fprint(m.e.stdout, ", звонки VK создаются от аккаунта, выданного сервером")
+		case n > 0:
 			fmt.Fprintf(m.e.stdout, ", ссылок на звонки: %d", n)
-		} else {
+		default:
 			fmt.Fprint(m.e.stdout, ", ссылок на звонки в ней нет")
 		}
 		fmt.Fprintln(m.e.stdout, ".")

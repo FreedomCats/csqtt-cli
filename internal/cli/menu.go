@@ -252,7 +252,10 @@ func (m *menu) show(file *config.File, name string, items []menuItem) {
 				marker = ">"
 			}
 			note := ""
-			if p.AutoJS() {
+			switch {
+			case p.AutoJS() && p.ServerVKToken():
+				note = "  звонок VK — auto_js, аккаунт сервера"
+			case p.AutoJS():
 				note = "  звонок VK — auto_js"
 			}
 			if isDefaultProfile(file, n) {

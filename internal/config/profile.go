@@ -96,8 +96,14 @@ type Profile struct {
 	VkHashesRef string `toml:"vk_hashes_ref"`
 	// VkHashMode — откуда звонок VK: пусто или VKHashModeManual — хеши
 	// профиля; VKHashModeAutoJS — звонок создаёт ядро по входу VK
-	// (`csqtt-cli vk login`, §08а), хеши не нужны. Читать — AutoJS.
+	// (`csqtt-cli vk login`, §08а) или по токену VkTokenRef, хеши не нужны.
+	// Читать — AutoJS.
 	VkHashMode string `toml:"vk_hash_mode"`
+	// VkTokenRef — ссылка на access token VK, выданный сервером в ссылке
+	// csqtt:// (общий токен владельца сервера). Задан — в auto_js звонки
+	// создаются от того аккаунта, а не по входу [vk]. Пишется, только если
+	// задан.
+	VkTokenRef string `toml:"vk_token_ref"`
 	// DeviceID — идентификатор устройства для сервера. Save заводит его при
 	// первой записи профиля и потом не трогает: сервер может закрепить
 	// главный пароль за первым подключившимся устройством, и новый id
@@ -172,8 +178,8 @@ func PeerWithPort(peer string) string {
 // Core переводит профиль в параметры запуска ядра.
 //
 // Секреты не подставляются: Password, Hashes и VKToken остаются пустыми, их
-// заполняет вызывающий, развернув PasswordRef, VkHashesRef и токен входа VK
-// ([vk] token_ref) через хранилище. Адреса канала пакетов (Listen,
+// заполняет вызывающий, развернув PasswordRef, VkHashesRef и токен VK
+// (VkTokenRef профиля, а без него — вход [vk] token_ref) через хранилище. Адреса канала пакетов (Listen,
 // ListenPeer, TunUDS) — дело datapath.
 func (p *Profile) Core() coreproc.Config {
 	cfg := coreproc.Config{
@@ -197,6 +203,12 @@ func (p *Profile) Core() coreproc.Config {
 // не нужны.
 func (p *Profile) AutoJS() bool {
 	return strings.TrimSpace(p.VkHashMode) == VKHashModeAutoJS
+}
+
+// ServerVKToken — у профиля свой токен VK, выданный сервером в ссылке:
+// в auto_js звонки создаются от аккаунта владельца сервера.
+func (p *Profile) ServerVKToken() bool {
+	return strings.TrimSpace(p.VkTokenRef) != ""
 }
 
 // KillSwitchOn — включён ли kill-switch: да, если в профиле не сказано

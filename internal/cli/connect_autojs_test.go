@@ -198,7 +198,7 @@ func TestExplainConnectErrorAutoJS(t *testing.T) {
 		{"без причины", &supervisor.StartupError{Log: []string{"error: unexpected argument '--secrets-stdin' found"}},
 			build, false},
 	} {
-		got := explainConnectError(c.err, "home", nil, Build{}).Error()
+		got := explainConnectError(c.err, "home", false, nil, Build{}).Error()
 		if !strings.Contains(got, c.want) || c.noBuild == strings.Contains(got, build) {
 			t.Errorf("%s: %q", c.name, got)
 		}
