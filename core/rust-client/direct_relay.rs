@@ -370,7 +370,7 @@ impl DirectRelay {
                     tokio::spawn(async move {
                         let connect_res = tokio::time::timeout(
                             Duration::from_secs(5),
-                            tokio::net::TcpStream::connect(remote_addr),
+                            crate::bind_if::connect_tcp(remote_addr),
                         )
                         .await;
 
@@ -745,11 +745,11 @@ impl DirectRelay {
             s
         } else {
             let bind_addr = if dst_addr.is_ipv6() {
-                "[::]:0"
+                SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0))
             } else {
-                "0.0.0.0:0"
+                SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0))
             };
-            let Ok(new_sock) = tokio::net::UdpSocket::bind(bind_addr).await else {
+            let Ok(new_sock) = crate::bind_if::udp_socket(bind_addr).await else {
                 return false;
             };
             let socket_ref = socket2::SockRef::from(&new_sock);
@@ -881,7 +881,7 @@ impl DirectRelay {
 
         tokio::spawn(async move {
             let _permit = permit;
-            let socket = match tokio::net::UdpSocket::bind("0.0.0.0:0").await {
+            let socket = match crate::bind_if::udp_socket((Ipv4Addr::UNSPECIFIED, 0).into()).await {
                 Ok(s) => s,
                 Err(_) => return,
             };
@@ -1238,6 +1238,10 @@ pub fn udp_checksum_v6(src_ip: Ipv6Addr, dst_ip: Ipv6Addr, udp_segment: &[u8]) -
     let res = !(sum as u16);
     if res == 0 { 0xffff } else { res }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "direct_relay_bind_if_tests.rs"]
+mod bind_if_tests;
 
 #[cfg(test)]
 mod tests {

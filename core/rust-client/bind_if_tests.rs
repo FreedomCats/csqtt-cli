@@ -20,7 +20,7 @@ use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
 use std::io::Write;
 
 /// Метка для тестов.
-const MARK: u32 = 0x5153;
+pub(crate) const MARK: u32 = 0x5153;
 
 /// Индекс, которого нет ни у одного интерфейса.
 #[cfg(target_os = "linux")]
@@ -28,16 +28,16 @@ const MISSING_INDEX: u32 = 0x7fff_fff0;
 
 /// Переменная окружения процесса, в котором идёт isolated.
 #[cfg(target_os = "linux")]
-const CHILD_ENV: &str = "CSQTT_BIND_IF_TEST_CHILD";
+pub(crate) const CHILD_ENV: &str = "CSQTT_BIND_IF_TEST_CHILD";
 
 /// Строка о пропуске — мимо захвата вывода тестов, чтобы её было видно.
 #[cfg(target_os = "linux")]
-fn notice(text: &str) {
+pub(crate) fn notice(text: &str) {
     let _ = writeln!(std::io::stderr(), "bind_if: {text}");
 }
 
 #[cfg(target_os = "linux")]
-fn loopback_index() -> u32 {
+pub(crate) fn loopback_index() -> u32 {
     let index = unsafe { libc::if_nametoindex(c"lo".as_ptr()) };
     assert_ne!(index, 0, "нет интерфейса lo");
     index
@@ -68,7 +68,7 @@ fn socket_option(fd: RawFd, option: libc::c_int) -> u32 {
 
 /// Индекс, к которому привязан сокет, и его метка.
 #[cfg(target_os = "linux")]
-fn binding(fd: RawFd) -> (u32, u32) {
+pub(crate) fn binding(fd: RawFd) -> (u32, u32) {
     (
         socket_option(fd, libc::SO_BINDTOIFINDEX),
         socket_option(fd, libc::SO_MARK),
@@ -77,7 +77,7 @@ fn binding(fd: RawFd) -> (u32, u32) {
 
 /// Разрешает ли ядро ставить метку. Нет — тест пишет, что пропустил.
 #[cfg(target_os = "linux")]
-fn mark_allowed(test: &str) -> bool {
+pub(crate) fn mark_allowed(test: &str) -> bool {
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, None).unwrap();
     match SockRef::from(&socket).set_mark(MARK) {
         Ok(()) => true,
@@ -197,8 +197,16 @@ fn unicast_if_byte_order() {
 #[cfg(target_os = "linux")]
 #[test]
 fn in_own_process() {
+    run_in_own_process("bind_if::tests::isolated");
+}
+
+/// Запускает тест test (с #[ignore]) этим же бинарём в отдельном процессе с
+/// CHILD_ENV и требует, чтобы он прошёл. Так идут и тесты точек 6–8
+/// (direct_relay_bind_if_tests.rs).
+#[cfg(target_os = "linux")]
+pub(crate) fn run_in_own_process(test: &str) {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "bind_if::tests::isolated", "--ignored", "--nocapture", "--test-threads=1"])
+        .args(["--exact", test, "--ignored", "--nocapture", "--test-threads=1"])
         .env(CHILD_ENV, "1")
         .output()
         .unwrap();
@@ -209,8 +217,8 @@ fn in_own_process() {
         notice(line.trim_start_matches("bind_if: "));
     }
     assert!(
-        output.status.success() && stdout.contains("test bind_if::tests::isolated ... ok"),
-        "isolated в своём процессе: {}\n{stdout}\n{stderr}",
+        output.status.success() && stdout.contains(&format!("test {test} ... ok")),
+        "{test} в своём процессе: {}\n{stdout}\n{stderr}",
         output.status
     );
 }

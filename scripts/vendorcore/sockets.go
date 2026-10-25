@@ -29,8 +29,8 @@ type socketSite struct {
 
 // socketSites — все места создания сокетов в core/ после правил.
 var socketSites = []socketSite{
-	// Пять точек П3 (§06). Сокеты точек 1–3 создаёт bind_if.rs, соединения
-	// точек 4–5 — коннектор primp-hyper-util.
+	// Восемь точек П3 (§06). Сокеты точек 1–3 и 6–8 создаёт bind_if.rs,
+	// соединения точек 4–5 — коннектор primp-hyper-util.
 	{File: "rust-client/dns.rs", Call: "bind_if::udp_socket", Count: 1,
 		Reason: "точка 1: DNS для имён VK, UDP к DNS Яндекса"},
 	{File: "rust-client/turn.rs", Call: "bind_if::udp_socket", Count: 1,
@@ -44,14 +44,21 @@ var socketSites = []socketSite{
 	{File: "rust-client/vendor/primp-hyper-util/src/client/legacy/connect/http.rs", Call: "Socket::new", Count: 1,
 		Then:   []string{"csqtt_bind::bind_socket("},
 		Reason: "точки 4–5: сокет каждого соединения primp"},
+	// Точки 6–8 — маршрутизация мимо туннеля (ядро 2.5.0: --domain-routing,
+	// --ip-routing, команда UPDATE_DOMAINS|): прямые соединения к сайтам. Без
+	// привязки в tun они ушли бы маршрутами /1 обратно в TUN — петля.
+	{File: "rust-client/direct_relay.rs", Call: "bind_if::connect_tcp", Count: 1,
+		Reason: "точка 6: прямое TCP-соединение из стека smoltcp"},
+	{File: "rust-client/direct_relay.rs", Call: "bind_if::udp_socket", Count: 2,
+		Reason: "точки 7 и 8: прямая UDP-сессия и DNS-запрос прямого домена"},
 
 	// Сами вызовы bind_if.rs.
 	{File: "rust-client/bind_if.rs", Call: "UdpSocket::bind", Count: 1, Then: []string{"bind(&socket"},
-		Reason: "udp_socket — точки 1 и 2"},
+		Reason: "udp_socket — точки 1, 2, 7, 8"},
 	{File: "rust-client/bind_if.rs", Call: "TcpSocket::new_v4", Count: 1, Then: []string{"bind(&socket"},
-		Reason: "connect_tcp — точка 3"},
+		Reason: "connect_tcp — точки 3 и 6"},
 	{File: "rust-client/bind_if.rs", Call: "TcpSocket::new_v6", Count: 1, Then: []string{"bind(&socket"},
-		Reason: "connect_tcp — точка 3"},
+		Reason: "connect_tcp — точки 3 и 6"},
 	{File: "rust-client/bind_if.rs", Call: "Client::builder", Count: 1, Then: []string{"no_proxy()"},
 		Reason: "client_builder — точки 4 и 5"},
 	{File: "rust-client/bind_if.rs", Call: "Socket::new", Count: 1, Then: []string{"bind_socket_to("},
@@ -76,19 +83,12 @@ var socketSites = []socketSite{
 	// Мимо привязки — по решению (§06).
 	{File: "rust-client/dns.rs", Call: "lookup_host", Count: 1,
 		Reason: "запасной системный DNS: только если DNS Яндекса молчит, а TUNCONF ещё не было; запрос делает система (W5, Э3)"},
-
-	// Маршрутизация мимо туннеля (ядро 2.5.0: --domain-routing, --ip-routing,
-	// команда UPDATE_DOMAINS|): оболочка её не включает, и без неё ни один из
-	// этих сокетов не создаётся — предразрешение доменов идёт только при
-	// enabled, остальное — только из try_handle, который без маршрутизации
-	// сразу возвращает false. Включать её — отдельная задача вместе с
-	// привязкой (решение пользователя при обновлении на 2.5.0).
-	{File: "rust-client/direct_relay.rs", Call: "lookup_host", Count: 1,
-		Reason: "предразрешение прямых доменов: только при маршрутизации мимо туннеля, которую оболочка не включает"},
-	{File: "rust-client/direct_relay.rs", Call: "TcpStream::connect", Count: 1,
-		Reason: "прямое TCP-соединение из стека smoltcp: только при маршрутизации мимо туннеля, которую оболочка не включает"},
-	{File: "rust-client/direct_relay.rs", Call: "UdpSocket::bind", Count: 2,
-		Reason: "прямые UDP-сессии и DNS-запросы для прямых доменов: только при маршрутизации мимо туннеля, которую оболочка не включает"},
+	// Предразрешение прямых доменов маршрутизации (только при --domain-routing):
+	// сначала системный резолвер, пусто — dns::global(), то есть точка 1 со
+	// своим запасным системным путём выше. Как в апстриме — решение
+	// пользователя.
+	{File: "rust-client/direct_relay.rs", Call: "lookup_host", Count: 1, Then: []string{"crate::dns::global()"},
+		Reason: "предразрешение прямых доменов: системный резолвер, затем DNS Яндекса (точка 1) — как в апстриме, по решению"},
 	{File: "rust-client/vendor/primp-hyper-util/src/client/legacy/connect/dns.rs", Call: "to_socket_addrs", Count: 1,
 		Reason: "GaiResolver: в ядре заменён резолвером dns_resolver(dns::global())"},
 	{File: "rust-client/vendor/primp-hyper-util/src/client/legacy/connect/proxy/socks/v4/mod.rs", Call: "to_socket_addrs", Count: 1,

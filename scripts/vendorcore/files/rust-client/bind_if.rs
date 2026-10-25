@@ -11,10 +11,12 @@
 // ядро по метке, §09б). Команда BIND_IF:<индекс> меняет интерфейс на ходу:
 // его берут новые сокеты, старые доживают своё.
 //
-// Пять точек (§06): DNS (dns.rs) и TURN по UDP (turn.rs) берут сокет из
+// Восемь точек (§06): DNS (dns.rs) и TURN по UDP (turn.rs) берут сокет из
 // udp_socket, TURN по TCP (turn_stream.rs) — из connect_tcp, клиенты primp
 // (auth.rs, vk_js_calls.rs) строятся client_builder, а их соединения
-// привязывает пропатченный коннектор primp-hyper-util. Настройка у всех одна —
+// привязывает пропатченный коннектор primp-hyper-util. Сокеты маршрутизации
+// мимо туннеля (direct_relay.rs) — прямое TCP-соединение из connect_tcp,
+// UDP-сессия и DNS прямого домена из udp_socket. Настройка у всех одна —
 // csqtt_bind в этом крейте. Новые места ловит сторож в scripts/vendorcore.
 //
 // Без -bind-if ничего не меняется. С ним привязка обязательна: сокет, который
@@ -137,14 +139,14 @@ pub(crate) fn bind<'s>(socket: impl Into<SockRef<'s>>, ipv6: bool) -> io::Result
     csqtt_bind::bind_socket(socket.into(), ipv6)
 }
 
-/// UDP-сокет на address, привязанный к текущему интерфейсу (точки 1 и 2).
+/// UDP-сокет на address, привязанный к текущему интерфейсу (точки 1, 2, 7, 8).
 pub(crate) async fn udp_socket(address: SocketAddr) -> io::Result<UdpSocket> {
     let socket = UdpSocket::bind(address).await?;
     bind(&socket, address.is_ipv6())?;
     Ok(socket)
 }
 
-/// TCP-соединение с address через текущий интерфейс (точка 3): привязка —
+/// TCP-соединение с address через текущий интерфейс (точки 3 и 6): привязка —
 /// до connect.
 pub(crate) async fn connect_tcp(address: SocketAddr) -> io::Result<TcpStream> {
     let socket = if address.is_ipv4() {
@@ -168,6 +170,7 @@ pub(crate) fn client_builder() -> primp::ClientBuilder {
     }
 }
 
+// pub(crate): общие помощники тестов берут и тесты точек 6–8 в direct_relay.rs.
 #[cfg(test)]
 #[path = "bind_if_tests.rs"]
-mod tests;
+pub(crate) mod tests;

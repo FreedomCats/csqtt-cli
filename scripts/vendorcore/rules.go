@@ -284,6 +284,39 @@ var rules = []rule{
 		Pattern: `(?m)^( +)net::TcpStream,\n`,
 		Replace: to(""),
 	},
+	// Точки 6–8 — сокеты маршрутизации мимо туннеля (ядро 2.5.0): прямые
+	// соединения к сайтам. Без привязки в tun они ушли бы маршрутами /1 обратно
+	// в TUN, к самому ядру, — петля. Тесты —
+	// files/rust-client/direct_relay_bind_if_tests.rs.
+	{
+		// Точка 6 — прямое TCP-соединение, под прежним таймаутом 5 с.
+		File: "rust-client/direct_relay.rs", Count: 1,
+		Pattern: `(?m)^( +)tokio::net::TcpStream::connect\(remote_addr\),$`,
+		Replace: to("${1}crate::bind_if::connect_tcp(remote_addr),"),
+	},
+	{
+		// Точка 7 — прямая UDP-сессия; адрес — того же семейства, что у
+		// назначения, как у апстрима.
+		File: "rust-client/direct_relay.rs", Count: 1,
+		Pattern: `(?m)^( +)let bind_addr = if dst_addr\.is_ipv6\(\) \{\n +"\[::\]:0"\n +\} else \{\n +"0\.0\.0\.0:0"\n +\};\n +let Ok\(new_sock\) = tokio::net::UdpSocket::bind\(bind_addr\)\.await else \{$`,
+		Replace: to("${1}let bind_addr = if dst_addr.is_ipv6() {\n" +
+			"${1}    SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0))\n" +
+			"${1}} else {\n" +
+			"${1}    SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0))\n" +
+			"${1}};\n" +
+			"${1}let Ok(new_sock) = crate::bind_if::udp_socket(bind_addr).await else {"),
+	},
+	{
+		// Точка 8 — DNS-запрос прямого домена к DNS Яндекса и прочим.
+		File: "rust-client/direct_relay.rs", Count: 1,
+		Pattern: `(?m)^( +)let socket = match tokio::net::UdpSocket::bind\("0\.0\.0\.0:0"\)\.await \{$`,
+		Replace: to("${1}let socket = match crate::bind_if::udp_socket((Ipv4Addr::UNSPECIFIED, 0).into()).await {"),
+	},
+	{
+		File: "rust-client/direct_relay.rs", Count: 1,
+		Pattern:      `(?m)^()#\[cfg\(test\)\]\nmod tests \{$`,
+		InsertBefore: "#[cfg(all(test, target_os = \"linux\"))]\n#[path = \"direct_relay_bind_if_tests.rs\"]\nmod bind_if_tests;\n",
+	},
 	// Точки 4 и 5 — клиенты primp: с -bind-if без прокси из окружения;
 	// соединения привязывает коннектор primp-hyper-util.
 	{

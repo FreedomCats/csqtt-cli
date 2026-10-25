@@ -129,6 +129,34 @@ func TestSocketGuardCatches(t *testing.T) {
 			},
 			want: []string{"rust-client/dns.rs: bind_if::udp_socket — найдено 0, в socketSites 1"},
 		},
+		// Маршрутизация мимо туннеля: вернулся голый вызов апстрима.
+		"прямое TCP без привязки": {
+			spoil: func(plan map[string][]byte) {
+				const f = "rust-client/direct_relay.rs"
+				plan[f] = []byte(strings.Replace(string(plan[f]), "crate::bind_if::connect_tcp(remote_addr)", "tokio::net::TcpStream::connect(remote_addr)", 1))
+			},
+			want: []string{
+				"rust-client/direct_relay.rs:", "TcpStream::connect — новое место",
+				"rust-client/direct_relay.rs: bind_if::connect_tcp — найдено 0, в socketSites 1",
+			},
+		},
+		"прямой UDP без привязки": {
+			spoil: func(plan map[string][]byte) {
+				const f = "rust-client/direct_relay.rs"
+				plan[f] = []byte(strings.Replace(string(plan[f]), "crate::bind_if::udp_socket(bind_addr)", "tokio::net::UdpSocket::bind(bind_addr)", 1))
+			},
+			want: []string{
+				"rust-client/direct_relay.rs:", "UdpSocket::bind — новое место",
+				"rust-client/direct_relay.rs: bind_if::udp_socket — найдено 1, в socketSites 2",
+			},
+		},
+		"предразрешение без резолвера ядра": {
+			spoil: func(plan map[string][]byte) {
+				const f = "rust-client/direct_relay.rs"
+				plan[f] = []byte(strings.Replace(string(plan[f]), "crate::dns::global()", "resolver()", 1))
+			},
+			want: []string{"rust-client/direct_relay.rs:", "после lookup_host в той же функции нет crate::dns::global()"},
+		},
 		"файл пропал": {
 			spoil: func(plan map[string][]byte) { delete(plan, "rust-client/tun.rs") },
 			want:  []string{"rust-client/tun.rs: файла нет"},
