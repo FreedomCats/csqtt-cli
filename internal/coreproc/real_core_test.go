@@ -232,16 +232,21 @@ func TestRealCoreTemplateDomains(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = p.stop(0) })
 	const routing = "[КЛИЕНТ] Доменная маршрутизация: ВКЛ (RU/SU/РФ: НЕТ, кастомных доменов: 0)"
-	msgs, seen, drained := collect(p, func(m Message) bool { return m == Log{Text: routing} })
-	waitFor(t, seen, routing)
+	// Строка журнала приходит из stderr, LISTEN — из stdout: порядок между
+	// ними не задан, ждём обоих.
+	var gotRouting, gotListen bool
+	msgs, seen, drained := collect(p, func(m Message) bool {
+		_, listen := m.(ListenEvent)
+		gotRouting = gotRouting || m == Log{Text: routing}
+		gotListen = gotListen || listen
+		return gotRouting && gotListen
+	})
+	waitFor(t, seen, routing+" и LISTEN")
 	cmdline := commandLine(t, p.PID())
 	for _, flag := range []string{"--domain-routing", "--template-domains"} {
 		if !slices.Contains(strings.Fields(cmdline), flag) {
 			t.Errorf("в командной строке ядра нет %s: %s", flag, cmdline)
 		}
-	}
-	if !slices.ContainsFunc(msgs(), func(m Message) bool { _, ok := m.(ListenEvent); return ok }) {
-		t.Error("ядро не открыло сокет канала (LISTEN)")
 	}
 	if err := p.Stop(); err != nil {
 		t.Errorf("Stop() = %v", err)

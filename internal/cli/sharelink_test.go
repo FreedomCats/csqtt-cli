@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/FreedomCats/csqtt-cli/internal/config"
 	"github.com/FreedomCats/csqtt-cli/internal/coreproc"
 	"github.com/FreedomCats/csqtt-cli/internal/supervisor"
 )
@@ -90,7 +91,9 @@ func TestProfileAddFromLinkWithServerToken(t *testing.T) {
 		t.Fatalf("show: код %d, stderr:\n%s", code, stderr)
 	}
 	noServerToken(t, "show", stdout+stderr)
-	if !strings.Contains(stdout, "vk_token         задан (secrets.json, файл с правами 0600)  (выдан сервером: звонки создаются от аккаунта VK владельца сервера") {
+	// Вид хранилища в скобках свой у каждой системы (на Windows — DPAPI).
+	want := "vk_token         задан (" + config.SecretRefKind(p.VkTokenRef) + ")  (выдан сервером: звонки создаются от аккаунта VK владельца сервера"
+	if !strings.Contains(stdout, want) {
 		t.Errorf("show:\n%s", stdout)
 	}
 }
