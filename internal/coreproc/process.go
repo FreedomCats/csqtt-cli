@@ -295,8 +295,8 @@ func (p *Process) Stop() error {
 
 // StopFinishingCalls — Stop, который в auto_js ещё и завершает созданный
 // ядром звонок: FINISH_VK_CALLS и STOP одной записью. Звонок мог остаться —
-// ядро убито или не подтвердило завершение — *CallLeftError. Не в auto_js —
-// то же, что Stop.
+// ядро убито или не подтвердило ни завершения звонка, ни выхода создателя
+// (callState.confirmed) — *CallLeftError. Не в auto_js — то же, что Stop.
 func (p *Process) StopFinishingCalls() error {
 	if p.autoJS {
 		return p.stopAutoJS(true, StopProcessTimeoutAutoJS, StopCleanupTimeoutAutoJS)

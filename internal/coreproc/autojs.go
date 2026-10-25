@@ -109,10 +109,15 @@ const (
 
 // callState — что ядро в auto_js сказало о звонке: создан ли он и чем
 // кончилась уборка.
+//
+// Отметки уборки не снимаются: хватит одного итога N/N за жизнь ядра.
+// Ядро 2.5.0 выводит создателя из звонка ещё при работе, а при остановке без
+// FINISH_VK_CALLS выводит его снова — уже из закрытого звонка, и этот второй
+// итог бывает 0/1.
 type callState struct {
 	created  bool
-	finished bool // «Звонки завершены N/N»
-	left     bool // «Создатель вышел из звонков N/N»
+	finished bool // было «Звонки завершены N/N»
+	left     bool // было «Создатель вышел из звонков N/N»
 }
 
 // observe отмечает строку журнала ядра.
@@ -121,9 +126,9 @@ func (s *callState) observe(line string) {
 	case strings.HasPrefix(line, logCallCreated):
 		s.created = true
 	case strings.HasPrefix(line, logCallsFinished):
-		s.finished = allDone(line[len(logCallsFinished):])
+		s.finished = s.finished || allDone(line[len(logCallsFinished):])
 	case strings.HasPrefix(line, logCreatorLeft):
-		s.left = allDone(line[len(logCreatorLeft):])
+		s.left = s.left || allDone(line[len(logCreatorLeft):])
 	}
 }
 
@@ -142,31 +147,26 @@ func allDone(s string) bool {
 	return err1 == nil && err2 == nil && total > 0 && done == total
 }
 
-// unclean — звонок создан, а уборку, которую просили, ядро не подтвердило:
-// звонок не завершён (finish) или создатель из него не вышел.
+// unclean — звонок создан, а уборку, которую просили, ядро не подтвердило.
 func (s callState) unclean(finish bool) bool {
-	if !s.created {
-		return false
-	}
-	if finish {
-		return !s.finished
-	}
-	return !s.left
+	return s.created && !s.confirmed(finish)
 }
 
-// confirmed — ядро подтвердило уборку, которую просили: звонок завершён
-// (finish) или создатель из него вышел.
+// confirmed — ядро подтвердило уборку, которую просили: создатель вышел из
+// звонка, а если просили завершить (finish), — либо вышел, либо звонок
+// завершён. Выход создателя закрывает звонок и при finish: на ядре 2.5.0
+// создатель выходит, как только поднимутся воркеры, и VK после этого звонок
+// не находит — calls.forceFinish при остановке отвечает «Call not found», и
+// ядро пишет «Звонки завершены 0/1». Туннель при этом работает на уже
+// полученных кредах.
 func (s callState) confirmed(finish bool) bool {
-	if finish {
-		return s.finished
-	}
-	return s.left
+	return s.left || finish && s.finished
 }
 
 // CallLeftError — ядро в auto_js остановлено, а уборка созданного им звонка
-// не подтверждена: ядро убито (не вышло в срок или Kill) или само сказало,
-// что звонок не завершило (создатель не вышел). Звонок мог остаться в
-// аккаунте VK, пока VK не закроет его сам.
+// не подтверждена: ядро убито (не вышло в срок или Kill) или вышло, не
+// сказав, что создатель вышел из звонка или звонок завершён (итог не N/N).
+// Звонок мог остаться в аккаунте VK, пока VK не закроет его сам.
 type CallLeftError struct {
 	// Killed — ядро убито до того, как подтвердило уборку: по сроку или
 	// Kill. Тогда звонок мог остаться, даже если ядро о нём ещё ничего не

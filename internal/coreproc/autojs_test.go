@@ -378,11 +378,26 @@ func TestCallState(t *testing.T) {
 		{[]string{"[VK JS] Звонок создан"}, true, true},
 		{[]string{"[VK JS] Звонок создан", "[VK JS] Звонки завершены 1/1"}, false, true},
 		{[]string{"[VK JS] Звонок создан", "[VK JS] Звонки завершены 0/1"}, true, true},
-		{[]string{"[VK JS] Звонок создан", "[VK JS] Создатель вышел из звонков 1/1"}, true, false},
+		// Создатель вышел — звонок закрыт, и при finish тоже.
+		{[]string{"[VK JS] Звонок создан", "[VK JS] Создатель вышел из звонков 1/1"}, false, false},
 		{[]string{"[VK JS] Звонок создан", "[VK JS] Создатель вышел из звонков 0/1"}, true, true},
 		{[]string{"[VK JS] Звонок создан", "[VK JS] Звонки завершены 1/1 (x2)"}, false, true},
 		{[]string{"[VK JS] Звонок создан", "[VK JS] Звонки завершены "}, true, true},
 		{[]string{"[VK JS] Звонок создан", "[VK JS] Звонки завершены 0/0"}, true, true},
+		// Ядро 2.5.0: создатель выходит ещё при работе, и forceFinish при
+		// остановке звонка уже не находит.
+		{[]string{"[VK JS] Звонок создан", "[VK JS] Создатель вышел из звонков 1/1",
+			"[VK JS] Звонки завершены 0/1"}, false, false},
+		{[]string{"[VK JS] Звонок создан", "[VK JS] Создатель вышел из звонков 0/1",
+			"[VK JS] Звонки завершены 0/1"}, true, true},
+		{[]string{"[VK JS] Звонок создан", "[VK JS] Создатель вышел из звонков 0/1",
+			"[VK JS] Звонки завершены 1/1"}, false, true},
+		// Без FINISH_VK_CALLS 2.5.0 выводит создателя второй раз — из уже
+		// закрытого звонка: поздний неуспех первый итог не отменяет.
+		{[]string{"[VK JS] Звонок создан", "[VK JS] Создатель вышел из звонков 1/1",
+			"[VK JS] Создатель вышел из звонков 0/1"}, false, false},
+		{[]string{"[VK JS] Звонок создан", "[VK JS] Создатель вышел из звонков 0/1",
+			"[VK JS] Создатель вышел из звонков 1/1"}, false, false},
 	} {
 		var s callState
 		for _, l := range c.lines {
@@ -489,7 +504,10 @@ func TestCoreSourceCRLF(t *testing.T) {
 // чтения секретов, CSQTT_FAKE_CREATE_DELAY — «создание звонка» до PROCESS,
 // CSQTT_FAKE_CLEANUP_DELAY — уборка после STOP (всё в мс), CSQTT_FAKE_HANG —
 // PROCESS не наступает никогда, CSQTT_FAKE_FINISHED — итог завершения
-// звонка (по умолчанию 1/1).
+// звонка (по умолчанию 1/1), CSQTT_FAKE_LEFT — итог выхода создателя при
+// остановке без FINISH_VK_CALLS (по умолчанию 1/1). CSQTT_FAKE_CREATOR_LEFT —
+// итог выхода создателя ещё при работе, как у ядра 2.5.0 (по умолчанию
+// создатель держит звонок до остановки, как у 2.1.9).
 func fakeAutoJSCore() int {
 	signal.Ignore(syscall.SIGPIPE)
 	delay := func(name string) {
@@ -532,7 +550,12 @@ func fakeAutoJSCore() int {
 	delay("CSQTT_FAKE_CREATE_DELAY")
 	fmt.Fprintln(os.Stderr, "[VK JS] Звонок создан")
 	fmt.Printf("__CSQTT_EVENT__|PROCESS|{\"pid\":%d}\n", os.Getpid())
-	fmt.Fprintln(os.Stderr, "[VK JS] Создатель удерживает звонок")
+	if left := os.Getenv("CSQTT_FAKE_CREATOR_LEFT"); left != "" {
+		fmt.Fprintln(os.Stderr, "[VK JS] TURN-боты готовы, создатель выходит из звонка")
+		fmt.Fprintln(os.Stderr, "[VK JS] Создатель вышел из звонков "+left)
+	} else {
+		fmt.Fprintln(os.Stderr, "[VK JS] Создатель удерживает звонок")
+	}
 	fmt.Fprintln(os.Stderr, "[КРЕД #1] Запрос (хеш: "+fakeCallHash[:8]+"...)")
 	fmt.Fprintln(os.Stderr, "[VK JS] Переход на Авто #1 не выполнен: error sending request for url "+
 		"(https://api.vk.me/method/auth.getAnonymToken?v=5.276&link=https%3A%2F%2Fvk.com%2Fcall%2Fjoin%2F"+fakeCallHash+"&lang=en)")
@@ -559,7 +582,11 @@ func fakeAutoJSCore() int {
 		}
 		fmt.Fprintln(os.Stderr, "[VK JS] Звонки завершены "+result)
 	} else {
-		fmt.Fprintln(os.Stderr, "[VK JS] Создатель вышел из звонков 1/1")
+		result := os.Getenv("CSQTT_FAKE_LEFT")
+		if result == "" {
+			result = "1/1"
+		}
+		fmt.Fprintln(os.Stderr, "[VK JS] Создатель вышел из звонков "+result)
 	}
 	fmt.Println(`__CSQTT_EVENT__|STOPPED|{}`)
 	fmt.Fprintln(os.Stderr, "[КЛИЕНТ] Все воркеры завершены")
@@ -677,6 +704,38 @@ func TestStopAutoJSTimeouts(t *testing.T) {
 				t.Errorf("stopAutoJS = %v, want *CallLeftError с Killed=%v", err, c.killed)
 			case c.killed && left.Err == nil:
 				t.Error("у убитого ядра нет ошибки выхода")
+			}
+		})
+	}
+}
+
+// Ядро 2.5.0: создатель вышел из звонка ещё при работе, и VK звонок закрыл.
+// При остановке forceFinish его уже не находит (0/1), а повторный выход
+// создателя без FINISH_VK_CALLS не удаётся (0/1) — уборка всё равно
+// подтверждена. Создатель не вышел — звонок мог остаться.
+func TestStopAutoJSCreatorLeft(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		finish bool
+		env    []string
+		left   bool // *CallLeftError
+	}{
+		{"finish", true, []string{"CSQTT_FAKE_CREATOR_LEFT=1/1", "CSQTT_FAKE_FINISHED=0/1"}, false},
+		{"stop", false, []string{"CSQTT_FAKE_CREATOR_LEFT=1/1", "CSQTT_FAKE_LEFT=0/1"}, false},
+		{"finish, не вышел", true, []string{"CSQTT_FAKE_CREATOR_LEFT=0/1", "CSQTT_FAKE_FINISHED=0/1"}, true},
+		{"stop, не вышел", false, []string{"CSQTT_FAKE_CREATOR_LEFT=0/1", "CSQTT_FAKE_LEFT=0/1"}, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p := startAutoJS(t, c.env...)
+			_, _, drained := collect(p, func(Message) bool { return false })
+			err := p.stopAutoJS(c.finish, 10*time.Second, 10*time.Second)
+			waitFor(t, drained, "закрытие Messages")
+			var left *CallLeftError
+			switch {
+			case !c.left && err != nil:
+				t.Errorf("stopAutoJS = %v, want nil", err)
+			case c.left && (!errors.As(err, &left) || left.Killed):
+				t.Errorf("stopAutoJS = %v, want *CallLeftError без Killed", err)
 			}
 		})
 	}
