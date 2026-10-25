@@ -39,7 +39,14 @@ func newNetstack(mtu uint32) (*netstack, error) {
 	})
 	sack := tcpip.TCPSACKEnabled(true)
 	moderate := tcpip.TCPModerateReceiveBufferOption(true)
-	for _, opt := range []tcpip.SettableTransportProtocolOption{&sack, &moderate} {
+	// Без RACK: с ним хвост из десятков потерянных подряд сегментов gVisor
+	// чинит по два сегмента за RTO (200 мс) — помеченные потерянными
+	// сегменты остаются в Outstanding, и повтор упирается в cwnd
+	// (DoRecovery, gvisor pkg/tcpip/transport/tcp/rack.go). Мегабайт после
+	// такой потери шёл десятки секунд; классическое восстановление SACK
+	// чинит его за время порядка RTT.
+	recovery := tcpip.TCPRecovery(0)
+	for _, opt := range []tcpip.SettableTransportProtocolOption{&sack, &moderate, &recovery} {
 		if err := s.SetTransportProtocolOption(tcp.ProtocolNumber, opt); err != nil {
 			s.Close()
 			return nil, fmt.Errorf("netstack: %v", err)

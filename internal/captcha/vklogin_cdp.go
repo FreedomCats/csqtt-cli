@@ -295,7 +295,7 @@ func (c *cdpLogin) event(m cdpMessage) ([]cdpCommand, *outcome) {
 		}
 		_ = json.Unmarshal(m.Params, &p)
 		if c.session != "" && p.SessionID == c.session {
-			return nil, &outcome{err: ErrWindowClosed}
+			return nil, &outcome{err: errLoginTabClosed}
 		}
 
 	case "Target.targetCrashed":
@@ -309,10 +309,34 @@ func (c *cdpLogin) event(m cdpMessage) ([]cdpCommand, *outcome) {
 
 	case "Inspector.detached":
 		if m.SessionID == c.session {
-			return nil, &outcome{err: ErrWindowClosed}
+			return nil, &outcome{err: errLoginTabClosed}
 		}
 	}
 	return nil, nil
+}
+
+// errLoginTabClosed — вкладку окна входа закрыли. Для converse это
+// ErrWindowClosed: после страницы входа окно закрыл человек, до неё —
+// браузер пропал. Текст свой: до страницы он попадает в ErrLoginBrowser, а
+// о капче окну входа говорить нечего.
+var errLoginTabClosed error = loginTabClosed{}
+
+type loginTabClosed struct{}
+
+func (loginTabClosed) Error() string        { return "вкладка закрыта" }
+func (loginTabClosed) Is(target error) bool { return target == ErrWindowClosed }
+
+// loginOutcome переводит исход converse окна входа на его язык: браузер
+// пропал до страницы входа — ErrLoginBrowser, окно закрыто — ErrLoginClosed.
+func loginOutcome(err error) error {
+	var lost *browserLost
+	switch {
+	case errors.As(err, &lost):
+		return fmt.Errorf("%w: %v", ErrLoginBrowser, lost.cause)
+	case errors.Is(err, ErrWindowClosed):
+		return ErrLoginClosed
+	}
+	return err
 }
 
 // decide превращает решение loginFlow в команды или исход.

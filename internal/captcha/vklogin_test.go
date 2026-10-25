@@ -1,6 +1,7 @@
 package captcha
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -354,7 +355,7 @@ func TestCDPLoginEnds(t *testing.T) {
 		c := newCDPLogin(VKAuthURL, nil)
 		openLogin(t, c)
 		_, out := c.handle(msg(t, `{"method":"Target.detachedFromTarget","params":{"sessionId":"S1"}}`))
-		if out == nil || !errors.Is(out.err, ErrWindowClosed) {
+		if out == nil || !errors.Is(out.err, ErrWindowClosed) || strings.Contains(out.err.Error(), "капч") {
 			t.Fatalf("исход: %+v", out)
 		}
 	})
@@ -385,6 +386,60 @@ func TestCDPLoginEnds(t *testing.T) {
 			t.Fatalf("исход: %+v", out)
 		}
 	})
+}
+
+// Вкладку окна входа закрыли: до страницы входа — «окно входа не открылось»,
+// после — «окно входа закрыто». О капче в тексте ни слова.
+func TestLoginOutcomeTabClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		closeOn string // на эту команду браузер вместо ответа закрывает вкладку
+		want    error
+	}{
+		{"до страницы входа", "Page.enable", ErrLoginBrowser},
+		{"после страницы входа", "Page.navigate", ErrLoginClosed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmdR, cmdW := io.Pipe()
+			resR, resW := io.Pipe()
+			defer cmdW.Close()
+			defer resR.Close()
+			go func() {
+				defer resW.Close()
+				br := bufio.NewReader(cmdR)
+				for {
+					raw, err := br.ReadBytes(0)
+					if err != nil {
+						return
+					}
+					var cmd cdpCommand
+					_ = json.Unmarshal(raw[:len(raw)-1], &cmd)
+					reply := `{}`
+					switch cmd.Method {
+					case tc.closeOn:
+						fmt.Fprint(resW, `{"method":"Target.detachedFromTarget","params":{"sessionId":"S1"}}`+"\x00")
+						continue
+					case "Target.getTargets":
+						reply = `{"targetInfos":[{"targetId":"PAGE1","type":"page"}]}`
+					case "Target.attachToTarget":
+						reply = `{"sessionId":"S1"}`
+					}
+					fmt.Fprintf(resW, `{"id":%d,"sessionId":%q,"result":%s}`+"\x00", cmd.ID, cmd.SessionID, reply)
+				}
+			}()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_, err := converse(ctx, resR, cmdW, newCDPLogin(VKAuthURL, nil), 5*time.Second)
+			err = loginOutcome(err)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("ошибка %v, ожидалась %v", err, tc.want)
+			}
+			if strings.Contains(err.Error(), "капч") {
+				t.Errorf("в тексте окна входа — капча: %v", err)
+			}
+		})
+	}
 }
 
 // ─────────────── converse: отложенная команда ───────────────

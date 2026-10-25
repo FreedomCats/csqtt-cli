@@ -5,7 +5,6 @@ package captcha
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"path/filepath"
 )
@@ -47,14 +46,8 @@ func (b *Browser) Login(ctx context.Context) (VKToken, error) {
 	removeProfile(profile)
 	warnProfileLeft(b.opts.Out, profile)
 
-	var lost *browserLost
-	switch {
-	case errors.As(err, &lost):
-		return VKToken{}, fmt.Errorf("%w: %v", ErrLoginBrowser, lost.cause)
-	case errors.Is(err, ErrWindowClosed):
-		return VKToken{}, ErrLoginClosed
-	case err != nil:
-		return VKToken{}, err
+	if err != nil {
+		return VKToken{}, loginOutcome(err)
 	}
 	return conv.result, nil
 }
