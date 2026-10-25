@@ -269,9 +269,10 @@ func TestStartFailure(t *testing.T) {
 
 func TestSendRejectsNewline(t *testing.T) {
 	var p Process
-	for _, cmd := range []string{"STOP\nPAUSE", "x\r"} {
+	// Длиннее MaxCommandBytes ядро строку не примет и остановится.
+	for _, cmd := range []string{"STOP\nPAUSE", "x\r", strings.Repeat("x", MaxCommandBytes)} {
 		if err := p.Send(cmd); err == nil {
-			t.Errorf("Send(%q) не вернул ошибку", cmd)
+			t.Errorf("Send(%.20q) не вернул ошибку", cmd)
 		}
 	}
 }

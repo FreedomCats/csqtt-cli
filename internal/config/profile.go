@@ -142,6 +142,11 @@ type RoutingSection struct {
 	// пропущенное поле значит «выключено», записывается только заданное.
 	// Читать — Profile.RoutingTemplateOn.
 	Template *bool `toml:"template"`
+	// Server — согласие применять правило маршрутизации, которое сервер
+	// назначил паролю в панели (событие ROUTING ядра): оно заменяет Template.
+	// Без согласия правило только показывается. Указатель, как у Template;
+	// читать — Profile.RoutingServerOn.
+	Server *bool `toml:"server"`
 }
 
 // DefaultPeerPort — порт сервера CSQTT, если в адресе его не назвали: тот же,
@@ -181,6 +186,7 @@ func (p *Profile) Core() coreproc.Config {
 		cfg.VKHashMode = coreproc.VKHashModeAutoJS
 	}
 	cfg.TemplateDomains = p.RoutingTemplateOn()
+	cfg.ServerRouting = p.RoutingServerOn()
 	if cfg.Workers == 0 {
 		cfg.Workers = DefaultWorkers
 	}
@@ -203,6 +209,12 @@ func (p *Profile) KillSwitchOn() bool {
 // только если в профиле так и сказано.
 func (p *Profile) RoutingTemplateOn() bool {
 	return p.Routing.Template != nil && *p.Routing.Template
+}
+
+// RoutingServerOn — применяется ли правило маршрутизации сервера: только если
+// в профиле так и сказано.
+func (p *Profile) RoutingServerOn() bool {
+	return p.Routing.Server != nil && *p.Routing.Server
 }
 
 // Names возвращает имена профилей по алфавиту — для выбора и для сообщений

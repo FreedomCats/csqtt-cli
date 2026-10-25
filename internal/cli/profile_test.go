@@ -545,6 +545,61 @@ func TestProfileAddRoutingTemplate(t *testing.T) {
 	}
 }
 
+// -routing-server — так же, отдельно от template: один флаг другой ключ не
+// трогает. profile add принимает и его.
+func TestProfileSetRoutingServer(t *testing.T) {
+	te := newTestEnv(t)
+	te.addHome()
+	showLines := func() (template, server string) {
+		t.Helper()
+		code, stdout, stderr := te.run("profile", "show", "home")
+		if code != exitOK {
+			t.Fatalf("show: код %d, stderr:\n%s", code, stderr)
+		}
+		for _, line := range strings.Split(stdout, "\n") {
+			switch fields := strings.Join(strings.Fields(line), " "); {
+			case strings.HasPrefix(fields, "routing.template "):
+				template = fields
+			case strings.HasPrefix(fields, "routing.server "):
+				server = fields
+			}
+		}
+		return template, server
+	}
+	if _, got := showLines(); got != "routing.server false (умолчание)" {
+		t.Errorf("show без секции: %q", got)
+	}
+
+	for _, tc := range []struct {
+		args     []string
+		want     bool
+		template string
+		server   string
+	}{
+		{[]string{"-routing-server"}, true, "routing.template false (умолчание)", "routing.server true"},
+		{[]string{"-routing-template"}, true, "routing.template true", "routing.server true"},
+		{[]string{"-routing-server=false"}, false, "routing.template true", "routing.server false"},
+	} {
+		if code, _, stderr := te.run(append([]string{"profile", "set", "home"}, tc.args...)...); code != exitOK {
+			t.Fatalf("%v: код %d, stderr:\n%s", tc.args, code, stderr)
+		}
+		file, _ := config.Load(te.configPath())
+		if got := file.Profiles["home"].Routing.Server; got == nil || *got != tc.want {
+			t.Errorf("%v: routing.server %v, ждали %v", tc.args, got, tc.want)
+		}
+		if template, server := showLines(); template != tc.template || server != tc.server {
+			t.Errorf("%v: show %q, %q; ждали %q, %q", tc.args, template, server, tc.template, tc.server)
+		}
+	}
+
+	te = newTestEnv(t)
+	te.addHome("-routing-server")
+	file, _ := config.Load(te.configPath())
+	if p := file.Profiles["home"]; !p.RoutingServerOn() || p.Routing.Template != nil {
+		t.Errorf("после add -routing-server: server %v, template %v", p.Routing.Server, p.Routing.Template)
+	}
+}
+
 func boolPtr(v bool) *bool { return &v }
 
 // Профиль auto_js хешей не спрашивает и не требует; предупреждение о

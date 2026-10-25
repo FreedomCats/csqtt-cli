@@ -30,7 +30,9 @@ go 1.26.2
 // wireguard-go в qwdtt-cli: проверена с этим Go. Модуль огромный, но в бинарь
 // попадают только пакеты pkg/tcpip и их опоры.
 // golang.org/x/net (BSD-3) — dnsmessage: резолвер имён SOCKS5 через туннель;
-// proxy — только тестам, сторонний клиент SOCKS5.
+// idna: домены правила маршрутизации сервера в punycode; proxy — только
+// тестам, сторонний клиент SOCKS5.
+// golang.org/x/text (BSD-3) — опора idna (таблицы Unicode, нормализация).
 // BurntSushi/toml (MIT) — разбор profiles.toml.
 // jchv/go-webview2 (MIT) — окно капчи на Windows. Без cgo, WebView2Loader.dll
 // встроен; тянет jchv/go-winloader (MIT). Только из *_windows.go.
@@ -61,6 +63,7 @@ require (
 	golang.org/x/exp/typeparams v0.0.0-20231108232855-2478ac86f678 // indirect
 	golang.org/x/mod v0.37.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/text v0.40.0 // indirect
 	golang.org/x/time v0.7.0 // indirect
 	golang.org/x/tools v0.47.0 // indirect
 	golang.org/x/tools/go/expect v0.1.1-deprecated // indirect

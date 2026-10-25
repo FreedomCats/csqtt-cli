@@ -72,6 +72,11 @@ type Config struct {
 	// прямые сокеты ядра ушли бы маршрутами туннеля обратно в адаптер
 	// (DirectRouting).
 	TemplateDomains bool
+	// ServerRouting — правило маршрутизации, присланное сервером
+	// (RoutingEvent), применяется: оболочка шлёт ядру RoutingUpdate.Command,
+	// и правило заменяет TemplateDomains. В аргументы ядра не идёт. В
+	// datapath tun — тоже только вместе с BindIf (MayRouteDirect).
+	ServerRouting bool
 	// epoch — эпоха подключения (-gen/-salt). Её задаёт Start, новую на
 	// каждый процесс ядра; нулевая не передаётся.
 	epoch epoch
@@ -127,9 +132,13 @@ func (c Config) Args() []string {
 	return args
 }
 
-// DirectRouting — часть трафика ядро пустит мимо туннеля, своими сокетами
-// (TemplateDomains).
+// DirectRouting — часть трафика ядро пустит мимо туннеля, своими сокетами,
+// с самого запуска (TemplateDomains).
 func (c Config) DirectRouting() bool { return c.TemplateDomains }
+
+// MayRouteDirect — ядро может пустить часть трафика мимо туннеля: с запуска
+// (DirectRouting) или позже, по правилу сервера (ServerRouting).
+func (c Config) MayRouteDirect() bool { return c.DirectRouting() || c.ServerRouting }
 
 // AutoJS — звонок создаёт ядро (VKHashModeAutoJS).
 func (c Config) AutoJS() bool { return c.VKHashMode == VKHashModeAutoJS }

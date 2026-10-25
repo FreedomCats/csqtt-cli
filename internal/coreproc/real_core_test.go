@@ -250,6 +250,40 @@ func TestRealCoreTemplateDomains(t *testing.T) {
 	checkRealCoreOutput(t, p, msgs())
 }
 
+// Команду правила сервера ядро принимает после PROCESS и применяет: строка
+// журнала о горячем обновлении — с теми ключами, что посланы. Правило — только
+// адреса: с выключенными доменами ядро ничего не разрешает заранее и в сеть
+// не ходит.
+func TestRealCoreUpdateDomains(t *testing.T) {
+	p, err := Start(realCorePath(t), realCoreConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.stop(0) })
+	const applied = "[КЛИЕНТ] Горячее обновление доменов: вкл=false, RU=false, шаблоны=false, кастомных=0, " +
+		"ЧС/БС=true, IP вкл=true, IP ЧС/БС=true, IP правил=2"
+	msgs, seen, drained := collect(p, func(m Message) bool { return m == Log{Text: applied} })
+	select {
+	case <-p.processed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("не дождались PROCESS")
+	}
+	u, err := (&RoutingRule{IPsWhitelist: true, IPs: []string{"203.0.113.0/24", "198.51.100.1-198.51.100.9", "bad;x"},
+		DomainsWhitelist: true}).Update()
+	if err != nil || u.Dropped != 1 {
+		t.Fatalf("Update() = %+v, %v", u, err)
+	}
+	if err := p.Send(u.Command); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, seen, applied)
+	if err := p.Stop(); err != nil {
+		t.Errorf("Stop() = %v", err)
+	}
+	waitFor(t, drained, "закрытие Messages")
+	checkRealCoreOutput(t, p, msgs())
+}
+
 // Индекс без интерфейса — отказ стартовать с понятной строкой, а не молча
 // непривязанные сокеты.
 func TestRealCoreBindIfRefused(t *testing.T) {

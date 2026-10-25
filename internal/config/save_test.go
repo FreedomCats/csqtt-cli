@@ -24,7 +24,7 @@ func sampleFile() *File {
 				Datapath:      DatapathSocks,
 				KillSwitch:    boolPtr(false),
 				Socks:         SocksSection{Listen: "127.0.0.1:1081"},
-				Routing:       RoutingSection{Template: boolPtr(true)},
+				Routing:       RoutingSection{Template: boolPtr(true), Server: boolPtr(false)},
 			},
 			"work": {
 				Name:        "work",
@@ -77,7 +77,12 @@ func sameProfile(a, b *Profile) bool {
 	}
 	x, y := *a, *b
 	x.KillSwitch, y.KillSwitch = nil, nil
+	if (a.Routing.Server == nil) != (b.Routing.Server == nil) ||
+		a.Routing.Server != nil && *a.Routing.Server != *b.Routing.Server {
+		return false
+	}
 	x.Routing.Template, y.Routing.Template = nil, nil
+	x.Routing.Server, y.Routing.Server = nil, nil
 	return x == y
 }
 
@@ -208,6 +213,44 @@ func TestSaveRoutingTemplate(t *testing.T) {
 	}
 }
 
+// server — так же: пишется, только если задан, и может стоять без template.
+func TestSaveRoutingServer(t *testing.T) {
+	for _, tc := range []struct {
+		template, server *bool
+		text             string
+	}{
+		{nil, boolPtr(true), "\n[profile.home.routing]\nserver = true\n"},
+		{nil, boolPtr(false), "\n[profile.home.routing]\nserver = false\n"},
+		{boolPtr(true), boolPtr(true), "\n[profile.home.routing]\ntemplate = true\nserver = true\n"},
+		{boolPtr(false), nil, "\n[profile.home.routing]\ntemplate = false\n"},
+	} {
+		path := filepath.Join(t.TempDir(), FileName)
+		f := &File{Profiles: map[string]*Profile{"home": {
+			Name: "home", Peer: "203.0.113.10", PasswordRef: "dpapi:8f2a1c", VkHashesRef: "dpapi:1c9bd4",
+			Routing: RoutingSection{Template: tc.template, Server: tc.server},
+		}}}
+		if err := Save(path, f); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasSuffix(string(raw), tc.text) {
+			t.Errorf("template %v, server %v: в файле\n%s", tc.template, tc.server, raw)
+		}
+		got, err := Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := got.Profiles["home"]
+		on := tc.server != nil && *tc.server
+		if p.RoutingServerOn() != on || (p.Routing.Server == nil) != (tc.server == nil) || p.Core().ServerRouting != on {
+			t.Errorf("server %v: после чтения %v, RoutingServerOn %v", tc.server, p.Routing.Server, p.RoutingServerOn())
+		}
+	}
+}
+
 func TestSaveOmitsEmptyFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), FileName)
 	f := &File{Profiles: map[string]*Profile{
@@ -227,7 +270,7 @@ func TestSaveOmitsEmptyFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(raw)
-	for _, key := range []string{"workers", "obfs", "turn_transport", "datapath", "kill_switch", "socks", "routing", "template"} {
+	for _, key := range []string{"workers", "obfs", "turn_transport", "datapath", "kill_switch", "socks", "routing", "template", "server"} {
 		if strings.Contains(text, key+" =") || strings.Contains(text, "."+key+"]") {
 			t.Errorf("в файле есть незаданный ключ %q:\n%s", key, text)
 		}

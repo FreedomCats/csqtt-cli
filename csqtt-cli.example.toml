@@ -80,5 +80,13 @@ listen = "127.0.0.1:1080"
 # туннель поднят. Подробно — в README, раздел «Мимо туннеля».
 # Включить: `csqtt-cli profile set home -routing-template`,
 # выключить: `-routing-template=false`.
+#
+# С server = true применяется правило маршрутизации, которое владелец сервера
+# назначил паролю в панели (без него правило только показывается при connect).
+# Правило сервера заменяет template целиком. Если в нём белый список, в туннель
+# идёт только этот список, а всё остальное — напрямую, с вашего адреса.
+# Включить: `csqtt-cli profile set home -routing-server`,
+# выключить: `-routing-server=false`.
 # [profile.home.routing]
 # template = true
+# server = false

@@ -117,6 +117,10 @@ type Machine struct {
 	// (coreproc.Config.DirectRouting), и принятое напрямую STATS считает
 	// вместе с принятым из туннеля. Задаёт NewTunnel, на весь Run.
 	direct bool
+	// directRule — то же по правилу сервера, посланному ядру этой попытки
+	// (RuleDirect); BeginAttempt снимает: новое ядро начинает с настроек
+	// профиля.
+	directRule bool
 
 	// Что известно о текущей попытке; BeginAttempt обнуляет.
 	datapathUp bool  // datapath поднят по первому TUNCONF
@@ -159,8 +163,19 @@ func (m *Machine) BeginAttempt() (Transition, bool) {
 		return Transition{}, false
 	}
 	m.datapathUp, m.workers, m.suspect, m.bytesDown, m.suspectAt = false, 0, false, 0, 0
-	m.draining = false
+	m.draining, m.directRule = false, false
 	return m.set(StateStarting, nil)
+}
+
+// RuleDirect отмечает, что ядру этой попытки послано правило сервера,
+// пускающее часть трафика мимо туннеля: подозрение на сеть с этих пор, как
+// при direct, снимает только READY. До конца попытки, даже если следующее
+// правило маршрутизацию выключит: ответы уже открытых прямых соединений
+// могут ещё идти.
+func (m *Machine) RuleDirect() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.directRule = true
 }
 
 // Drain отмечает, что ядру послан Stop и попытка доживает: ядро закрывает
@@ -208,7 +223,7 @@ func (m *Machine) Observe(msg coreproc.Message) (Transition, bool) {
 		// direct: ответы прямых соединений ядро считает туда же, и они
 		// идут, когда туннель мёртв. Тогда подозрение снимает только
 		// READY — воркеры, упавшие по таймаутам, ядро переподключает само.
-		if m.suspect && !m.direct && e.Active > 0 && e.BytesDown > m.suspectAt {
+		if m.suspect && !m.direct && !m.directRule && e.Active > 0 && e.BytesDown > m.suspectAt {
 			m.suspect = false
 		}
 	case coreproc.ActiveZeroEvent:

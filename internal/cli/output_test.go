@@ -219,6 +219,81 @@ func TestRoutingLine(t *testing.T) {
 	}
 }
 
+// С согласием (routing.server) строка говорит, что правило применяется вместо
+// настройки профиля; белый список — заметной строкой ВНИМАНИЕ; отброшенные
+// элементы и пустой белый список — строками под ней; правило, которое не
+// влезает в команду ядру, — «не применяется» с причиной.
+func TestRoutingLineApplied(t *testing.T) {
+	black := coreproc.RoutingEvent{Raw: "black", Rule: &coreproc.RoutingRule{
+		Name: "Офис", Domains: []string{"example.ru", "a.ru;enabled=1", "b c.ru"}, TemplateDomains: true,
+	}}
+	white := coreproc.RoutingEvent{Raw: "white", Rule: &coreproc.RoutingRule{
+		Name: "Только список", DomainsWhitelist: true, Domains: []string{"example.com"},
+		IPsWhitelist: true, IPs: []string{"203.0.113.0/24"},
+	}}
+	emptyWhite := coreproc.RoutingEvent{Raw: "empty", Rule: &coreproc.RoutingRule{
+		Name: "Пусто", DomainsWhitelist: true, Domains: []string{"x;y"}, IPs: []string{"198.51.100.1"},
+	}}
+	long := coreproc.RoutingEvent{Raw: "long", Rule: &coreproc.RoutingRule{
+		Name: "Длинное", Domains: []string{strings.Repeat("a", coreproc.MaxCommandBytes) + ".ru"},
+	}}
+	wide := coreproc.RoutingEvent{Raw: "wide", Rule: &coreproc.RoutingRule{
+		Name: "Широкое", IPs: []string{"203.0.113.0/24", "1.0.0.0-255.255.255.255", "0.0.0.0/0"},
+	}}
+	v6 := coreproc.RoutingEvent{Raw: "v6", Rule: &coreproc.RoutingRule{
+		Name: "IPv6", IPsWhitelist: true, IPs: []string{"2001:db8::/32"},
+	}}
+	domains := make([]string, coreproc.MaxRoutingDomains+1)
+	for i := range domains {
+		domains[i] = fmt.Sprintf("d%d.example.ru", i)
+	}
+	many := coreproc.RoutingEvent{Raw: "many", Rule: &coreproc.RoutingRule{
+		Name: "Много", DomainsWhitelist: true, Domains: domains,
+	}}
+
+	p, buf, _ := testPrinter(false)
+	p.setRoutingServer(true)
+	for _, e := range []coreproc.RoutingEvent{black, black, white, emptyWhite, long, wide, v6, many} {
+		p.message(e)
+	}
+	got := strings.Split(strings.TrimSuffix(buf.String(), "\n"), "\n")
+	want := []string{
+		"12:00:00 сервер прислал правило маршрутизации «Офис»: домены — 3 (чёрный список), шаблон — да, адреса — 0 " +
+			"— применяется вместо настройки профиля (routing.template)",
+		"12:00:00   из правила отброшено элементов: 2 — ядро их не примет (не домен, адрес не IPv4) " +
+			"или они сломали бы команду ядру (пробелы, управляющие знаки, ; , = |)",
+		"12:00:00 сервер прислал правило маршрутизации «Только список»: домены — 1 (белый список), шаблон — нет, " +
+			"адреса — 1 (белый список) — применяется вместо настройки профиля (routing.template)",
+		"12:00:00 ВНИМАНИЕ: правило сервера — белый список доменов и адресов: в туннель идёт только список, " +
+			"всё остальное — напрямую, мимо туннеля, с вашего адреса",
+		"12:00:00 сервер прислал правило маршрутизации «Пусто»: домены — 1 (белый список), шаблон — нет, " +
+			"адреса — 1 (чёрный список) — применяется вместо настройки профиля (routing.template)",
+		"12:00:00   из правила отброшено элементов: 1 — ядро их не примет (не домен, адрес не IPv4) " +
+			"или они сломали бы команду ядру (пробелы, управляющие знаки, ; , = |)",
+		"12:00:00   белый список доменов в правиле пуст — не включается: с пустым мимо туннеля пошло бы всё",
+		fmt.Sprintf("12:00:00 сервер прислал правило маршрутизации «Длинное»: домены — 1 (чёрный список), шаблон — нет, "+
+			"адреса — 0 — не применяется: команда ядру вышла бы %d байт, а ядро принимает до 64 КиБ; "+
+			"трафик идёт по настройкам профиля",
+			// Команда без списков, домен и перевод строки.
+			len(coreproc.ProfileRouting(false).Command)+coreproc.MaxCommandBytes+len(".ru")+1),
+		"12:00:00 сервер прислал правило маршрутизации «Широкое»: домены — 0, шаблон — нет, адреса — 3 (чёрный список) " +
+			"— применяется вместо настройки профиля (routing.template)",
+		"12:00:00 ВНИМАНИЕ: правило сервера — чёрный список адресов с огромным диапазоном (1.0.0.0-255.255.255.255, " +
+			"/8 и шире): большая часть трафика идёт напрямую, мимо туннеля, с вашего адреса",
+		"12:00:00 сервер прислал правило маршрутизации «IPv6»: домены — 0, шаблон — нет, адреса — 1 (белый список) " +
+			"— применяется вместо настройки профиля (routing.template)",
+		"12:00:00   из правила отброшено элементов: 1 — ядро их не примет (не домен, адрес не IPv4) " +
+			"или они сломали бы команду ядру (пробелы, управляющие знаки, ; , = |)",
+		"12:00:00   белый список адресов в правиле пуст — не включается: с пустым мимо туннеля пошло бы всё",
+		"12:00:00 сервер прислал правило маршрутизации «Много»: домены — 1025 (белый список), шаблон — нет, адреса — 0 " +
+			"— не применяется: в белом списке 1025 доменов, ядро берёт не больше 1024 — остальные ушли бы мимо туннеля; " +
+			"трафик идёт по настройкам профиля",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("вывод:\n%s\nожидалось:\n%s", buf.String(), strings.Join(want, "\n"))
+	}
+}
+
 // Сервер без DNS — предупреждение и без -v: имена через SOCKS5 не пройдут.
 func TestConfigWithoutDNSWarns(t *testing.T) {
 	p, buf, _ := testPrinter(false)

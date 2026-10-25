@@ -95,6 +95,9 @@ func fakeCore(mode string) int {
 				fmt.Fprintf(os.Stderr, "[П3] Интерфейс %s → %s: новые сокеты — через него\n", bound, index)
 				bound = index
 			}
+			if strings.HasPrefix(in.Text(), "UPDATE_DOMAINS|") {
+				fmt.Fprintf(os.Stderr, "[STDIN] %s\n", in.Text())
+			}
 		}
 		event("STOPPED", "{}")
 		return 0
@@ -131,6 +134,17 @@ func fakeCore(mode string) int {
 	case "rejected":
 		fmt.Fprintf(os.Stderr, "[ТЕСТ] аргументы ядра: %s\n", strings.Join(os.Args[1:], " "))
 		event("PROCESS", fmt.Sprintf(`{"pid":%d}`, os.Getpid()))
+		payload, _ := json.Marshal(map[string]any{"code": "handshake_rejected", "message": rejectMsg, "fatal": true})
+		event("ERROR", string(payload))
+		return waitStop()
+
+	// routing — сервер прислал правило маршрутизации (белый список доменов),
+	// затем отказал: ядро доживает до STOP и повторяет UPDATE_DOMAINS в журнал.
+	case "routing":
+		event("PROCESS", fmt.Sprintf(`{"pid":%d}`, os.Getpid()))
+		rule, _ := json.Marshal(map[string]string{"routing": `{"version":2,"name":"Только список",` +
+			`"domains_is_whitelist":true,"domains":["example.com","bad;x"],"template_domains":false,"ips":[]}`})
+		event("ROUTING", string(rule))
 		payload, _ := json.Marshal(map[string]any{"code": "handshake_rejected", "message": rejectMsg, "fatal": true})
 		event("ERROR", string(payload))
 		return waitStop()

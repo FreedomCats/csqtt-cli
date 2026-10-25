@@ -188,6 +188,41 @@ func TestConnectRoutingTemplate(t *testing.T) {
 	}
 }
 
+// Правило маршрутизации сервера: без согласия — строка «не применяется», ядру
+// ничего; с -routing-server — «применяется», предупреждение о белом списке,
+// отброшенный элемент, и ядро получает UPDATE_DOMAINS.
+func TestConnectRoutingServer(t *testing.T) {
+	te := newTestEnv(t)
+	socksHome(t, te)
+	te.core = "routing"
+	const update = "[STDIN] UPDATE_DOMAINS|enabled=1;ru=0;template=0;whitelist=1;domains=example.com;" +
+		"ip_enabled=0;ip_whitelist=0;ips="
+	for _, on := range []bool{false, true} {
+		if on {
+			if code, _, stderr := te.run("profile", "set", "home", "-routing-server"); code != exitOK {
+				t.Fatalf("profile set: код %d, stderr:\n%s", code, stderr)
+			}
+		}
+		code, stdout, stderr := te.run("connect", "-v")
+		if code != exitError {
+			t.Fatalf("код %d:\n%s\n%s", code, stdout, stderr)
+		}
+		want := map[string]bool{
+			"«Только список»: домены — 2 (белый список), шаблон — нет, адреса — 0 — не применяется\n": !on,
+			"«Только список»: домены — 2 (белый список), шаблон — нет, адреса — 0 — применяется":      on,
+			"из правила отброшено элементов: 1":                                                       on,
+			"правило маршрутизации сервера, если сервер его пришлёт, будет применено":                 on,
+			"ВНИМАНИЕ: правило сервера — белый список доменов":                                        on,
+			update: on,
+		}
+		for text, present := range want {
+			if strings.Contains(stdout, text) != present {
+				t.Errorf("согласие %v: строка %q есть — %v, ждали %v:\n%s", on, text, !present, present, stdout)
+			}
+		}
+	}
+}
+
 // Сервер молчит на первом подключении: VK выдал креды, а ответа нет — connect
 // останавливает ядро и выходит с ошибкой, версией ядра и причинами, без
 // повторов.

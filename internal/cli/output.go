@@ -17,6 +17,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/netip"
@@ -85,6 +86,9 @@ type printer struct {
 	// сервер: строка о нём печатается, только когда оно сменилось.
 	routing     string
 	routingSeen bool
+	// routingServer — правило сервера применяется (routing.server в
+	// профиле, setRoutingServer).
+	routingServer bool
 }
 
 func newPrinter(w io.Writer, verbose bool) *printer {
@@ -113,6 +117,14 @@ func (p *printer) enableStatus(width func() int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.status = &statusLine{width: width}
+}
+
+// setRoutingServer — профиль согласен на правило маршрутизации сервера: его
+// применяет цикл подключения, а строка о правиле говорит, что вышло.
+func (p *printer) setRoutingServer(on bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.routingServer = on
 }
 
 // setHashes запоминает хеши профиля: по ним строки называют хеш номером, и их
@@ -498,12 +510,17 @@ const (
 	routingRawRunes  = 120
 )
 
-// routingEvent — сервер прислал правило маршрутизации. Применять его
-// csqtt-cli пока не умеет, но знать о нём важно: владелец сервера хотел
-// пустить часть трафика мимо туннеля. Поэтому строка — и без -v, одна на
-// правило, пока оно не сменится (сервер шлёт его на каждое подключение
-// первого воркера, в том числе при каждом запуске ядра); с -v — ещё и
-// списки, обрезанные до routingListShown. Под замком.
+// routingEvent — сервер прислал правило маршрутизации. Знать о нём важно и
+// без согласия на него: владелец сервера хотел пустить часть трафика мимо
+// туннеля. Поэтому строка — и без -v, одна на правило, пока оно не сменится
+// (сервер шлёт его на каждое подключение первого воркера, в том числе при
+// каждом запуске ядра); с -v — ещё и списки, обрезанные до routingListShown.
+//
+// С согласием (routing.server в профиле) правило применяет цикл подключения,
+// и строка говорит, что вышло, по тому же RoutingRule.Update: применено ли,
+// сколько элементов отброшено, и — заметно — что белый список пускает мимо
+// туннеля всё, кроме списка, а огромный диапазон чёрного — большую часть
+// трафика. Под замком.
 func (p *printer) routingEvent(e coreproc.RoutingEvent) {
 	if p.routingSeen && e.Raw == p.routing {
 		if p.verbose {
@@ -526,8 +543,28 @@ func (p *printer) routingEvent(e coreproc.RoutingEvent) {
 	if r.TemplateDomains {
 		template = "да"
 	}
-	p.lineLocked(fmt.Sprintf("сервер прислал правило маршрутизации %s: домены — %s, шаблон — %s, адреса — %s — не применяется",
-		name, routingCount(r.Domains, r.DomainsWhitelist), template, routingCount(r.IPs, r.IPsWhitelist)))
+	text := fmt.Sprintf("сервер прислал правило маршрутизации %s: домены — %s, шаблон — %s, адреса — %s",
+		name, routingCount(r.Domains, r.DomainsWhitelist), template, routingCount(r.IPs, r.IPsWhitelist))
+	if !p.routingServer {
+		p.lineLocked(text + " — не применяется")
+	} else if u, err := r.Update(); err != nil {
+		var long *coreproc.RoutingTooLongError
+		var many *coreproc.RoutingTooManyDomainsError
+		switch {
+		case errors.As(err, &long):
+			text += fmt.Sprintf(" — не применяется: команда ядру вышла бы %d байт, а ядро принимает до %d КиБ",
+				long.Bytes, coreproc.MaxCommandBytes>>10)
+		case errors.As(err, &many):
+			text += fmt.Sprintf(" — не применяется: в белом списке %d доменов, ядро берёт не больше %d — "+
+				"остальные ушли бы мимо туннеля", many.Domains, coreproc.MaxRoutingDomains)
+		default:
+			text += fmt.Sprintf(" — не применяется: %v", err)
+		}
+		p.lineLocked(text + "; трафик идёт по настройкам профиля")
+	} else {
+		p.lineLocked(text + " — применяется вместо настройки профиля (routing.template)")
+		p.routingApplied(r, u)
+	}
 	if !p.verbose {
 		return
 	}
@@ -543,6 +580,43 @@ func (p *printer) routingEvent(e coreproc.RoutingEvent) {
 		if len(l.items) > 0 {
 			p.lineLocked(fmt.Sprintf("  %s, %s: %s", l.what, routingMode(l.whitelist), routingList(l.items)))
 		}
+	}
+}
+
+// routingApplied — что ещё сказать о применённом правиле: отброшенные
+// элементы, пустой белый список, который не включён, сам белый список и
+// огромный диапазон в чёрном списке адресов.
+func (p *printer) routingApplied(r *coreproc.RoutingRule, u coreproc.RoutingUpdate) {
+	if u.Dropped > 0 {
+		p.lineLocked(fmt.Sprintf("  из правила отброшено элементов: %d — ядро их не примет (не домен, адрес не IPv4) "+
+			"или они сломали бы команду ядру (пробелы, управляющие знаки, ; , = |)", u.Dropped))
+	}
+	var empty []string
+	if r.DomainsWhitelist && !u.DomainsWhitelist {
+		empty = append(empty, "доменов")
+	}
+	if r.IPsWhitelist && !u.IPsWhitelist {
+		empty = append(empty, "адресов")
+	}
+	if len(empty) > 0 {
+		p.lineLocked(fmt.Sprintf("  белый список %s в правиле пуст — не включается: с пустым мимо туннеля "+
+			"пошло бы всё", strings.Join(empty, " и ")))
+	}
+	var white []string
+	if u.DomainsWhitelist {
+		white = append(white, "доменов")
+	}
+	if u.IPsWhitelist {
+		white = append(white, "адресов")
+	}
+	if len(white) > 0 {
+		p.lineLocked(fmt.Sprintf("ВНИМАНИЕ: правило сервера — белый список %s: в туннель идёт только список, "+
+			"всё остальное — напрямую, мимо туннеля, с вашего адреса", strings.Join(white, " и ")))
+	}
+	if u.WideIP != "" {
+		p.lineLocked(fmt.Sprintf("ВНИМАНИЕ: правило сервера — чёрный список адресов с огромным диапазоном (%s, "+
+			"/8 и шире): большая часть трафика идёт напрямую, мимо туннеля, с вашего адреса",
+			routingText(u.WideIP, routingTextRunes)))
 	}
 }
 

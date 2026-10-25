@@ -47,6 +47,11 @@ func CaptchaFailed(reason string) string { return "CAPTCHA_RESULT|error:" + reas
 // auto_js сроки свои (StopProcessTimeoutAutoJS, StopCleanupTimeoutAutoJS).
 const StopTimeout = 3 * time.Second
 
+// MaxCommandBytes — предел строки stdin ядра вместе с переводом строки.
+// Длиннее ядро считает канал управления испорченным и останавливается (main.rs,
+// MAX_STDIN_LINE_BYTES).
+const MaxCommandBytes = 64 << 10
+
 // maxLine — длиннее строку вывода ядро не пишет; хвост сверх неё
 // отбрасывается.
 const maxLine = 1 << 20
@@ -265,6 +270,9 @@ func (p *Process) PID() int { return p.cmd.Process.Pid }
 func (p *Process) Send(cmd string) error {
 	if strings.ContainsAny(cmd, "\r\n") {
 		return errors.New("команда ядру не может содержать перевод строки")
+	}
+	if len(cmd)+1 > MaxCommandBytes {
+		return fmt.Errorf("команда ядру длиннее %d байт: ядро её не примет и остановится", MaxCommandBytes)
 	}
 	return p.write(cmd + "\n")
 }

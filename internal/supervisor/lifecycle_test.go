@@ -873,20 +873,26 @@ func TestPrepareEachAttempt(t *testing.T) {
 
 // Маршрутизация мимо туннеля в datapath на весь трафик системы без привязки
 // ядра к интерфейсу — конец без запуска ядра и без повторов: прямые сокеты
-// ушли бы в адаптер. С привязкой или в socks ядро запускается.
+// ушли бы в адаптер. С привязкой или в socks ядро запускается. Согласие на
+// правило сервера — то же, что включённая маршрутизация: правило включит её
+// посреди работы.
 func TestDirectRoutingNeedsBindIf(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
+		cfg        coreproc.Config
 		persistent bool
 		bindIf     uint32
 		refused    bool
 	}{
-		{"tun без привязки", true, 0, true},
-		{"tun с привязкой", true, 3, false},
-		{"socks без привязки", false, 0, false},
+		{"tun без привязки", coreproc.Config{TemplateDomains: true}, true, 0, true},
+		{"tun с привязкой", coreproc.Config{TemplateDomains: true}, true, 3, false},
+		{"socks без привязки", coreproc.Config{TemplateDomains: true}, false, 0, false},
+		{"правило сервера, tun без привязки", coreproc.Config{ServerRouting: true}, true, 0, true},
+		{"правило сервера, tun с привязкой", coreproc.Config{ServerRouting: true}, true, 3, false},
+		{"правило сервера, socks", coreproc.Config{ServerRouting: true}, false, 0, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			opts := Options{Config: coreproc.Config{TemplateDomains: true}, Prepare: func(cfg *coreproc.Config) error {
+			opts := Options{Config: tc.cfg, Prepare: func(cfg *coreproc.Config) error {
 				cfg.BindIf = tc.bindIf
 				return nil
 			}}

@@ -113,21 +113,29 @@ func TestExampleFileParses(t *testing.T) {
 }
 
 // Секция routing разбирается; неизвестный ключ в ней — ошибка, как везде:
-// правила сервера и свои списки здесь пока не задаются.
+// свои списки здесь пока не задаются.
 func TestParseRoutingSection(t *testing.T) {
-	on := parse(t, minimalFile+"\n[profile.home.routing]\ntemplate = true\n").Profiles["home"]
-	if !on.RoutingTemplateOn() {
-		t.Errorf("template = true: %v", on.Routing.Template)
+	on := parse(t, minimalFile+"\n[profile.home.routing]\ntemplate = true\nserver = true\n").Profiles["home"]
+	if !on.RoutingTemplateOn() || !on.RoutingServerOn() {
+		t.Errorf("template = true, server = true: %v, %v", on.Routing.Template, on.Routing.Server)
 	}
-	if off := parse(t, minimalFile).Profiles["home"]; off.RoutingTemplateOn() || off.Routing.Template != nil {
-		t.Errorf("без секции: %v", off.Routing.Template)
+	if c := on.Core(); !c.TemplateDomains || !c.ServerRouting {
+		t.Errorf("Core(): TemplateDomains %v, ServerRouting %v", c.TemplateDomains, c.ServerRouting)
 	}
-	if empty := parse(t, minimalFile+"\n[profile.home.routing]\n").Profiles["home"]; empty.RoutingTemplateOn() {
-		t.Error("пустая секция включила шаблон")
+	off := parse(t, minimalFile).Profiles["home"]
+	if off.RoutingTemplateOn() || off.Routing.Template != nil || off.RoutingServerOn() || off.Routing.Server != nil {
+		t.Errorf("без секции: %v, %v", off.Routing.Template, off.Routing.Server)
+	}
+	if c := off.Core(); c.TemplateDomains || c.ServerRouting {
+		t.Errorf("без секции Core(): TemplateDomains %v, ServerRouting %v", c.TemplateDomains, c.ServerRouting)
+	}
+	if empty := parse(t, minimalFile+"\n[profile.home.routing]\n").Profiles["home"]; empty.RoutingTemplateOn() || empty.RoutingServerOn() {
+		t.Error("пустая секция включила шаблон или правило сервера")
 	}
 	for _, tc := range []struct{ text, want string }{
-		{"\n[profile.home.routing]\nserver = \"apply\"\n", "неизвестный ключ profile.home.routing.server"},
+		{"\n[profile.home.routing]\ndomains = [\"example.ru\"]\n", "неизвестный ключ profile.home.routing.domains"},
 		{"\n[profile.home.routing]\ntemplate = \"yes\"\n", "template"},
+		{"\n[profile.home.routing]\nserver = \"apply\"\n", "server"},
 	} {
 		_, err := Parse([]byte(minimalFile+tc.text), "тест.toml")
 		if err == nil || !strings.Contains(err.Error(), tc.want) {

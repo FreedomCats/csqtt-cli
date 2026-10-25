@@ -55,7 +55,8 @@ func connectCommand() *command {
 
 Режим tun (datapath = "tun", умолчание) — системный VPN: весь трафик
 системы идёт в туннель через адаптер csqtt-cli (кроме сайтов встроенного
-списка ядра, если в профиле включён routing.template). Он требует прав root
+списка ядра и правила маршрутизации сервера, если в профиле включены
+routing.template и routing.server). Он требует прав root
 (sudo ` + app.Name + ` connect), на Windows — администратора. Файл
 настроек, секреты и окно капчи под sudo остаются у того, кто его вызвал. Пока туннель
 не поднят, kill-switch блокирует трафик системы; пока поднят, DNS системы
@@ -359,6 +360,7 @@ func (plan *connectPlan) run(ctx context.Context, e *env, verbose bool) error {
 		out.enableStatus(width)
 	}
 	out.setHashes(cfg.Hashes)
+	out.setRoutingServer(cfg.ServerRouting)
 	workers := cfg.NormalizedWorkers()
 	out.header(workers)
 
@@ -420,6 +422,12 @@ func (plan *connectPlan) run(ctx context.Context, e *env, verbose bool) error {
 		// этом — строкой, а не только в профиле.
 		out.line("мимо туннеля: сайты встроенного списка ядра (российские сервисы, доменов: %d) — "+
 			"напрямую с вашего адреса, пока туннель поднят (routing.template в профиле)", csqttcli.TemplateDomains)
+	}
+	if cfg.ServerRouting {
+		// Согласие дано заранее, а правило придёт позже, если придёт: что
+		// оно может сделать, — сразу.
+		out.line("правило маршрутизации сервера, если сервер его пришлёт, будет применено вместо routing.template " +
+			"и может пустить часть трафика мимо туннеля, с вашего адреса (routing.server в профиле)")
 	}
 	switch {
 	case workers >= cfg.Workers:

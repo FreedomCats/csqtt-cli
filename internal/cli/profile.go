@@ -105,6 +105,7 @@ type profileFlags struct {
 	killSwitch    *bool
 	vkHashMode    *string
 	routeTemplate *bool
+	routeServer   *bool
 	makeDefault   *bool
 }
 
@@ -121,6 +122,9 @@ func addProfileFlags(fs *flag.FlagSet) *profileFlags {
 			"по входу VK ("+app.Name+" vk login), хеши не нужны"),
 		routeTemplate: fs.Bool("routing-template", false, "встроенный список доменов ядра (российские сервисы) — мимо туннеля, "+
 			"с вашего адреса; -routing-template=false — выключить (по умолчанию выключено: весь трафик — в туннель)"),
+		routeServer: fs.Bool("routing-server", false, "применять правило маршрутизации, которое сервер назначил паролю: "+
+			"оно заменяет -routing-template, а белый список в нём пускает мимо туннеля всё, кроме списка; "+
+			"-routing-server=false — выключить (по умолчанию правило сервера только показывается)"),
 		makeDefault: fs.Bool("default", false, "сделать профиль профилем по умолчанию"),
 	}
 }
@@ -155,6 +159,10 @@ func (f *profileFlags) apply(p *config.Profile, named map[string]bool) {
 	if named["routing-template"] {
 		value := *f.routeTemplate
 		p.Routing.Template = &value
+	}
+	if named["routing-server"] {
+		value := *f.routeServer
+		p.Routing.Server = &value
 	}
 }
 
@@ -552,6 +560,11 @@ func runProfileShow(_ context.Context, e *env, args []string) error {
 		printSetting(e.stdout, "routing.template", "", "false")
 	} else {
 		printSetting(e.stdout, "routing.template", strconv.FormatBool(*p.Routing.Template), "")
+	}
+	if p.Routing.Server == nil {
+		printSetting(e.stdout, "routing.server", "", "false")
+	} else {
+		printSetting(e.stdout, "routing.server", strconv.FormatBool(*p.Routing.Server), "")
 	}
 	if strings.TrimSpace(p.DeviceID) == "" {
 		printField(e.stdout, "device_id", "не задан", "(заведётся при подключении)")

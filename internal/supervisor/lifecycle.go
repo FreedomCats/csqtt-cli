@@ -180,10 +180,11 @@ type Options struct {
 // ErrServerRestart — сервер перезапущен из панели (SERVER_RESTART).
 var ErrServerRestart = errors.New("сервер перезапущен из панели")
 
-// ErrDirectUnbound — ядру велено пустить часть трафика мимо туннеля
-// (coreproc.Config.DirectRouting), datapath забирает весь трафик системы
-// (datapath.Persistent), а физического интерфейса ядро не получило (BindIf —
-// от Prepare). Ядро в такой попытке не запускается.
+// ErrDirectUnbound — ядру велено пустить часть трафика мимо туннеля или
+// применять правило маршрутизации сервера (coreproc.Config.MayRouteDirect),
+// datapath забирает весь трафик системы (datapath.Persistent), а физического
+// интерфейса ядро не получило (BindIf — от Prepare). Ядро в такой попытке не
+// запускается.
 var ErrDirectUnbound = errors.New("маршрутизация мимо туннеля в режиме tun — только с привязкой сокетов ядра " +
 	"к физическому интерфейсу (-bind-if), а её нет")
 
@@ -641,11 +642,13 @@ func (t *Tunnel) attempt(ctx context.Context) result {
 			return result{err: err}
 		}
 	}
-	if _, full := t.opts.Datapath.(datapath.Persistent); full && cfg.DirectRouting() && cfg.BindIf == 0 {
+	if _, full := t.opts.Datapath.(datapath.Persistent); full && cfg.MayRouteDirect() && cfg.BindIf == 0 {
 		// Маршруты туннеля забирают весь трафик системы, и прямой сокет
 		// ядра без привязки ушёл бы ими же обратно в адаптер — ядру, снова
 		// напрямую, и так по кругу. Не сеть виновата, а сборка настроек:
-		// повторять незачем.
+		// повторять незачем. С согласием на правило сервера — тоже, пусть
+		// сервер его ещё и не прислал: отказ сразу понятнее, чем правило,
+		// молча не применённое посреди работы.
 		return result{err: ErrDirectUnbound, final: true}
 	}
 	var socket string
@@ -668,7 +671,8 @@ func (t *Tunnel) attempt(ctx context.Context) result {
 	actx, cancel := context.WithCancel(ctx)
 	a := &attempt{tunnel: t, core: core, ctx: actx, socket: socket,
 		fdSent: t.opts.TunFD == nil, fdDone: make(chan error, 1), refdDone: make(chan error, 1),
-		bindIf: cfg.BindIf, captchaDone: make(chan struct{})}
+		bindIf: cfg.BindIf, captchaDone: make(chan struct{}),
+		routingSent: coreproc.ProfileRouting(cfg.TemplateDomains).Command}
 	// Порядок снятия: таймеры, отмена (капча бросает ожидание), горутины.
 	defer a.wg.Wait()
 	defer cancel()
@@ -803,6 +807,13 @@ type attempt struct {
 	// bindIf — интерфейс ядра: -bind-if из Prepare, затем последний
 	// посланный BIND_IF; ноль — без привязки.
 	bindIf uint32
+
+	// Правило маршрутизации сервера (Config.ServerRouting): routingSent —
+	// команда UPDATE_DOMAINS, по которой ядро работает сейчас (сначала —
+	// равная его аргументам, ProfileRouting); routingPending — правило,
+	// пришедшее до PROCESS, когда ядро команд ещё не читает.
+	routingSent    string
+	routingPending *coreproc.RoutingEvent
 }
 
 // run читает вывод ядра до конца — иначе оно встанет на записи — и решает,
@@ -1004,6 +1015,12 @@ func (a *attempt) handle(m coreproc.Message) {
 		a.started, t.coreStarted = true, true
 		a.pid = e.PID
 		a.sendFD(e.PID)
+		if e := a.routingPending; e != nil {
+			a.routingPending = nil
+			a.routing(*e)
+		}
+	case coreproc.RoutingEvent:
+		a.routing(e)
 	case coreproc.TunLostEvent:
 		a.coreLostFD()
 	case coreproc.ListenEvent:
@@ -1037,6 +1054,44 @@ func (a *attempt) handle(m coreproc.Message) {
 			// новый в Prepare.
 			a.restart(fmt.Errorf("%w; ядро не перешло на новый интерфейс", a.rebound))
 		}
+	}
+}
+
+// routing — сервер прислал правило маршрутизации. С согласием профиля
+// (Config.ServerRouting) правило уходит ядру командой UPDATE_DOMAINS и
+// заменяет его маршрутизацию целиком, в том числе routing.template профиля.
+// Правило, которое не разобрать или не уместить в строку stdin, не
+// применяется: ядро возвращается к настройкам профиля, если уже работало по
+// прежнему правилу. Сервер шлёт правило на каждое подключение первого
+// воркера — то же самое ядру второй раз не посылается; новое ядро начинает с
+// аргументов и получает правило заново. Что именно применено, говорит вывод
+// (cli) по тому же RoutingRule.Update.
+func (a *attempt) routing(e coreproc.RoutingEvent) {
+	cfg := a.tunnel.opts.Config
+	if !cfg.ServerRouting || a.stopping {
+		return
+	}
+	if !a.started {
+		// До PROCESS ядро команд не читает (coreproc.Process.Send).
+		a.routingPending = &e
+		return
+	}
+	update := coreproc.ProfileRouting(cfg.TemplateDomains)
+	if e.Rule != nil {
+		if u, err := e.Rule.Update(); err == nil {
+			update = u
+		}
+	}
+	if update.Command == a.routingSent {
+		return
+	}
+	if err := a.core.Send(update.Command); err != nil {
+		// Записать не вышло — ядро выходит, и причину скажет его выход.
+		return
+	}
+	a.routingSent = update.Command
+	if update.Direct() {
+		a.tunnel.machine.RuleDirect()
 	}
 }
 

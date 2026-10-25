@@ -171,6 +171,28 @@ func TestSuspectClearedByTraffic(t *testing.T) {
 	}
 }
 
+// Правило сервера (RuleDirect) действует, как direct, до конца попытки: новое
+// ядро начинает с настроек профиля, и рост принятого снова снимает
+// подозрение.
+func TestRuleDirectEndsWithAttempt(t *testing.T) {
+	m := connected(t)
+	m.RuleDirect()
+	m.Observe(coreproc.NetworkSuspectEvent{})
+	if _, moved := m.Observe(coreproc.StatsEvent{Active: 2, BytesDown: 800}); moved {
+		t.Fatal("при правиле сервера подозрение снял рост принятого")
+	}
+	m.Reconnect(nil, 0)
+	m.BeginAttempt()
+	m.Observe(evCredentials)
+	m.Observe(evConfig)
+	m.Observe(evReady)
+	m.DatapathUp()
+	m.Observe(coreproc.NetworkSuspectEvent{})
+	if tr, moved := m.Observe(coreproc.StatsEvent{Active: 2, BytesDown: 800}); !moved || tr.To != StateConnected {
+		t.Errorf("в новой попытке рост принятого не снял подозрение: %+v", tr)
+	}
+}
+
 // Маршрутизация мимо туннеля не мешает выйти из деградации без воркеров:
 // STATS с воркерами — по-прежнему знак, что они вернулись.
 func TestDirectNoWorkersRecoversByStats(t *testing.T) {
