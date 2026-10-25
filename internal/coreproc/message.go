@@ -221,6 +221,10 @@ func parseEvent(kind, payload string) Message {
 		}
 	case "TUN_LOST":
 		return TunLostEvent{}
+	case "ROUTING":
+		if e, ok := parseRouting(payload); ok {
+			return e
+		}
 	case "DTLS":
 		var e DTLSEvent
 		if decode(&e) {

@@ -414,9 +414,11 @@ func NewTunnel(opts Options) (*Tunnel, error) {
 		opts.ServerSilence = DefaultServerSilence
 	}
 	path := opts.CorePath
+	machine := New()
+	machine.direct = opts.Config.DirectRouting()
 	t := &Tunnel{
 		opts:    opts,
-		machine: New(),
+		machine: machine,
 		hashes:  hashes,
 		start: func(cfg coreproc.Config) (Core, error) {
 			return coreproc.Start(path, cfg)

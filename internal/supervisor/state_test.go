@@ -140,6 +140,50 @@ func TestDrain(t *testing.T) {
 	}
 }
 
+// Подозрение на сеть снимает рост принятого трафика — без маршрутизации
+// мимо туннеля. С ней STATS считает и прямой трафик, и снять подозрение может
+// только новый воркер (READY).
+func TestSuspectClearedByTraffic(t *testing.T) {
+	for _, direct := range []bool{false, true} {
+		m := connected(t)
+		m.direct = direct
+		m.Observe(coreproc.StatsEvent{Active: 2, BytesDown: 500})
+		if tr, moved := m.Observe(coreproc.NetworkSuspectEvent{}); !moved || tr.Cause != ErrNetworkSuspect {
+			t.Fatalf("direct=%v: подозрение не увело в деградацию: %+v", direct, tr)
+		}
+		// Воркеры числятся, отправленное растёт, принятое — нет.
+		if _, moved := m.Observe(coreproc.StatsEvent{Active: 2, BytesUp: 900, BytesDown: 500}); moved {
+			t.Errorf("direct=%v: подозрение сняла отправка", direct)
+		}
+		tr, moved := m.Observe(coreproc.StatsEvent{Active: 2, BytesUp: 900, BytesDown: 800})
+		if direct {
+			if moved || m.State() != StateDegraded {
+				t.Errorf("direct: подозрение снял рост принятого (%+v), состояние %s", tr, m.State())
+			}
+			if tr, moved := m.Observe(coreproc.ReadyEvent{Worker: 5}); !moved || tr.To != StateConnected {
+				t.Errorf("direct: READY не вывел из деградации: %+v", tr)
+			}
+			continue
+		}
+		if !moved || tr.To != StateConnected {
+			t.Errorf("рост принятого не вывел из деградации: %+v", tr)
+		}
+	}
+}
+
+// Маршрутизация мимо туннеля не мешает выйти из деградации без воркеров:
+// STATS с воркерами — по-прежнему знак, что они вернулись.
+func TestDirectNoWorkersRecoversByStats(t *testing.T) {
+	m := connected(t)
+	m.direct = true
+	if tr, moved := m.Observe(coreproc.ActiveZeroEvent{}); !moved || tr.Cause != ErrNoWorkers {
+		t.Fatalf("ACTIVE_ZERO: %+v", tr)
+	}
+	if tr, moved := m.Observe(coreproc.StatsEvent{Active: 1}); !moved || tr.To != StateConnected {
+		t.Errorf("STATS с воркером: %+v", tr)
+	}
+}
+
 func TestReconnect(t *testing.T) {
 	m := New()
 	if _, moved := m.Reconnect(nil, 0); moved {
@@ -176,6 +220,7 @@ func TestObserveIgnoresOtherMessages(t *testing.T) {
 		coreproc.ErrorEvent{Code: "handshake_timeout", Fatal: true}, coreproc.StoppedEvent{},
 		coreproc.CallUnavailableEvent{Hash: "x", Code: 951}, coreproc.ServerRestartEvent{Source: "panel"},
 		coreproc.CaptchaRequest{Mode: "manual"}, coreproc.DTLSEvent{Worker: 1, Message: "x"},
+		coreproc.RoutingEvent{Raw: "{}", Rule: &coreproc.RoutingRule{}},
 	} {
 		if tr, moved := m.Observe(msg); moved {
 			t.Errorf("%T сдвинул состояние: %+v", msg, tr)

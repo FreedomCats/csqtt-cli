@@ -37,7 +37,9 @@ const (
 	StateConnected State = "connected"
 	// StateDegraded — туннель был поднят, но живых воркеров нет или ядро
 	// заподозрило сеть (ACTIVE_ZERO, NETWORK_SUSPECT). Воркеров ядро
-	// переподключает само; затянется — цикл перезапустит ядро.
+	// переподключает само; затянется — цикл перезапустит ядро. Подозрение на
+	// сеть снимает новый воркер или, без маршрутизации мимо туннеля, рост
+	// принятого трафика.
 	StateDegraded State = "degraded"
 	// StateReconnecting — попытка кончилась, ядро вышло, следующая попытка
 	// ждёт своей задержки.
@@ -111,11 +113,16 @@ type Machine struct {
 	mu    sync.Mutex
 	state State
 
+	// direct — ядро пускает часть трафика мимо туннеля
+	// (coreproc.Config.DirectRouting), и принятое напрямую STATS считает
+	// вместе с принятым из туннеля. Задаёт NewTunnel, на весь Run.
+	direct bool
+
 	// Что известно о текущей попытке; BeginAttempt обнуляет.
 	datapathUp bool  // datapath поднят по первому TUNCONF
 	workers    int   // живых воркеров: READY прибавляет, STATS и ACTIVE_ZERO уточняют
 	suspect    bool  // NETWORK_SUSPECT, и с тех пор ни нового воркера, ни трафика
-	bytesDown  int64 // принято из туннеля, по последнему STATS
+	bytesDown  int64 // принято ядром, по последнему STATS; при direct — и напрямую
 	suspectAt  int64 // bytesDown на момент NETWORK_SUSPECT
 	draining   bool  // ядру послан Stop: попытка доживает (Drain)
 }
@@ -197,7 +204,11 @@ func (m *Machine) Observe(msg coreproc.Message) (Transition, bool) {
 	case coreproc.StatsEvent:
 		m.workers = e.Active
 		m.bytesDown = e.BytesDown
-		if m.suspect && e.Active > 0 && e.BytesDown > m.suspectAt {
+		// Трафик после подозрения — знак, что сеть вернулась. Но не при
+		// direct: ответы прямых соединений ядро считает туда же, и они
+		// идут, когда туннель мёртв. Тогда подозрение снимает только
+		// READY — воркеры, упавшие по таймаутам, ядро переподключает само.
+		if m.suspect && !m.direct && e.Active > 0 && e.BytesDown > m.suspectAt {
 			m.suspect = false
 		}
 	case coreproc.ActiveZeroEvent:

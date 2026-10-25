@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"net/netip"
 	"strings"
 	"testing"
@@ -149,6 +150,72 @@ func TestWorkersLimitLine(t *testing.T) {
 	}
 	if got := strings.Count(buf.String(), line); got != 1 {
 		t.Errorf("с -v строк об ограничении %d, ждали 1:\n%s", got, buf.String())
+	}
+}
+
+// Правило маршрутизации от сервера — строка и без -v, одна на правило: сервер
+// шлёт его на каждый запуск ядра, и повтор молчит, а другое правило — новая
+// строка. Неразборчивое — тоже строка, с текстом как есть, обрезанным.
+func TestRoutingLine(t *testing.T) {
+	office := coreproc.RoutingEvent{Raw: `{"name":"Офис"}`, Rule: &coreproc.RoutingRule{
+		Name:            "Офис",
+		Domains:         []string{"example.ru", "shop.example.com"},
+		TemplateDomains: true,
+		IPsWhitelist:    true,
+		IPs:             []string{"203.0.113.0/24"},
+		Packages:        []string{"com.example.app"},
+	}}
+	empty := coreproc.RoutingEvent{Raw: `{}`, Rule: &coreproc.RoutingRule{DomainsWhitelist: true}}
+	broken := coreproc.RoutingEvent{Raw: "не json\n" + strings.Repeat("x", 300)}
+	// U+202E развернул бы остаток строки, U+2066 и U+200B — невидимы.
+	bidi := coreproc.RoutingEvent{Raw: "bidi", Rule: &coreproc.RoutingRule{Name: "Оф\u202eис\u2066\u200b"}}
+
+	p, buf, _ := testPrinter(false)
+	for _, e := range []coreproc.RoutingEvent{office, office, empty, broken, broken, bidi} {
+		p.message(e)
+	}
+	got := strings.Split(strings.TrimSuffix(buf.String(), "\n"), "\n")
+	want := []string{
+		"12:00:00 сервер прислал правило маршрутизации «Офис»: домены — 2 (чёрный список), шаблон — да, " +
+			"адреса — 1 (белый список) — не применяется",
+		"12:00:00 сервер прислал правило маршрутизации без имени: домены — 0, шаблон — нет, адреса — 0 — не применяется",
+	}
+	if len(got) != 4 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("вывод:\n%s\nожидалось начало:\n%s", buf.String(), strings.Join(want, "\n"))
+	}
+	if b := got[2]; !strings.Contains(b, "разобрать его не удалось (не json xxx") ||
+		!strings.Contains(b, "…) — не применяется") || len([]rune(b)) > 250 {
+		t.Errorf("строка о неразборчивом правиле: %q", b)
+	}
+	if b := got[3]; !strings.Contains(b, "правило маршрутизации «Офис»: ") {
+		t.Errorf("знаки форматирования в имени не убраны: %q", b)
+	}
+
+	// С -v — ещё и списки, длинные — обрезаны; повтор — строкой журнала.
+	p, buf, _ = testPrinter(true)
+	many := make([]string, 25)
+	for i := range many {
+		many[i] = fmt.Sprintf("d%d.example.ru", i)
+	}
+	long := coreproc.RoutingEvent{Raw: "long", Rule: &coreproc.RoutingRule{Name: "Длинное", Domains: many}}
+	p.message(office)
+	p.message(office)
+	p.message(long)
+	for _, want := range []string{
+		"  домены, чёрный список: example.ru, shop.example.com\n",
+		"  адреса, белый список: 203.0.113.0/24\n",
+		"  приложения Android (на компьютере неприменимо), чёрный список: com.example.app\n",
+		"ядро: сервер снова прислал то же правило маршрутизации\n",
+		"правило маршрутизации «Длинное»: домены — 25 (чёрный список)",
+		"  домены, чёрный список: d0.example.ru, d1.example.ru, d2.example.ru, d3.example.ru, d4.example.ru, " +
+			"d5.example.ru, d6.example.ru, d7.example.ru, d8.example.ru, d9.example.ru и ещё 15\n",
+	} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("с -v нет строки %q:\n%s", want, buf.String())
+		}
+	}
+	if n := strings.Count(buf.String(), "«Офис»"); n != 1 {
+		t.Errorf("строк о правиле «Офис» с -v %d, ждали 1", n)
 	}
 }
 

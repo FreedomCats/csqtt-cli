@@ -10,8 +10,9 @@
 // старый conhost, а стирать строку пробелами ничем не хуже, чем командой
 // терминала.
 //
-// Без -v печатаются переходы автомата, исключённые хеши, строки цикла и
-// предупреждения; журнал ядра, SOCKS5 и капчи, счётчики трафика строками и
+// Без -v печатаются переходы автомата, исключённые хеши, строки цикла,
+// предупреждения и то, что сервер ограничил воркеров или прислал правило
+// маршрутизации; журнал ядра, SOCKS5 и капчи, счётчики трафика строками и
 // мелкие события ядра — только с -v.
 package cli
 
@@ -24,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/FreedomCats/csqtt-cli/internal/coreproc"
@@ -79,6 +81,10 @@ type printer struct {
 	// workersLimit — лимит воркеров сервера из последнего WORKERS: строка
 	// о нём печатается, только когда он сменился.
 	workersLimit int
+	// routing — правило маршрутизации из последнего ROUTING, как прислал
+	// сервер: строка о нём печатается, только когда оно сменилось.
+	routing     string
+	routingSeen bool
 }
 
 func newPrinter(w io.Writer, verbose bool) *printer {
@@ -427,6 +433,9 @@ func (p *printer) message(m coreproc.Message) {
 	case coreproc.WorkersEvent:
 		p.workersEvent(m)
 
+	case coreproc.RoutingEvent:
+		p.routingEvent(m)
+
 	case coreproc.TunLostEvent:
 		// Что с этим делать, решает цикл — и пишет строку сам (только с
 		// дескриптором адаптера, tun на Linux).
@@ -478,6 +487,110 @@ func (p *printer) workersEvent(e coreproc.WorkersEvent) {
 	if asked := p.model.workersTotal; e.Limit > 0 && e.Limit < asked {
 		p.lineLocked(fmt.Sprintf("сервер ограничил число воркеров для этого пароля: %d вместо %d", e.Limit, asked))
 	}
+}
+
+// routingListShown — сколько элементов списка правила маршрутизации
+// печатать с -v; остальные — числом. routingTextRunes — предел длины имени
+// правила и одного элемента, routingRawRunes — неразобранного правила.
+const (
+	routingListShown = 10
+	routingTextRunes = 80
+	routingRawRunes  = 120
+)
+
+// routingEvent — сервер прислал правило маршрутизации. Применять его
+// csqtt-cli пока не умеет, но знать о нём важно: владелец сервера хотел
+// пустить часть трафика мимо туннеля. Поэтому строка — и без -v, одна на
+// правило, пока оно не сменится (сервер шлёт его на каждое подключение
+// первого воркера, в том числе при каждом запуске ядра); с -v — ещё и
+// списки, обрезанные до routingListShown. Под замком.
+func (p *printer) routingEvent(e coreproc.RoutingEvent) {
+	if p.routingSeen && e.Raw == p.routing {
+		if p.verbose {
+			p.lineLocked("ядро: сервер снова прислал то же правило маршрутизации")
+		}
+		return
+	}
+	p.routing, p.routingSeen = e.Raw, true
+	r := e.Rule
+	if r == nil {
+		p.lineLocked(fmt.Sprintf("сервер прислал правило маршрутизации, но разобрать его не удалось (%s) — не применяется",
+			p.mask.Replace(routingText(e.Raw, routingRawRunes))))
+		return
+	}
+	name := "без имени"
+	if r.Name != "" {
+		name = "«" + routingText(r.Name, routingTextRunes) + "»"
+	}
+	template := "нет"
+	if r.TemplateDomains {
+		template = "да"
+	}
+	p.lineLocked(fmt.Sprintf("сервер прислал правило маршрутизации %s: домены — %s, шаблон — %s, адреса — %s — не применяется",
+		name, routingCount(r.Domains, r.DomainsWhitelist), template, routingCount(r.IPs, r.IPsWhitelist)))
+	if !p.verbose {
+		return
+	}
+	for _, l := range []struct {
+		what      string
+		items     []string
+		whitelist bool
+	}{
+		{"домены", r.Domains, r.DomainsWhitelist},
+		{"адреса", r.IPs, r.IPsWhitelist},
+		{"приложения Android (на компьютере неприменимо)", r.Packages, r.AppsWhitelist},
+	} {
+		if len(l.items) > 0 {
+			p.lineLocked(fmt.Sprintf("  %s, %s: %s", l.what, routingMode(l.whitelist), routingList(l.items)))
+		}
+	}
+}
+
+// routingCount — «12 (чёрный список)»; у пустого списка режим не важен.
+func routingCount(items []string, whitelist bool) string {
+	if len(items) == 0 {
+		return "0"
+	}
+	return fmt.Sprintf("%d (%s)", len(items), routingMode(whitelist))
+}
+
+func routingMode(whitelist bool) string {
+	if whitelist {
+		return "белый список"
+	}
+	return "чёрный список"
+}
+
+// routingList — первые routingListShown элементов через запятую и сколько
+// ещё.
+func routingList(items []string) string {
+	shown := make([]string, 0, min(len(items), routingListShown))
+	for _, item := range items[:min(len(items), routingListShown)] {
+		shown = append(shown, routingText(item, routingTextRunes))
+	}
+	text := strings.Join(shown, ", ")
+	if rest := len(items) - len(shown); rest > 0 {
+		text += fmt.Sprintf(" и ещё %d", rest)
+	}
+	return text
+}
+
+// routingText — текст от сервера в одну строку вывода: управляющие знаки —
+// пробелами, знаки форматирования (Cf: направление письма, нулевой ширины)
+// убраны — иначе имя правила могло бы развернуть или спрятать остаток
+// строки; длиннее n знаков — обрезан с многоточием.
+func routingText(s string, n int) string {
+	s = strings.Map(func(r rune) rune {
+		if unicode.Is(unicode.Cf, r) {
+			return -1
+		}
+		return r
+	}, s)
+	s = strings.Join(strings.FieldsFunc(s, unicode.IsControl), " ")
+	if utf8.RuneCountInString(s) > n {
+		s = truncateRunes(s, n-1) + "…"
+	}
+	return s
 }
 
 // transition печатает смену состояния (supervisor.Options.OnTransition).

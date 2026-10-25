@@ -439,6 +439,33 @@ func TestDegradedRecovers(t *testing.T) {
 	}
 }
 
+// С маршрутизацией мимо туннеля (профиль) подозрение на сеть принятым
+// трафиком не снимается: его растят и прямые соединения. Выводит из
+// деградации только новый воркер.
+func TestDegradedDirectRoutingNeedsReady(t *testing.T) {
+	h := newHarness(t, Options{DegradedRestart: time.Hour, Config: coreproc.Config{TemplateDomains: true}},
+		join(recConnect, []string{
+			`__CSQTT_EVENT__|STATS|{"active":2,"bytes_down":500,"bytes_up":100}`,
+			`__CSQTT_EVENT__|NETWORK_SUSPECT|{}`,
+			`__CSQTT_EVENT__|STATS|{"active":2,"bytes_down":800,"bytes_up":900}`,
+			`__CSQTT_EVENT__|STATS|{"active":2,"bytes_down":9000,"bytes_up":1900}`,
+			`__CSQTT_EVENT__|READY|{"worker":5}`,
+			"wait never",
+		}))
+	done := h.run()
+	h.waitState(StateConnected)
+	h.waitState(StateDegraded)
+	h.waitState(StateConnected)
+	h.cancel()
+	if err := h.result(done); err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	wantUp := []coreproc.Message{coreproc.ReadyEvent{Worker: 1}, coreproc.ReadyEvent{Worker: 5}}
+	if got := h.triggered(StateConnected); !slices.Equal(got, wantUp) {
+		t.Errorf("в «работает» вели %v, ожидались %v", got, wantUp)
+	}
+}
+
 // Долгая деградация — перезапуск ядра.
 func TestDegradedTooLongRestarts(t *testing.T) {
 	h := newHarness(t, Options{DegradedRestart: 20 * time.Millisecond},
