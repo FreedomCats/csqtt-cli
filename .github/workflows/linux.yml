@@ -16,6 +16,11 @@ on:
 permissions:
   contents: read
 
+env:
+  # Образ контейнера для тестов, которые меняют сеть (задания netns и core):
+  # ubuntu:latest, закреплённый по хешу.
+  IMAGE: ubuntu@sha256:d1e2e92c075e5ca139d51a140fff46f84315c0fdce203eab2807c7e495eff4f9
+
 # github.workflow в вызове из release.yml — имя вызывающего («release»):
 # без своего имени в группе windows.yml и linux.yml попали бы в одну группу,
 # и второй отменил бы первый.
@@ -61,8 +66,6 @@ jobs:
     timeout-minutes: 15
     env:
       CGO_ENABLED: '0'
-      # ubuntu:latest, закреплённый по хешу.
-      IMAGE: ubuntu@sha256:d1e2e92c075e5ca139d51a140fff46f84315c0fdce203eab2807c7e495eff4f9
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -169,6 +172,30 @@ jobs:
       # конец хешей. Сервер не нужен: пир — документационный адрес, хеш выдуман.
       - name: coreproc и supervisor на ядре
         run: CSQTT_TEST_CORE="$PWD/build/out/csqtt-core" go test -count=1 -run TestRealCore -v ./internal/coreproc ./internal/supervisor
+
+      # Прямой путь ядра (маршрутизация мимо туннеля) на настоящей
+      # маршрутизации: маршруты /1 — в адаптер, сокеты ядра — через
+      # «физический» интерфейс с меткой, в адаптер ничего, петли нет. Меняет
+      # сеть — в контейнере, как задание netns, но здесь есть ядро. Ответы
+      # «сайта» приходят на физический интерфейс, а маршрут к нему — в
+      # адаптер: rp_filter нужен нестрогий. Пропуск — провал.
+      - name: Прямой путь ядра в контейнере
+        run: |
+          set -o pipefail
+          go test -c -o build/out/datapath.test ./internal/datapath
+          docker run --rm --cap-add NET_ADMIN --device /dev/net/tun \
+            --sysctl net.ipv4.conf.all.rp_filter=2 \
+            -e CSQTT_TEST_NETNS=1 -e CSQTT_TEST_CORE=/csqtt-cli/csqtt-core \
+            -v "$PWD/build/out":/csqtt-cli:ro "$IMAGE" \
+            /csqtt-cli/datapath.test -test.count=1 -test.v -test.run '^TestRealCoreNetnsDirect$' | tee build/out/direct.log
+          if grep -- '--- SKIP' build/out/direct.log; then
+            echo "::error::прямой путь ядра: тест пропущен"
+            exit 1
+          fi
+          if ! grep -q -- '--- PASS: TestRealCoreNetnsDirect ' build/out/direct.log; then
+            echo "::error::прямой путь ядра: тест не прошёл"
+            exit 1
+          fi
 
       # Ни одного символа glibc новее 2.35 — иначе бинарь не запустится на
       # системах, которые мы обещаем.
