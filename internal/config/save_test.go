@@ -24,6 +24,7 @@ func sampleFile() *File {
 				Datapath:      DatapathSocks,
 				KillSwitch:    boolPtr(false),
 				Socks:         SocksSection{Listen: "127.0.0.1:1081"},
+				Routing:       RoutingSection{Template: boolPtr(true)},
 			},
 			"work": {
 				Name:        "work",
@@ -70,8 +71,13 @@ func sameProfile(a, b *Profile) bool {
 		a.KillSwitch != nil && *a.KillSwitch != *b.KillSwitch {
 		return false
 	}
+	if (a.Routing.Template == nil) != (b.Routing.Template == nil) ||
+		a.Routing.Template != nil && *a.Routing.Template != *b.Routing.Template {
+		return false
+	}
 	x, y := *a, *b
 	x.KillSwitch, y.KillSwitch = nil, nil
+	x.Routing.Template, y.Routing.Template = nil, nil
 	return x == y
 }
 
@@ -143,6 +149,65 @@ func TestSaveKillSwitch(t *testing.T) {
 
 // Пустые поля не записываются: пропуск означает «как по умолчанию», и вписать
 // вместо него нынешнее умолчание значило бы заморозить его в чужом файле.
+// Секция routing пишется, только если template задан, и тем значением, что
+// задано: пропуск — «выключено» (RoutingTemplateOn). Старый файл без секции
+// после чтения и записи её не получает.
+func TestSaveRoutingTemplate(t *testing.T) {
+	for _, tc := range []struct {
+		value *bool
+		text  string
+		on    bool
+	}{
+		{nil, "", false},
+		{boolPtr(true), "\n[profile.home.routing]\ntemplate = true\n", true},
+		{boolPtr(false), "\n[profile.home.routing]\ntemplate = false\n", false},
+	} {
+		path := filepath.Join(t.TempDir(), FileName)
+		f := &File{Profiles: map[string]*Profile{"home": {
+			Name: "home", Peer: "203.0.113.10", PasswordRef: "dpapi:8f2a1c", VkHashesRef: "dpapi:1c9bd4",
+			Routing: RoutingSection{Template: tc.value},
+		}}}
+		if err := Save(path, f); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if has := strings.Contains(string(raw), "routing"); has != (tc.text != "") ||
+			tc.text != "" && !strings.HasSuffix(string(raw), tc.text) {
+			t.Errorf("template %v: в файле\n%s", tc.value, raw)
+		}
+		got, err := Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := got.Profiles["home"]
+		if p.RoutingTemplateOn() != tc.on || (p.Routing.Template == nil) != (tc.value == nil) {
+			t.Errorf("template %v: после чтения %v, RoutingTemplateOn %v", tc.value, p.Routing.Template, p.RoutingTemplateOn())
+		}
+		if p.Core().TemplateDomains != tc.on {
+			t.Errorf("template %v: Core().TemplateDomains = %v", tc.value, p.Core().TemplateDomains)
+		}
+	}
+
+	// Старый файл, без секции: перезапись её не добавляет.
+	path := filepath.Join(t.TempDir(), FileName)
+	if err := os.WriteFile(path, []byte(minimalFile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(path, old); err != nil {
+		t.Fatal(err)
+	}
+	if raw, _ := os.ReadFile(path); strings.Contains(string(raw), "routing") {
+		t.Errorf("старый файл получил секцию routing:\n%s", raw)
+	}
+}
+
 func TestSaveOmitsEmptyFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), FileName)
 	f := &File{Profiles: map[string]*Profile{
@@ -162,7 +227,7 @@ func TestSaveOmitsEmptyFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(raw)
-	for _, key := range []string{"workers", "obfs", "turn_transport", "datapath", "kill_switch", "socks"} {
+	for _, key := range []string{"workers", "obfs", "turn_transport", "datapath", "kill_switch", "socks", "routing", "template"} {
 		if strings.Contains(text, key+" =") || strings.Contains(text, "."+key+"]") {
 			t.Errorf("в файле есть незаданный ключ %q:\n%s", key, text)
 		}

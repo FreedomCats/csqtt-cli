@@ -215,6 +215,41 @@ func TestRealCoreBindIf(t *testing.T) {
 	checkRealCoreOutput(t, p, msgs())
 }
 
+// Встроенный список ядра мимо туннеля: ядро принимает оба флага и
+// поднимается, маршрутизация по доменам включена, а российские зоны и свои
+// домены — нет (строка ядра при старте; о шаблоне она молчит — он виден в
+// командной строке). Сокеты ядра привязаны к loopback, и свой DNS ядра наружу
+// не уходит; но предразрешение доменов списка ядро начинает при старте
+// системным резолвером, как любая программа машины.
+func TestRealCoreTemplateDomains(t *testing.T) {
+	path := realCorePath(t)
+	cfg := realCoreConfig
+	cfg.BindIf = loopbackIndex(t)
+	cfg.TemplateDomains = true
+	p, err := Start(path, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.stop(0) })
+	const routing = "[КЛИЕНТ] Доменная маршрутизация: ВКЛ (RU/SU/РФ: НЕТ, кастомных доменов: 0)"
+	msgs, seen, drained := collect(p, func(m Message) bool { return m == Log{Text: routing} })
+	waitFor(t, seen, routing)
+	cmdline := commandLine(t, p.PID())
+	for _, flag := range []string{"--domain-routing", "--template-domains"} {
+		if !slices.Contains(strings.Fields(cmdline), flag) {
+			t.Errorf("в командной строке ядра нет %s: %s", flag, cmdline)
+		}
+	}
+	if !slices.ContainsFunc(msgs(), func(m Message) bool { _, ok := m.(ListenEvent); return ok }) {
+		t.Error("ядро не открыло сокет канала (LISTEN)")
+	}
+	if err := p.Stop(); err != nil {
+		t.Errorf("Stop() = %v", err)
+	}
+	waitFor(t, drained, "закрытие Messages")
+	checkRealCoreOutput(t, p, msgs())
+}
+
 // Индекс без интерфейса — отказ стартовать с понятной строкой, а не молча
 // непривязанные сокеты.
 func TestRealCoreBindIfRefused(t *testing.T) {

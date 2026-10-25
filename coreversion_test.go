@@ -35,3 +35,14 @@ func TestParseCoreVersion(t *testing.T) {
 		}
 	}
 }
+
+// Число доменов — по тем же правилам, что у ядра: пустые строки, # и повторы
+// не считаются; во встроенном списке 2.5.0 доменов сотни.
+func TestCountTemplateDomains(t *testing.T) {
+	if got := countTemplateDomains("ya.ru\n\n# группа\n  vk.com \r\nya.ru\nmail.ru"); got != 3 {
+		t.Errorf("countTemplateDomains = %d, ожидалось 3", got)
+	}
+	if TemplateDomains < 100 {
+		t.Errorf("TemplateDomains = %d: core/domains.txt пуст или не тот", TemplateDomains)
+	}
+}

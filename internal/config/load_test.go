@@ -112,6 +112,30 @@ func TestExampleFileParses(t *testing.T) {
 	}
 }
 
+// Секция routing разбирается; неизвестный ключ в ней — ошибка, как везде:
+// правила сервера и свои списки здесь пока не задаются.
+func TestParseRoutingSection(t *testing.T) {
+	on := parse(t, minimalFile+"\n[profile.home.routing]\ntemplate = true\n").Profiles["home"]
+	if !on.RoutingTemplateOn() {
+		t.Errorf("template = true: %v", on.Routing.Template)
+	}
+	if off := parse(t, minimalFile).Profiles["home"]; off.RoutingTemplateOn() || off.Routing.Template != nil {
+		t.Errorf("без секции: %v", off.Routing.Template)
+	}
+	if empty := parse(t, minimalFile+"\n[profile.home.routing]\n").Profiles["home"]; empty.RoutingTemplateOn() {
+		t.Error("пустая секция включила шаблон")
+	}
+	for _, tc := range []struct{ text, want string }{
+		{"\n[profile.home.routing]\nserver = \"apply\"\n", "неизвестный ключ profile.home.routing.server"},
+		{"\n[profile.home.routing]\ntemplate = \"yes\"\n", "template"},
+	} {
+		_, err := Parse([]byte(minimalFile+tc.text), "тест.toml")
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%q: ошибка %v, ждали %q", tc.text, err, tc.want)
+		}
+	}
+}
+
 func TestLoadReadsFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), FileName)
 	if err := os.WriteFile(path, []byte(minimalFile), 0o600); err != nil {

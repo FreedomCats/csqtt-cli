@@ -118,6 +118,10 @@ func render(f *File) string {
 			fmt.Fprintf(&b, "\n[profile.%s.socks]\n", name)
 			writeString(&b, "listen", listen)
 		}
+		if r := p.Routing; r.Template != nil {
+			fmt.Fprintf(&b, "\n[profile.%s.routing]\n", name)
+			fmt.Fprintf(&b, "template = %t\n", *r.Template)
+		}
 	}
 
 	return b.String()

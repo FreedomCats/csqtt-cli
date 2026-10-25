@@ -180,6 +180,13 @@ type Options struct {
 // ErrServerRestart — сервер перезапущен из панели (SERVER_RESTART).
 var ErrServerRestart = errors.New("сервер перезапущен из панели")
 
+// ErrDirectUnbound — ядру велено пустить часть трафика мимо туннеля
+// (coreproc.Config.DirectRouting), datapath забирает весь трафик системы
+// (datapath.Persistent), а физического интерфейса ядро не получило (BindIf —
+// от Prepare). Ядро в такой попытке не запускается.
+var ErrDirectUnbound = errors.New("маршрутизация мимо туннеля в режиме tun — только с привязкой сокетов ядра " +
+	"к физическому интерфейсу (-bind-if), а её нет")
+
 // ServerError — ядро сообщило, что попытка окончена (ERROR с fatal).
 type ServerError struct {
 	Code    string
@@ -631,6 +638,13 @@ func (t *Tunnel) attempt(ctx context.Context) result {
 		if err := t.opts.Prepare(&cfg); err != nil {
 			return result{err: err}
 		}
+	}
+	if _, full := t.opts.Datapath.(datapath.Persistent); full && cfg.DirectRouting() && cfg.BindIf == 0 {
+		// Маршруты туннеля забирают весь трафик системы, и прямой сокет
+		// ядра без привязки ушёл бы ими же обратно в адаптер — ядру, снова
+		// напрямую, и так по кругу. Не сеть виновата, а сборка настроек:
+		// повторять незачем.
+		return result{err: ErrDirectUnbound, final: true}
 	}
 	var socket string
 	if t.opts.TunFD != nil {

@@ -486,6 +486,65 @@ func TestProfileSetKillSwitch(t *testing.T) {
 	}
 }
 
+// -routing-template записывает секцию routing с template = true,
+// -routing-template=false — false; без флага секции нет вовсе. show
+// показывает значение, а пропуск — как умолчание false.
+func TestProfileSetRoutingTemplate(t *testing.T) {
+	te := newTestEnv(t)
+	te.addHome()
+	showLine := func() string {
+		t.Helper()
+		code, stdout, stderr := te.run("profile", "show", "home")
+		if code != exitOK {
+			t.Fatalf("show: код %d, stderr:\n%s", code, stderr)
+		}
+		for _, line := range strings.Split(stdout, "\n") {
+			if strings.Contains(line, "routing.template") {
+				return strings.Join(strings.Fields(line), " ")
+			}
+		}
+		t.Fatalf("в show нет routing.template:\n%s", stdout)
+		return ""
+	}
+	if raw, _ := os.ReadFile(te.configPath()); strings.Contains(string(raw), "routing") {
+		t.Errorf("новый профиль без флага записан с секцией routing:\n%s", raw)
+	}
+	if got := showLine(); got != "routing.template false (умолчание)" {
+		t.Errorf("show без секции: %q", got)
+	}
+
+	for _, tc := range []struct {
+		args []string
+		want bool
+		show string
+	}{
+		{[]string{"-routing-template"}, true, "routing.template true"},
+		{[]string{"-workers", "10"}, true, "routing.template true"},
+		{[]string{"-routing-template=false"}, false, "routing.template false"},
+	} {
+		if code, _, stderr := te.run(append([]string{"profile", "set", "home"}, tc.args...)...); code != exitOK {
+			t.Fatalf("%v: код %d, stderr:\n%s", tc.args, code, stderr)
+		}
+		file, _ := config.Load(te.configPath())
+		if got := file.Profiles["home"].Routing.Template; got == nil || *got != tc.want {
+			t.Errorf("%v: routing.template %v, ждали %v", tc.args, got, tc.want)
+		}
+		if got := showLine(); got != tc.show {
+			t.Errorf("%v: show %q, ждали %q", tc.args, got, tc.show)
+		}
+	}
+}
+
+// profile add принимает тот же флаг.
+func TestProfileAddRoutingTemplate(t *testing.T) {
+	te := newTestEnv(t)
+	te.addHome("-routing-template")
+	file, _ := config.Load(te.configPath())
+	if p := file.Profiles["home"]; !p.RoutingTemplateOn() {
+		t.Errorf("routing.template после add: %v", p.Routing.Template)
+	}
+}
+
 func boolPtr(v bool) *bool { return &v }
 
 // Профиль auto_js хешей не спрашивает и не требует; предупреждение о
@@ -583,7 +642,7 @@ func TestProfileShowAutoJS(t *testing.T) {
 		t.Fatalf("код %d, stderr:\n%s", code, stderr)
 	}
 	noSecrets(t, "show", stdout+stderr)
-	for _, want := range []string{"vk_hash_mode   auto_js", "в режиме auto_js не нужны", "запустит 70"} {
+	for _, want := range []string{"vk_hash_mode     auto_js", "в режиме auto_js не нужны", "запустит 70"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("в show нет %q:\n%s", want, stdout)
 		}

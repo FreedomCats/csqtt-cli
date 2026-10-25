@@ -104,6 +104,7 @@ type profileFlags struct {
 	socksListen   *string
 	killSwitch    *bool
 	vkHashMode    *string
+	routeTemplate *bool
 	makeDefault   *bool
 }
 
@@ -118,6 +119,8 @@ func addProfileFlags(fs *flag.FlagSet) *profileFlags {
 		killSwitch:    fs.Bool("kill-switch", true, "kill-switch: "+killSwitchUsage+"; -kill-switch=false — выключить"),
 		vkHashMode: fs.String("vk-hash-mode", "", "откуда звонок VK: manual — хеши профиля (по умолчанию) или auto_js — звонок создаёт ядро "+
 			"по входу VK ("+app.Name+" vk login), хеши не нужны"),
+		routeTemplate: fs.Bool("routing-template", false, "встроенный список доменов ядра (российские сервисы) — мимо туннеля, "+
+			"с вашего адреса; -routing-template=false — выключить (по умолчанию выключено: весь трафик — в туннель)"),
 		makeDefault: fs.Bool("default", false, "сделать профиль профилем по умолчанию"),
 	}
 }
@@ -148,6 +151,10 @@ func (f *profileFlags) apply(p *config.Profile, named map[string]bool) {
 	}
 	if named["vk-hash-mode"] {
 		p.VkHashMode = strings.TrimSpace(*f.vkHashMode)
+	}
+	if named["routing-template"] {
+		value := *f.routeTemplate
+		p.Routing.Template = &value
 	}
 }
 
@@ -541,6 +548,11 @@ func runProfileShow(_ context.Context, e *env, args []string) error {
 		printSetting(e.stdout, "kill_switch", strconv.FormatBool(*p.KillSwitch), "")
 	}
 	printSetting(e.stdout, "socks.listen", p.Socks.Listen, datapath.DefaultSocksListen)
+	if p.Routing.Template == nil {
+		printSetting(e.stdout, "routing.template", "", "false")
+	} else {
+		printSetting(e.stdout, "routing.template", strconv.FormatBool(*p.Routing.Template), "")
+	}
 	if strings.TrimSpace(p.DeviceID) == "" {
 		printField(e.stdout, "device_id", "не задан", "(заведётся при подключении)")
 	} else {
@@ -827,7 +839,7 @@ func loadProfilesForWrite(flagValue string) (string, *config.File, error) {
 }
 
 func printField(w io.Writer, key, value, note string) {
-	fmt.Fprintf(w, "  %-14s %s", key, value)
+	fmt.Fprintf(w, "  %-16s %s", key, value)
 	if note != "" {
 		fmt.Fprintf(w, "  %s", note)
 	}

@@ -1,8 +1,10 @@
-// Package csqttcli — версия ядра CSQTT, с которым собран csqtt-cli.
+// Package csqttcli — версия ядра CSQTT, с которым собран csqtt-cli, и число
+// доменов во встроенном списке этого ядра.
 //
 // Пакет лежит в корне модуля, потому что go:embed не берёт файлов выше
-// каталога пакета, а источник версии один — core/CORE_VERSION: его пишет
-// scripts/vendorcore при переносе ядра. Остальной код — в internal/ и cmd/.
+// каталога пакета, а источники — в core/: CORE_VERSION пишет scripts/vendorcore
+// при переносе ядра, domains.txt он переносит из апстрима. Остальной код — в
+// internal/ и cmd/.
 package csqttcli
 
 import (

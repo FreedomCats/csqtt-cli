@@ -844,6 +844,52 @@ func TestPrepareEachAttempt(t *testing.T) {
 	}
 }
 
+// Маршрутизация мимо туннеля в datapath на весь трафик системы без привязки
+// ядра к интерфейсу — конец без запуска ядра и без повторов: прямые сокеты
+// ушли бы в адаптер. С привязкой или в socks ядро запускается.
+func TestDirectRoutingNeedsBindIf(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		persistent bool
+		bindIf     uint32
+		refused    bool
+	}{
+		{"tun без привязки", true, 0, true},
+		{"tun с привязкой", true, 3, false},
+		{"socks без привязки", false, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := Options{Config: coreproc.Config{TemplateDomains: true}, Prepare: func(cfg *coreproc.Config) error {
+				cfg.BindIf = tc.bindIf
+				return nil
+			}}
+			if tc.persistent {
+				opts.Datapath = &fakePersistent{fakeDatapath: &fakeDatapath{}}
+			}
+			h := newHarness(t, opts, join(recStart, []string{"exit 1"}))
+			err := h.result(h.run())
+			if tc.refused {
+				if !errors.Is(err, ErrDirectUnbound) {
+					t.Errorf("Run() = %v, ожидалось %v", err, ErrDirectUnbound)
+				}
+				if n := len(h.attempts()); n != 0 {
+					t.Errorf("ядро запускалось %d раз", n)
+				}
+				if s := h.sleeps(); len(s) != 0 {
+					t.Errorf("задержки перед повтором: %v", s)
+				}
+				return
+			}
+			if errors.Is(err, ErrDirectUnbound) {
+				t.Errorf("Run() = %v", err)
+			}
+			if len(h.attempts()) == 0 {
+				t.Error("ядро не запускалось")
+			}
+		})
+	}
+}
+
 // Отказ Prepare (сети нет) — ядро не запускается, попытка неудачна и
 // повторяется через обычную задержку.
 func TestPrepareFailure(t *testing.T) {

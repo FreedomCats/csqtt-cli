@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -155,6 +156,35 @@ func TestConnectServerRejected(t *testing.T) {
 	}
 	if strings.Contains(stdout, "переподключение") {
 		t.Errorf("отказ сервера повторяли:\n%s", stdout)
+	}
+}
+
+// Встроенный список ядра мимо туннеля: с опцией профиля ядро получает флаги
+// маршрутизации, а connect говорит об этом строкой; без опции — ни того, ни
+// другого.
+func TestConnectRoutingTemplate(t *testing.T) {
+	te := newTestEnv(t)
+	socksHome(t, te)
+	te.core = "rejected"
+	const line = "мимо туннеля: сайты встроенного списка ядра"
+	for _, on := range []bool{false, true} {
+		if on {
+			if code, _, stderr := te.run("profile", "set", "home", "-routing-template"); code != exitOK {
+				t.Fatalf("profile set: код %d, stderr:\n%s", code, stderr)
+			}
+		}
+		code, stdout, stderr := te.run("connect", "-v")
+		if code != exitError {
+			t.Fatalf("код %d:\n%s\n%s", code, stdout, stderr)
+		}
+		hasLine := strings.Contains(stdout, line+" (российские сервисы, доменов: "+strconv.Itoa(csqttcli.TemplateDomains)+")")
+		hasFlags := strings.Contains(stdout, " --domain-routing --template-domains")
+		if !strings.Contains(stdout, "[ТЕСТ] аргументы ядра:") {
+			t.Fatalf("нет аргументов ядра в выводе:\n%s", stdout)
+		}
+		if hasLine != on || hasFlags != on {
+			t.Errorf("опция %v: строка %v, флаги ядра %v:\n%s", on, hasLine, hasFlags, stdout)
+		}
 	}
 }
 

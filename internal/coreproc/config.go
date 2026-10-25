@@ -66,6 +66,12 @@ type Config struct {
 	// BindIf. Ноль — не передаётся.
 	BindIf uint32
 	Mark   uint32
+	// TemplateDomains — встроенный список доменов ядра идёт мимо туннеля
+	// (--domain-routing --template-domains): такие соединения ядро открывает
+	// само, напрямую. В datapath tun — только вместе с BindIf: без привязки
+	// прямые сокеты ядра ушли бы маршрутами туннеля обратно в адаптер
+	// (DirectRouting).
+	TemplateDomains bool
 	// epoch — эпоха подключения (-gen/-salt). Её задаёт Start, новую на
 	// каждый процесс ядра; нулевая не передаётся.
 	epoch epoch
@@ -108,12 +114,22 @@ func (c Config) Args() []string {
 	if c.Mark != 0 {
 		add("mark", strconv.FormatUint(uint64(c.Mark), 10))
 	}
+	if c.TemplateDomains {
+		// Булевы флаги ядра — без значения: --domain-routing=true clap
+		// ядра не примет. Один --template-domains ничего не включает: без
+		// --domain-routing маршрутизация по доменам выключена целиком.
+		args = append(args, "--domain-routing", "--template-domains")
+	}
 	if c.epoch.gen != 0 {
 		add("gen", strconv.FormatUint(c.epoch.gen, 10))
 	}
 	add("salt", c.epoch.salt)
 	return args
 }
+
+// DirectRouting — часть трафика ядро пустит мимо туннеля, своими сокетами
+// (TemplateDomains).
+func (c Config) DirectRouting() bool { return c.TemplateDomains }
 
 // AutoJS — звонок создаёт ядро (VKHashModeAutoJS).
 func (c Config) AutoJS() bool { return c.VKHashMode == VKHashModeAutoJS }

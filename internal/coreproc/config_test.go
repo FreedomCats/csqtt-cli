@@ -41,6 +41,32 @@ func TestArgs(t *testing.T) {
 	}
 }
 
+// Встроенный список ядра мимо туннеля — два голых флага (clap ядра значения
+// у булевых не принимает); без опции флагов маршрутизации нет вовсе.
+func TestArgsTemplateDomains(t *testing.T) {
+	routing := func(args []string) []string {
+		var got []string
+		for _, a := range args {
+			if strings.HasPrefix(a, "--domain") || strings.HasPrefix(a, "--template") ||
+				strings.HasPrefix(a, "--ip-") || strings.HasPrefix(a, "--direct") || strings.HasPrefix(a, "--exclude") {
+				got = append(got, a)
+			}
+		}
+		return got
+	}
+	cfg := Config{Peer: "203.0.113.10:46000"}
+	if got := routing(cfg.Args()); got != nil || cfg.DirectRouting() {
+		t.Errorf("без опции: флаги %q, DirectRouting %v", got, cfg.DirectRouting())
+	}
+	cfg.TemplateDomains = true
+	if got, want := routing(cfg.Args()), []string{"--domain-routing", "--template-domains"}; !slices.Equal(got, want) {
+		t.Errorf("с опцией: флаги %q, want %q", got, want)
+	}
+	if !cfg.DirectRouting() {
+		t.Error("с опцией DirectRouting = false")
+	}
+}
+
 // Формат — тот, что разбирает secrets_stdin.rs ядра: ровно два поля строками.
 func TestSecretsLine(t *testing.T) {
 	cfg := Config{Password: `се"крет<`, Hashes: []string{"-Wabc", "def"}}

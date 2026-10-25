@@ -129,6 +129,7 @@ func fakeCore(mode string) int {
 
 	// rejected — сервер отказал: по умолчанию другая версия протокола.
 	case "rejected":
+		fmt.Fprintf(os.Stderr, "[ТЕСТ] аргументы ядра: %s\n", strings.Join(os.Args[1:], " "))
 		event("PROCESS", fmt.Sprintf(`{"pid":%d}`, os.Getpid()))
 		payload, _ := json.Marshal(map[string]any{"code": "handshake_rejected", "message": rejectMsg, "fatal": true})
 		event("ERROR", string(payload))

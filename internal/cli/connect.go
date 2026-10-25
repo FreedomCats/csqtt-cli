@@ -54,7 +54,8 @@ func connectCommand() *command {
 лежат в хранилище секретов; записывает их ` + app.Name + ` profile add.
 
 Режим tun (datapath = "tun", умолчание) — системный VPN: весь трафик
-системы идёт в туннель через адаптер csqtt-cli. Он требует прав root
+системы идёт в туннель через адаптер csqtt-cli (кроме сайтов встроенного
+списка ядра, если в профиле включён routing.template). Он требует прав root
 (sudo ` + app.Name + ` connect), на Windows — администратора. Файл
 настроек, секреты и окно капчи под sudo остаются у того, кто его вызвал. Пока туннель
 не поднят, kill-switch блокирует трафик системы; пока поднят, DNS системы
@@ -414,6 +415,12 @@ func (plan *connectPlan) run(ctx context.Context, e *env, verbose bool) error {
 		calls = "звонок VK создаёт ядро (auto_js)"
 	}
 	out.line("профиль %s: сервер %s, %s, воркеров %d, %s", p.Name, cfg.Peer, calls, workers, dp.describe)
+	if cfg.TemplateDomains {
+		// Обещание «весь трафик — через туннель» здесь не действует, и об
+		// этом — строкой, а не только в профиле.
+		out.line("мимо туннеля: сайты встроенного списка ядра (российские сервисы, доменов: %d) — "+
+			"напрямую с вашего адреса, пока туннель поднят (routing.template в профиле)", csqttcli.TemplateDomains)
+	}
 	switch {
 	case workers >= cfg.Workers:
 	case cfg.AutoJS():

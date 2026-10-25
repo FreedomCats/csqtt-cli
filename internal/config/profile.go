@@ -121,6 +121,8 @@ type Profile struct {
 
 	// Socks — секция [profile.<имя>.socks].
 	Socks SocksSection `toml:"socks"`
+	// Routing — секция [profile.<имя>.routing]: что идёт мимо туннеля.
+	Routing RoutingSection `toml:"routing"`
 }
 
 // SocksSection — настройки локального SOCKS5. Учитываются при datapath = "socks".
@@ -129,6 +131,17 @@ type Profile struct {
 // туннель открылся бы всей локальной сети.
 type SocksSection struct {
 	Listen string `toml:"listen"`
+}
+
+// RoutingSection — маршрутизация мимо туннеля (§10 doc/architecture.md). Без
+// секции весь трафик идёт в туннель. Учитывается в обоих режимах, tun и socks:
+// решает ядро, по адресу назначения.
+type RoutingSection struct {
+	// Template — встроенный список доменов ядра (российские сервисы,
+	// core/domains.txt) идёт напрямую, с адреса пользователя. Указатель:
+	// пропущенное поле значит «выключено», записывается только заданное.
+	// Читать — Profile.RoutingTemplateOn.
+	Template *bool `toml:"template"`
 }
 
 // DefaultPeerPort — порт сервера CSQTT, если в адресе его не назвали: тот же,
@@ -167,6 +180,7 @@ func (p *Profile) Core() coreproc.Config {
 	if p.AutoJS() {
 		cfg.VKHashMode = coreproc.VKHashModeAutoJS
 	}
+	cfg.TemplateDomains = p.RoutingTemplateOn()
 	if cfg.Workers == 0 {
 		cfg.Workers = DefaultWorkers
 	}
@@ -183,6 +197,12 @@ func (p *Profile) AutoJS() bool {
 // обратного.
 func (p *Profile) KillSwitchOn() bool {
 	return p.KillSwitch == nil || *p.KillSwitch
+}
+
+// RoutingTemplateOn — идёт ли встроенный список доменов ядра мимо туннеля:
+// только если в профиле так и сказано.
+func (p *Profile) RoutingTemplateOn() bool {
+	return p.Routing.Template != nil && *p.Routing.Template
 }
 
 // Names возвращает имена профилей по алфавиту — для выбора и для сообщений

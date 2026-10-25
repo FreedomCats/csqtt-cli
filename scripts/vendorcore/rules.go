@@ -14,7 +14,8 @@ var vendoredDirs = []string{"rust-client", "shared"}
 // шёл вместе с каждой копией кода. domains.txt — список доменов для
 // маршрутизации мимо туннеля (2.5.0): sni.rs вшивает его
 // include_str!("../domains.txt") из корня апстрима, без него ядро не
-// собирается, хотя оболочка эту маршрутизацию не включает.
+// собирается. Оболочка пускает этот список мимо туннеля по опции профиля
+// routing.template (--template-domains) и показывает число доменов в нём.
 var vendoredFiles = map[string]string{
 	"LICENSE":     "LICENSE",
 	"domains.txt": "domains.txt",
