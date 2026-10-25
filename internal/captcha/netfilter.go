@@ -29,8 +29,10 @@ const (
 
 // vkLoginDomains — набор «только VK»: домены окна капчи (proxyDomains) и
 // ещё домены VK, которые встречаются на его страницах: старый
-// vkontakte.ru, видео (vkuservideo.net) и счётчики VK (vk-portal.net).
-var vkLoginDomains = append(slices.Clone(proxyDomains), "vkontakte.ru", "vkuservideo.net", "vk-portal.net")
+// vkontakte.ru, видео (vkuservideo.net), фото и аватары (vkuserphoto.ru) и
+// счётчики VK (vk-portal.net).
+var vkLoginDomains = append(slices.Clone(proxyDomains),
+	"vkontakte.ru", "vkuservideo.net", "vkuserphoto.ru", "vk-portal.net")
 
 // NetFilter — какие домены пускает окно входа в диагностическом режиме.
 type NetFilter struct {

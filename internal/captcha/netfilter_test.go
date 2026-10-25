@@ -83,7 +83,7 @@ func TestNetFilterAllows(t *testing.T) {
 			"vk.com": true, "ad.mail.ru": true, "203.0.113.1": true, "2001:db8::1": true}},
 		{"vk", map[string]bool{
 			"id.vk.ru": true, "st.vk.com": true, "sun9-1.userapi.com": true, "vkontakte.ru": true,
-			"ad.mail.ru": false, "github.com": false}},
+			"sun9-1.vkuserphoto.ru": true, "ad.mail.ru": false, "github.com": false}},
 		{"ru", map[string]bool{"id.vk.ru": true, "ad.mail.ru": true, "vk.com": false}},
 	} {
 		f, err := ParseNetFilter(tc.filter)

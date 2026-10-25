@@ -132,7 +132,7 @@ func TestConnectAutoJS(t *testing.T) {
 		"--workers=70", "--vk-hash-mode=auto_js", "--vk-auth-mode=auto_js",
 		"VK_JS_BOOTSTRAP:<скрыт",
 		"(хеш: <хеш>...)",
-		"завершаем звонок VK… (до 38 с)",
+		"завершаем звонок VK… (до 45 с)",
 		"[VK JS] Звонки завершены 1/1",
 		"остановлено",
 	} {

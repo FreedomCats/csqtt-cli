@@ -63,6 +63,13 @@ type (
 	// чтение или запись TUN кончились. Новый дескриптор оно ждёт на том же
 	// сокете -tun-uds 20 с, не дождалось — выходит с кодом ExitTunLost.
 	TunLostEvent struct{}
+	// DTLSEvent — итог рукопожатия DTLS-SRTP воркера с сервером: успех, отказ
+	// или откат на прежние ключи (WRAP-SRTP). Message — текст ядра, для
+	// журнала; на подключение событие не влияет.
+	DTLSEvent struct {
+		Worker  int    `json:"worker"`
+		Message string `json:"message"`
+	}
 	// ErrorEvent — ошибка; Fatal — попытка подключения окончена.
 	ErrorEvent struct {
 		Code    string `json:"code"`
@@ -108,6 +115,7 @@ func (CallUnavailableEvent) message() {}
 func (ServerRestartEvent) message()   {}
 func (WorkersEvent) message()         {}
 func (TunLostEvent) message()         {}
+func (DTLSEvent) message()            {}
 func (ErrorEvent) message()           {}
 func (StoppedEvent) message()         {}
 func (CaptchaRequest) message()       {}
@@ -213,6 +221,13 @@ func parseEvent(kind, payload string) Message {
 		}
 	case "TUN_LOST":
 		return TunLostEvent{}
+	case "DTLS":
+		var e DTLSEvent
+		if decode(&e) {
+			// В отказе — текст ошибки ядра: маскируется, как строка журнала.
+			e.Message = maskLog(e.Message)
+			return e
+		}
 	case "ERROR":
 		var e ErrorEvent
 		if decode(&e) {

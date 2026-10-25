@@ -434,6 +434,12 @@ func (p *printer) message(m coreproc.Message) {
 			p.lineLocked("ядро: потерян дескриптор адаптера (TUN_LOST)")
 		}
 
+	case coreproc.DTLSEvent:
+		// По строке на воркер — только для журнала.
+		if p.verbose {
+			p.lineLocked(fmt.Sprintf("ядро: DTLS, воркер %d: %s", m.Worker, p.mask.Replace(m.Message)))
+		}
+
 	case coreproc.ErrorEvent:
 		// Фатальную ошибку назовёт переход: попытка с ней кончается.
 		if !m.Fatal && p.verbose {

@@ -87,6 +87,7 @@ func TestVerboseOnlyDetails(t *testing.T) {
 		coreproc.StatsEvent{Active: 9, BytesUp: 10, BytesDown: 20},
 		coreproc.WorkersEvent{Limit: 0},
 		coreproc.TunLostEvent{},
+		coreproc.DTLSEvent{Worker: 2, Message: "DTLS-хендшейк успешен (ECDSA P-256)"},
 	}
 	p, buf, _ := testPrinter(false)
 	for _, m := range quiet {
@@ -113,6 +114,7 @@ func TestVerboseOnlyDetails(t *testing.T) {
 		"[SOCKS] CONNECT example.com:443: отказ\n",
 		"ядро: у сервера нет лимита воркеров для этого пароля\n",
 		"ядро: потерян дескриптор адаптера (TUN_LOST)\n",
+		"ядро: DTLS, воркер 2: DTLS-хендшейк успешен (ECDSA P-256)\n",
 	} {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("с -v нет строки %q:\n%s", want, buf.String())

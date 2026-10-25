@@ -175,7 +175,7 @@ func TestObserveIgnoresOtherMessages(t *testing.T) {
 		coreproc.PIDEvent{PID: 1}, coreproc.ListenEvent{Port: 1}, coreproc.Log{Text: "x"},
 		coreproc.ErrorEvent{Code: "handshake_timeout", Fatal: true}, coreproc.StoppedEvent{},
 		coreproc.CallUnavailableEvent{Hash: "x", Code: 951}, coreproc.ServerRestartEvent{Source: "panel"},
-		coreproc.CaptchaRequest{Mode: "manual"},
+		coreproc.CaptchaRequest{Mode: "manual"}, coreproc.DTLSEvent{Worker: 1, Message: "x"},
 	} {
 		if tr, moved := m.Observe(msg); moved {
 			t.Errorf("%T сдвинул состояние: %+v", msg, tr)

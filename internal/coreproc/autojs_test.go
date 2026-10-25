@@ -252,6 +252,17 @@ func TestMaskCallHash(t *testing.T) {
 	}
 }
 
+// В auto_js хеш звонка прячется и в тексте события DTLS: в отказе — текст
+// ошибки ядра.
+func TestParseAutoJSMasksDTLS(t *testing.T) {
+	line := `__CSQTT_EVENT__|DTLS|{"message":"рукопожатие не состоялось (https://vk.ru/call/join/` +
+		fakeCallHash + `)","worker":4}`
+	want := DTLSEvent{Worker: 4, Message: "рукопожатие не состоялось (https://vk.ru/call/join/<хеш>)"}
+	if got := parseAutoJS(ParseLine)(line); got != want {
+		t.Errorf("parseAutoJS(%q) =\n%#v\nwant\n%#v", line, got, want)
+	}
+}
+
 func TestMaskStdinSecrets(t *testing.T) {
 	input, err := fakeAutoJSConfig.startInput()
 	if err != nil {

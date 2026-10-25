@@ -57,7 +57,7 @@ func TestAutoJSWithoutHashes(t *testing.T) {
 		t.Errorf("остановка ядра %q, ожидалась с завершением звонка", got)
 	}
 	logs := strings.Join(h.logLines(), "\n")
-	for _, want := range []string{"завершаем звонок VK… (до 38 с", "Ctrl+C ещё раз"} {
+	for _, want := range []string{"завершаем звонок VK… (до 45 с", "Ctrl+C ещё раз"} {
 		if !strings.Contains(logs, want) {
 			t.Errorf("нет %q в строках цикла:\n%s", want, logs)
 		}

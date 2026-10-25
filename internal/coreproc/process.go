@@ -223,6 +223,9 @@ func parseAutoJS(parse func(string) Message) func(string) Message {
 		switch m := parse(line).(type) {
 		case Log:
 			return Log{Text: maskCallHash(m.Text)}
+		case DTLSEvent:
+			m.Message = maskCallHash(m.Message)
+			return m
 		case CallUnavailableEvent:
 			m.Hash = ""
 			return m
