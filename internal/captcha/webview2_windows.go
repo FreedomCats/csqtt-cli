@@ -194,6 +194,9 @@ func (s *WebView2) Solve(ctx context.Context, req Request) (string, error) {
 			report(outcome{err: fmt.Errorf("%w: %v", ErrBrowser, err)})
 			return
 		}
+		// До перехватчика скрытого окна: место за краем экрана он берёт в
+		// физических пикселях (dpi_windows.go).
+		scale := dpiAwareThread()
 
 		var extra []string
 		if proxy != nil {
@@ -207,6 +210,9 @@ func (s *WebView2) Solve(ctx context.Context, req Request) (string, error) {
 			} else {
 				defer hidden.unhook()
 				extra = append(extra, hiddenBrowserArgs)
+				// Размер — под монитор, за которым окно будет числиться за
+				// краем; при показе reveal пересчитает его под основной.
+				scale = hidden.scale(scale)
 			}
 		}
 		var browserArgs string
@@ -219,8 +225,8 @@ func (s *WebView2) Solve(ctx context.Context, req Request) (string, error) {
 			AdditionalBrowserArguments: browserArgs,
 			WindowOptions: webview2.WindowOptions{
 				Title:  windowTitle(req),
-				Width:  500,
-				Height: 680,
+				Width:  scaledSize(500, scale),
+				Height: scaledSize(680, scale),
 				Center: true,
 			},
 		})

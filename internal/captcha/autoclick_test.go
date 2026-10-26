@@ -122,6 +122,9 @@ type fakePage struct {
 	hang   func(method string, clicked bool) bool
 	events []mouseEvent
 	onUp   func() // зовётся после отпускания кнопки
+	// Ответы на описание страницы (describeJS) и её запись (dumpJS).
+	dom  *domReport
+	html string
 }
 
 type mouseEvent struct {
@@ -143,7 +146,16 @@ func (f *fakePage) devtools(ctx context.Context, method string, params any) (jso
 		if f.broken {
 			return nil, errors.New("выдуманная: нет контекста страницы")
 		}
-		b, _ := json.Marshal(map[string]any{"result": map[string]any{"type": "object", "value": f.state(clicked)}})
+		var value any
+		switch params.(map[string]any)["expression"] {
+		case describeJS:
+			value = f.dom
+		case dumpJS:
+			value = f.html
+		default:
+			value = f.state(clicked)
+		}
+		b, _ := json.Marshal(map[string]any{"result": map[string]any{"type": "object", "value": value}})
 		return b, nil
 	case "Input.dispatchMouseEvent":
 		m := params.(map[string]any)

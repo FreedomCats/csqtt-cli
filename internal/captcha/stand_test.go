@@ -18,7 +18,15 @@ package captcha
 //	           доверенный ли он и сколько было движений мыши → OK с токеном;
 //	autobot  — то же, но check → BOT (слайдер), страница показывает слайдер;
 //	           человек (standHuman) → OK с токеном;
-//	autonone — галочки нет вовсе; человек (standHuman) → OK с токеном.
+//	autonone — галочки нет вовсе (только приманки для описания страницы:
+//	           кнопка в теневом корне, фрейм чужого происхождения с запросом
+//	           в адресе); человек (standHuman) → OK с токеном;
+//	autoplain  — как auto, но галочка без признаков VK: спрятанный
+//	             input[type=checkbox] в label с текстом «Я не робот»;
+//	autoshadow — галочка [role=checkbox] в открытом теневом корне;
+//	autoframe  — галочка input[type=checkbox] во фрейме того же
+//	             происхождения, фрейм сдвинут в окне;
+//	autotext   — ни флажка, ни роли: только элемент с текстом «Я не робот».
 //
 // via=xhr — те же запросы через XMLHttpRequest вместо fetch; delay=<срок> —
 // страница отвечает через столько (медленная сеть).
@@ -63,7 +71,7 @@ api('initSession').then(function () { return api('settings'); }).then(function (
 }).then(function () {
 	if (scenario === 'idle') { return; }
 	later(function () {
-		api('check', '&attempt=1&wd=' + navigator.webdriver).then(function (r) {
+		api('check', '&attempt=1&wd=' + navigator.webdriver + '&dpr=' + devicePixelRatio).then(function (r) {
 			var st = r.response && r.response.status;
 			if (st === 'BOT') {
 				later(function () {
@@ -78,50 +86,106 @@ api('initSession').then(function () { return api('settings'); }).then(function (
 	});
 });
 }
-// Галочка для автоклика — с классами и атрибутами VK. check уходит по
-// первому клику и несёт, был ли клик доверенным, сколько доверенных движений
-// мыши было до него, видна ли страница и сколько кадров она нарисовала за
-// последнюю секунду. Человека изображает standHuman(): тест зовёт его, когда
-// окно показано человеку.
+// Галочка для автоклика — с классами и атрибутами VK (или без них, см.
+// autoBox). check уходит по первому клику и несёт, был ли клик доверенным,
+// сколько доверенных движений мыши было до него, видна ли страница и сколько
+// кадров она нарисовала за последнюю секунду. Человека изображает
+// standHuman(): тест зовёт его, когда окно показано человеку.
 function autoStand() {
-	var moves = 0, frames = [];
-	document.addEventListener('mousemove', function (e) { if (e.isTrusted) { moves++; } }, true);
+	var moves = 0, frames = [], sent = false, made = null;
+	function onMove(e) { if (e.isTrusted) { moves++; } }
+	function onClick(e) {
+		if (sent) { return; }
+		sent = true;
+		api('check', '&attempt=1&trusted=' + e.isTrusted + '&moves=' + moves + '&vis=' + document.visibilityState +
+			'&fps=' + fps() + '&focus=' + document.hasFocus() + '&dpr=' + devicePixelRatio).then(function (r) {
+			var st = r.response && r.response.status;
+			if (st === 'OK') { api('endSession'); return; }
+			made.el.remove();
+			var slider = document.createElement('div');
+			slider.className = 'vkc__SliderCaptcha-module__description';
+			slider.textContent = 'Сдвиньте ползунок';
+			document.body.appendChild(slider);
+		});
+	}
+	function watch(doc) {
+		doc.addEventListener('mousemove', onMove, true);
+		doc.addEventListener('click', onClick, true);
+	}
+	watch(document);
 	(function frame(t) { frames.push(performance.now()); requestAnimationFrame(frame); })();
 	function fps() {
 		var now = performance.now();
 		return frames.filter(function (t) { return now - t < 1000; }).length;
 	}
 	window.standHuman = function () {
-		api('check', '&attempt=2&human=1').then(function (r) {
+		api('check', '&attempt=2&human=1&dpr=' + devicePixelRatio).then(function (r) {
 			if (r.response && r.response.status === 'OK') { api('endSession'); }
 		});
 	};
 	api('initSession').then(function () { return api('settings'); }).then(function () {
 		return api('componentDone');
 	}).then(function () {
-		if (scenario === 'autonone') { return; }
-		var label = document.createElement('label');
-		label.className = 'vkc__Checkbox-module__Checkbox';
-		label.htmlFor = 'not-robot-captcha-checkbox';
-		label.style.cssText = 'display:inline-block;margin:120px 40px;padding:14px 18px;border:1px solid #888';
-		label.innerHTML = '<input type="checkbox" id="not-robot-captcha-checkbox"> Я не робот';
-		setTimeout(function () { document.body.appendChild(label); }, +(q.get('boxdelay') || 0));
-		var sent = false;
-		document.addEventListener('click', function (e) {
-			if (sent) { return; }
-			sent = true;
-			api('check', '&attempt=1&trusted=' + e.isTrusted + '&moves=' + moves + '&vis=' + document.visibilityState +
-				'&fps=' + fps() + '&focus=' + document.hasFocus()).then(function (r) {
-				var st = r.response && r.response.status;
-				if (st === 'OK') { api('endSession'); return; }
-				label.remove();
-				var slider = document.createElement('div');
-				slider.className = 'vkc__SliderCaptcha-module__description';
-				slider.textContent = 'Сдвиньте ползунок';
-				document.body.appendChild(slider);
-			});
-		}, true);
+		if (scenario === 'autonone') { decoys(); return; }
+		setTimeout(function () {
+			made = autoBox();
+			document.body.appendChild(made.el);
+			if (made.ready) { made.ready(watch); }
+		}, +(q.get('boxdelay') || 0));
 	});
+}
+var boxStyle = 'display:inline-block;margin:120px 40px;padding:14px 18px;border:1px solid #888';
+// autoBox — галочка варианта: el — что вставить в страницу; ready(watch) —
+// после вставки, для фрейма: следить и за его документом.
+function autoBox() {
+	var el;
+	switch (scenario) {
+	case 'autoplain':
+		el = document.createElement('label');
+		el.style.cssText = boxStyle;
+		el.innerHTML = '<input type="checkbox" style="position:absolute;opacity:0;width:1px;height:1px">' +
+			'<span>Я не робот</span>';
+		return {el: el};
+	case 'autoshadow':
+		el = document.createElement('div');
+		el.attachShadow({mode: 'open'}).innerHTML = '<div role="checkbox" aria-checked="false" tabindex="0" ' +
+			'style="' + boxStyle + '">Я не робот</div>';
+		return {el: el};
+	case 'autotext':
+		el = document.createElement('div');
+		el.style.cssText = boxStyle;
+		el.innerHTML = '<span style="display:inline-block;width:16px;height:16px;border:1px solid #888"></span> ' +
+			'<span>Я не робот</span>';
+		return {el: el};
+	case 'autoframe':
+		el = document.createElement('iframe');
+		el.style.cssText = 'display:block;margin:90px 0 0 60px;width:340px;height:200px;border:2px solid #888';
+		return {el: el, ready: function (watch) {
+			var doc = el.contentDocument;
+			doc.open();
+			doc.write('<!doctype html><meta charset="utf-8"><body style="margin:0">' +
+				'<label style="display:inline-block;margin:70px 0 0 90px;padding:14px 18px">' +
+				'<input type="checkbox"> Я не робот</label></body>');
+			doc.close();
+			watch(doc);
+		}};
+	}
+	el = document.createElement('label');
+	el.className = 'vkc__Checkbox-module__Checkbox';
+	el.htmlFor = 'not-robot-captcha-checkbox';
+	el.style.cssText = boxStyle;
+	el.innerHTML = '<input type="checkbox" id="not-robot-captcha-checkbox"> Я не робот';
+	return {el: el};
+}
+// decoys — не галочки: кнопка в теневом корне и фрейм чужого происхождения
+// (127.0.0.1 и localhost — разные происхождения) с запросом в адресе.
+function decoys() {
+	var host = document.createElement('div');
+	host.attachShadow({mode: 'open'}).innerHTML = '<button>Обновить</button>';
+	document.body.appendChild(host);
+	var f = document.createElement('iframe');
+	f.src = location.protocol + '//' + location.host.replace('127.0.0.1', 'localhost') + '/empty?session_token=decoy';
+	document.body.appendChild(f);
 }
 </script>`
 
@@ -175,6 +239,10 @@ func (s *stand) handler() http.Handler {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		io.WriteString(w, `<!doctype html><meta charset="utf-8"><title>стенд</title>`+
 			`<p>Стенд капчи csqtt-cli: фрейм</p><iframe src="`+frame+`"></iframe>`)
+	})
+	mux.HandleFunc("/empty", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		io.WriteString(w, `<!doctype html><meta charset="utf-8"><p>пустой фрейм</p>`)
 	})
 	mux.HandleFunc("/method/", func(w http.ResponseWriter, r *http.Request) {
 		method := strings.TrimPrefix(r.URL.Path, "/method/captchaNotRobot.")

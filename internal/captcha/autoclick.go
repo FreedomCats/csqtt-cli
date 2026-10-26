@@ -11,7 +11,9 @@
 //
 // Поведение — как у скрытого WebView Android-клиента CSQTT (журнал
 // plan-captcha.md): те же признаки галочки и слайдера, паузы и область
-// касания; курсор по кривой — сверх того, у десктопа есть мышь.
+// касания; курсор по кривой — сверх того, у десктопа есть мышь. Галочку
+// ищем и шире (probeJS), а при неудаче описываем страницу в журнале
+// (autoclick_diag.go).
 //
 // Платформе остаётся только autoDriver (методы DevTools страницы) и показ
 // окна человеку (autoRun.reveal): WebView2 на Windows. Браузер по CDP на
@@ -27,6 +29,7 @@ import (
 	"io"
 	"math"
 	"math/rand/v2"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -73,29 +76,126 @@ var (
 	errAutoUnavailable = errors.New("автоклик в этом окне недоступен")
 )
 
-// probeJS — что сейчас на странице капчи: слайдер, галочка (её прямоугольник
-// в CSS px окна) или ни того, ни другого. Признаки — как у Android-клиента.
-const probeJS = `(function () {
-	function box(el) {
-		if (!el) { return null; }
-		var r = el.getBoundingClientRect(), s = getComputedStyle(el);
-		if (r.width < 5 || r.height < 5 || s.visibility === 'hidden' || s.display === 'none' || +s.opacity === 0) {
+// domHelpersJS — общее у скриптов страницы: где искать и что видно.
+//
+// Корни поиска — документ, открытые теневые корни и фреймы того же
+// происхождения (dx, dy — сдвиг фрейма в окне: прямоугольники внутри фрейма
+// считаются от него). Во фреймы чужого происхождения не заглянуть — они
+// только перечисляются (foreign). Пределы — на случай страницы-чудовища.
+const domHelpersJS = `
+	function roots() {
+		var list = [{root: document, dx: 0, dy: 0, where: 'document', host: null}], foreign = [];
+		for (var i = 0; i < list.length; i++) {
+			var c = list[i], all = c.root.querySelectorAll('*');
+			for (var j = 0; j < all.length && j < 5000 && list.length < 64; j++) {
+				var el = all[j];
+				if (el.shadowRoot) {
+					list.push({root: el.shadowRoot, dx: c.dx, dy: c.dy,
+						where: c.where === 'document' ? 'shadow' : c.where + '/shadow', host: el});
+				}
+				if (el.tagName !== 'IFRAME' && el.tagName !== 'FRAME') { continue; }
+				var r = el.getBoundingClientRect(), doc = null;
+				try { doc = el.contentDocument; } catch (e) {}
+				if (doc && doc.documentElement) {
+					list.push({root: doc, dx: c.dx + r.left + el.clientLeft, dy: c.dy + r.top + el.clientTop,
+						where: c.where === 'document' ? 'frame' : c.where + '/frame', host: el});
+				} else {
+					foreign.push({el: el, x: c.dx + r.left, y: c.dy + r.top, w: r.width, h: r.height});
+				}
+			}
+		}
+		return {list: list, foreign: foreign};
+	}
+	// shown — прямоугольник элемента в CSS px окна, если он виден: не меньше
+	// 5 px, не спрятан стилем и хоть краем в окне; иначе null.
+	function shown(el, c) {
+		var r = el.getBoundingClientRect(), win = el.ownerDocument.defaultView;
+		var s = win ? win.getComputedStyle(el) : null;
+		if (!s || r.width < 5 || r.height < 5 || s.visibility === 'hidden' || s.display === 'none' || +s.opacity === 0) {
 			return null;
 		}
-		if (r.right <= 0 || r.bottom <= 0 || r.left >= innerWidth || r.top >= innerHeight) { return null; }
-		return {x: r.left, y: r.top, w: r.width, h: r.height};
+		var b = {x: r.left + c.dx, y: r.top + c.dy, w: r.width, h: r.height};
+		if (b.x + b.w <= 0 || b.y + b.h <= 0 || b.x >= innerWidth || b.y >= innerHeight) { return null; }
+		return b;
 	}
+	// first — первый непустой ответ fn по элементам sel во всех корнях.
+	function first(rs, sel, fn) {
+		for (var i = 0; i < rs.list.length; i++) {
+			var c = rs.list[i], all = c.root.querySelectorAll(sel);
+			for (var j = 0; j < all.length && j < 5000; j++) {
+				var got = fn(all[j], c);
+				if (got) { got.where = c.where; return got; }
+			}
+		}
+		return null;
+	}
+	function flat(s) { return String(s == null ? '' : s).replace(/\s+/g, ' ').trim(); }
+	// url — адрес без запроса и якоря: в запросе страницы капчи — данные сессии.
+	function url(s) {
+		try {
+			var u = new URL(s, location.href);
+			return /^https?:$/.test(u.protocol) ? u.origin + u.pathname : u.protocol;
+		} catch (e) { return '?'; }
+	}
+`
+
+// probeJS — что сейчас на странице капчи: слайдер, галочка (её прямоугольник
+// в CSS px окна) или ни того, ни другого.
+//
+// Признаки слайдера и первые три признака галочки — как у Android-клиента.
+// Не нашлось — шире, но без догадок о вёрстке: [role=checkbox]; флажок
+// input[type=checkbox] — он сам, если виден, иначе его label или небольшая
+// обёртка (свой флажок обычно прячут под нарисованным); элемент с текстом
+// ровно «Я не робот» / «I'm not a robot» — его label или кнопка, иначе он
+// сам. via — по какому признаку нашлась, where — где (документ, теневой
+// корень, фрейм).
+const probeJS = `(function () {` + domHelpersJS + `
 	// До первой загрузки в окне about:blank — тоже «complete», но это не она.
 	var ready = /^https?:$/.test(location.protocol) ? document.readyState : 'blank';
 	var out = {ready: ready, visibility: document.visibilityState, vw: innerWidth, vh: innerHeight};
-	var sliders = document.querySelectorAll('[class*="SliderCaptcha"],[class*="Kaleidoscope"],.vkc__SwipeButton-module__track');
-	for (var i = 0; i < sliders.length; i++) {
-		if (box(sliders[i])) { out.state = 'slider'; return out; }
+	var rs = roots();
+	out.foreign = rs.foreign.length;
+	if (first(rs, '[class*="SliderCaptcha"],[class*="Kaleidoscope"],.vkc__SwipeButton-module__track', shown)) {
+		out.state = 'slider';
+		return out;
 	}
-	var sel = ['label.vkc__Checkbox-module__Checkbox', 'label[for="not-robot-captcha-checkbox"]', '#not-robot-captcha-checkbox'];
-	for (var j = 0; j < sel.length; j++) {
-		var b = box(document.querySelector(sel[j]));
-		if (b) { out.state = 'checkbox'; out.box = b; return out; }
+	function small(b) { return b && b.w <= 420 && b.h <= 160 ? b : null; }
+	function viaInput(el, c) {
+		var b = shown(el, c);
+		if (b) { return b; }
+		var labels = el.labels || [];
+		for (var i = 0; i < labels.length; i++) {
+			if ((b = shown(labels[i], c))) { return b; }
+		}
+		for (var p = el.parentElement, k = 0; p && k < 3; p = p.parentElement, k++) {
+			if ((b = small(shown(p, c)))) { return b; }
+		}
+		return null;
+	}
+	var robot = /^(я\s+не\s+робот|i(['’]m|\s+am)\s+not\s+a\s+robot)[.!]?$/i;
+	function viaText(el, c) {
+		var t = el.textContent;
+		if (!t || t.length > 60 || !robot.test(flat(t))) { return null; }
+		var near = el.closest('label,[role="checkbox"],button,[role="button"]');
+		return (near && shown(near, c)) || small(shown(el, c));
+	}
+	var rules = [
+		['vk', 'label.vkc__Checkbox-module__Checkbox', shown],
+		['vk', 'label[for="not-robot-captcha-checkbox"]', shown],
+		['vk', '#not-robot-captcha-checkbox', shown],
+		['role', '[role="checkbox"]', shown],
+		['input', 'input[type="checkbox"]', viaInput],
+		['text', '*', viaText]
+	];
+	for (var i = 0; i < rules.length; i++) {
+		var b = first(rs, rules[i][1], rules[i][2]);
+		if (b) {
+			out.state = 'checkbox';
+			out.via = rules[i][0];
+			out.where = b.where;
+			out.box = {x: b.x, y: b.y, w: b.w, h: b.h};
+			return out;
+		}
 	}
 	out.state = 'none';
 	return out;
@@ -109,6 +209,9 @@ type pageProbe struct {
 	VW         float64 `json:"vw"`
 	VH         float64 `json:"vh"`
 	Box        *box    `json:"box"`
+	Via        string  `json:"via"`     // по какому признаку нашлась галочка: vk, role, input, text
+	Where      string  `json:"where"`   // где: document, shadow, frame (и вложенные: frame/shadow)
+	Foreign    int     `json:"foreign"` // фреймов чужого происхождения — в них не заглянуть
 }
 
 // box — прямоугольник в CSS px окна.
@@ -124,28 +227,38 @@ type point struct{ X, Y float64 }
 
 // probe смотрит на страницу.
 func probe(ctx context.Context, d autoDriver) (pageProbe, error) {
-	raw, err := d.devtools(ctx, "Runtime.evaluate", map[string]any{"expression": probeJS, "returnByValue": true})
+	var p pageProbe
+	err := evaluate(ctx, d, probeJS, &p)
+	return p, err
+}
+
+// evaluate выполняет expr на странице и разбирает её ответ в v.
+func evaluate(ctx context.Context, d autoDriver, expr string, v any) error {
+	raw, err := d.devtools(ctx, "Runtime.evaluate", map[string]any{"expression": expr, "returnByValue": true})
 	if err != nil {
-		return pageProbe{}, err
+		return err
 	}
 	var r struct {
 		Result struct {
-			Value *pageProbe `json:"value"`
+			Value json.RawMessage `json:"value"`
 		} `json:"result"`
 		Exception *struct {
 			Text string `json:"text"`
 		} `json:"exceptionDetails"`
 	}
 	if err := json.Unmarshal(raw, &r); err != nil {
-		return pageProbe{}, fmt.Errorf("ответ Runtime.evaluate: %w", err)
+		return fmt.Errorf("ответ Runtime.evaluate: %w", err)
 	}
 	if r.Exception != nil {
-		return pageProbe{}, fmt.Errorf("скрипт на странице: %s", r.Exception.Text)
+		return fmt.Errorf("скрипт на странице: %s", r.Exception.Text)
 	}
-	if r.Result.Value == nil {
-		return pageProbe{}, errors.New("скрипт на странице ничего не вернул")
+	if len(r.Result.Value) == 0 || string(r.Result.Value) == "null" {
+		return errors.New("скрипт на странице ничего не вернул")
 	}
-	return *r.Result.Value, nil
+	if err := json.Unmarshal(r.Result.Value, v); err != nil {
+		return fmt.Errorf("ответ скрипта на странице: %w", err)
+	}
+	return nil
 }
 
 // clickPoint — куда нажать: случайная точка в середине галочки, 15–85 % по
@@ -276,8 +389,8 @@ func autoSolve(ctx context.Context, d autoDriver, checks <-chan checkReply, t au
 	if err != nil {
 		return err
 	}
-	logf("[CAPTCHA] автоклик: галочка найдена через %s, страница %s", time.Since(start).Round(time.Millisecond),
-		box.Visibility)
+	logf("[CAPTCHA] автоклик: галочка найдена через %s (признак %s, %s), страница %s",
+		time.Since(start).Round(time.Millisecond), box.Via, box.Where, box.Visibility)
 
 	cctx, cancel := context.WithTimeout(ctx, t.click)
 	err = pressCheckbox(cctx, d, box, rnd)
@@ -408,6 +521,8 @@ type autoRun struct {
 	timing autoTiming
 	// reveal показывает окно человеку (платформа). Зовётся не больше раза.
 	reveal func()
+	// dump — куда записать страницу при неудаче (dumpEnv); пусто — не писать.
+	dump string
 
 	mu       sync.Mutex
 	revealed bool
@@ -417,7 +532,8 @@ func newAutoRun(out io.Writer, logf func(string, ...any), req Request, reveal fu
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	return &autoRun{out: out, logf: logf, req: req, timing: defaultAutoTiming, reveal: reveal}
+	return &autoRun{out: out, logf: logf, req: req, timing: defaultAutoTiming, reveal: reveal,
+		dump: os.Getenv(dumpEnv)}
 }
 
 // announce — строка о том, что капча пробуется автоматически.
@@ -434,6 +550,16 @@ func (a *autoRun) run(ctx context.Context, d autoDriver, checks <-chan checkRepl
 	case err == nil:
 		a.logf("[CAPTCHA] автоклик: VK принял галочку")
 		return
+	case ctx.Err() != nil:
+		return
+	}
+	// Неудача: что было на странице — в журнал (с -v), чтобы понять, где
+	// галочка и почему её не нашли; по просьбе — и всю страницу в файл.
+	describePage(ctx, d, a.logf)
+	if a.dump != "" {
+		dumpPage(ctx, d, a.dump, a.logf)
+	}
+	switch {
 	case errors.Is(err, errAutoLimit):
 		// Решать человеку нечего: исход ErrLimit окно отдаёт само.
 		a.logf("[CAPTCHA] автоклик: %v", err)

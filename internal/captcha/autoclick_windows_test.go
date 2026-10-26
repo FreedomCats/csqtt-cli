@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -40,15 +41,30 @@ func watchHidden(t *testing.T, s *WebView2) {
 
 // Окно за краем экрана: доверенный клик с движениями мыши, страница видна и
 // рисуется — и сразу, и спустя десять секунд за краем (slow: галочка
-// появляется позже; Chromium считает перекрытие окон не сразу).
+// появляется позже; Chromium считает перекрытие окон не сразу). Галочка
+// находится и без признаков VK: спрятанный флажок в label, роль в теневом
+// корне, флажок во фрейме, один текст.
 func TestWebView2AutoClick(t *testing.T) {
 	s := newStandWebView2(t)
 	srv := newStand(t)
+	outer := t
 
-	for _, tc := range []struct{ name, extra string }{{"fast", ""}, {"slow", "&boxdelay=10000"}} {
+	for _, tc := range []struct{ name, scenario, extra, found string }{
+		{"fast", "auto", "", "признак vk, document"},
+		{"slow", "auto", "&boxdelay=10000", "признак vk, document"},
+		{"plain", "autoplain", "", "признак input, document"},
+		{"shadow", "autoshadow", "", "признак role, shadow"},
+		{"frame", "autoframe", "", "признак input, frame"},
+		{"text", "autotext", "", "признак text, document"},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var out syncBuffer
+			var log logLines
 			s.opts.Out = &out
+			s.opts.Logf = func(format string, args ...any) {
+				log.logf(format, args...)
+				outer.Logf(format, args...)
+			}
 			watchHidden(t, s)
 			s.revealed = func(webview2.WebView) {
 				t.Error("окно показано человеку, хотя автоклик должен был пройти")
@@ -58,12 +74,15 @@ func TestWebView2AutoClick(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 			defer cancel()
 			start := time.Now()
-			token, err := s.Solve(ctx, standAutoRequest(srv.page("auto", "fetch")+tc.extra, 40*time.Second))
+			token, err := s.Solve(ctx, standAutoRequest(srv.page(tc.scenario, "fetch")+tc.extra, 40*time.Second))
 			if err != nil {
 				t.Fatalf("Solve: %v\nвывод:%s", err, out.String())
 			}
-			if want := standToken("auto", "fetch"); token != want {
+			if want := standToken(tc.scenario, "fetch"); token != want {
 				t.Fatalf("токен %q, ожидался %q", token, want)
+			}
+			if !strings.Contains(log.text(), tc.found) {
+				t.Errorf("в журнале нет «%s»:\n%s", tc.found, log.text())
 			}
 			t.Logf("токен за %s", time.Since(start).Round(time.Millisecond))
 
@@ -94,9 +113,13 @@ func TestWebView2AutoClick(t *testing.T) {
 
 // Автоклик не прошёл — окно выходит человеку со строкой в выводе, человек
 // решает ту же капчу в том же окне.
+//
+// При этом описание страницы — в журнал, без запроса адреса, а с dumpEnv —
+// вся страница в файл (autonone: с теневым корнем, без запроса фрейма).
 func TestWebView2AutoFallback(t *testing.T) {
 	s := newStandWebView2(t)
 	srv := newStand(t)
+	outer := t
 	s.quietReveal = true
 	s.autoTiming = &autoTiming{find: 6 * time.Second, click: defaultAutoTiming.click, poll: defaultAutoTiming.poll,
 		reply: 5 * time.Second}
@@ -107,7 +130,14 @@ func TestWebView2AutoFallback(t *testing.T) {
 	} {
 		t.Run(tc.scenario, func(t *testing.T) {
 			var out syncBuffer
+			var log logLines
 			s.opts.Out = &out
+			s.opts.Logf = func(format string, args ...any) {
+				log.logf(format, args...)
+				outer.Logf(format, args...)
+			}
+			dump := filepath.Join(t.TempDir(), "page.html")
+			t.Setenv(dumpEnv, dump)
 			watchHidden(t, s)
 			var revealed sync.WaitGroup
 			revealed.Add(1)
@@ -137,6 +167,34 @@ func TestWebView2AutoFallback(t *testing.T) {
 			}
 			if got := srv.checkQueries(); len(got) == 0 || got[len(got)-1].Get("human") != "1" {
 				t.Errorf("последний check — не от человека: %v", got)
+			}
+			journal := log.text()
+			if !strings.Contains(journal, "страница при неудаче автоклика: "+srv.URL+"/not_robot_captcha,") {
+				t.Errorf("в журнале нет описания страницы:\n%s", journal)
+			}
+			for _, bad := range []string{"session_token", "scenario=", "decoy"} {
+				if strings.Contains(journal, bad) {
+					t.Errorf("в журнале %q:\n%s", bad, journal)
+				}
+			}
+			page, err := os.ReadFile(dump)
+			if err != nil {
+				t.Fatalf("страница не записана: %v", err)
+			}
+			if strings.Contains(string(page), "=decoy") || !strings.Contains(string(page), "standHuman") {
+				t.Errorf("записанная страница:\n%s", page)
+			}
+			if tc.scenario == "autonone" {
+				foreign := strings.Replace(srv.URL, "127.0.0.1", "localhost", 1) + "/empty "
+				for _, want := range []string{"теневых корней 1",
+					"фрейм чужого происхождения — внутрь не заглянуть: " + foreign, "button/shadow: button «Обновить»"} {
+					if !strings.Contains(journal, want) {
+						t.Errorf("в журнале нет %q:\n%s", want, journal)
+					}
+				}
+				if !strings.Contains(string(page), `<template shadowrootmode="open"><button>Обновить</button>`) {
+					t.Errorf("теневой корень не записан:\n%s", page)
+				}
 			}
 			waitProfilesGone(t, before)
 		})

@@ -73,7 +73,6 @@ const (
 	swShow           = 5
 	swShowNoActivate = 4
 
-	swpNoSize       = 0x0001
 	swpNoZOrder     = 0x0004
 	swpNoActivate   = 0x0010
 	swpFrameChanged = 0x0020
@@ -116,7 +115,21 @@ type hiddenWindow struct {
 	quiet  bool // показать без переднего плана и без активации (тесты)
 	// where — где окно создано (для тестов: было ли оно на экране).
 	where rect
+	// x, y — куда окно ставить; считаются заранее, в hideNextWindow: в самом
+	// перехватчике GetSystemMetrics отвечает в 96 DPI, даже когда нить окна
+	// осведомлена о DPI (dpi_windows.go), а координаты окна — физические.
+	x, y int32
+	// dpi — DPI монитора, ближайшего к (x, y): за ним окно числится, пока
+	// скрыто, под него задаётся размер (scale) и от него пересчитывается при
+	// показе; 0 — не узнать.
+	dpi uint32
 }
+
+// scale — масштаб, под который задавать размер скрытого окна: монитора, за
+// которым оно будет числиться, а не основного (основной 100 %, крайний
+// справа 200 % — с масштабом основного страница вышла бы вдвое уже, и клик
+// мог уйти за окно). Не узнать — fallback.
+func (hw *hiddenWindow) scale(fallback float64) float64 { return scaleOf(hw.dpi, fallback) }
 
 var (
 	hiddenOnce sync.Once
@@ -129,7 +142,8 @@ var (
 
 // hideNextWindow ставит перехватчик на текущую нить: окно go-webview2,
 // созданное на ней дальше, окажется за краем экрана. Звать на нити окна,
-// до webview2.NewWithOptions; снять — unhook, на той же нити.
+// после dpiAwareThread и до webview2.NewWithOptions; снять — unhook, на той
+// же нити.
 func hideNextWindow(quiet bool) (*hiddenWindow, error) {
 	hiddenOnce.Do(func() { hiddenProc = windows.NewCallback(cbtHook) })
 	tid := windows.GetCurrentThreadId()
@@ -138,6 +152,8 @@ func hideNextWindow(quiet bool) (*hiddenWindow, error) {
 		return nil, err
 	}
 	hw := &hiddenWindow{hook: h, hidden: true, quiet: quiet}
+	hw.x, hw.y = offscreen()
+	hw.dpi = monitorDPIAt(hw.x, hw.y)
 	hiddenMu.Lock()
 	hiddenByThread[tid] = hw
 	hiddenMu.Unlock()
@@ -182,7 +198,7 @@ func cbtHook(code, wParam, lParam uintptr) uintptr {
 				if hw.hwnd == 0 && className(wParam) == webviewClass {
 					cw := *(**cbtCreateWnd)(unsafe.Pointer(&lParam))
 					hw.hwnd = wParam
-					cw.CS.X, cw.CS.Y = offscreen()
+					cw.CS.X, cw.CS.Y = hw.x, hw.y
 					hw.where = rect{cw.CS.X, cw.CS.Y, cw.CS.X + cw.CS.Cx, cw.CS.Y + cw.CS.Cy}
 					ex, _, _ := procGetWindowLongPtrW.Call(wParam, uintptr(gwlExStyle))
 					procSetWindowLongPtrW.Call(wParam, uintptr(gwlExStyle), (ex|wsExToolWindow)&^wsExAppWindow)
@@ -239,12 +255,20 @@ func (hw *hiddenWindow) reveal() {
 	procSetWindowLongPtrW.Call(hwnd, uintptr(gwlExStyle), (ex&^wsExToolWindow)|wsExAppWindow)
 	r := windowRect(hwnd)
 	w, h := r.Right-r.Left, r.Bottom-r.Top
+	// Размер задан под монитор, за которым окно числилось за краем; у
+	// основного DPI может быть другим — размер пересчитывается под него
+	// (dpi_windows.go).
+	from := hw.dpi
+	if from == 0 {
+		from = windowDPI(hwnd)
+	}
+	w, h = rescale(w, h, from, primaryDPI())
 	x, y := (metric(smCXScreen)-w)/2, (metric(smCYScreen)-h)/2
-	flags := uintptr(swpNoSize | swpNoZOrder | swpFrameChanged)
+	flags := uintptr(swpNoZOrder | swpFrameChanged)
 	if quiet {
 		flags |= swpNoActivate
 	}
-	procSetWindowPos.Call(hwnd, 0, uintptr(x), uintptr(y), 0, 0, flags)
+	procSetWindowPos.Call(hwnd, 0, uintptr(x), uintptr(y), uintptr(w), uintptr(h), flags)
 	if quiet {
 		procShowWindow.Call(hwnd, swShowNoActivate)
 		return

@@ -102,13 +102,14 @@ func (s *WebView2) Login(ctx context.Context) (VKToken, error) {
 		if extraArgs != "" {
 			browserArgs, restoreArgs = setBrowserArgs(extraArgs)
 		}
+		scale := dpiAwareThread() // dpi_windows.go: окно не смазано
 		w := webview2.NewWithOptions(webview2.WebViewOptions{
 			DataPath:                   profile,
 			AdditionalBrowserArguments: browserArgs,
 			WindowOptions: webview2.WindowOptions{
 				Title:  "Вход VK — csqtt-cli",
-				Width:  820,
-				Height: 720,
+				Width:  scaledSize(820, scale),
+				Height: scaledSize(720, scale),
 				Center: true,
 			},
 		})
