@@ -13,7 +13,12 @@ package captcha
 //	limit    — галочка → ERROR_LIMIT;
 //	initerror — initSession отвечает ошибкой VK 10, как было живьём;
 //	idle     — до галочки дело не доходит (закрытие окна, срок);
-//	webdriver — токен говорит, видит ли страница navigator.webdriver.
+//	webdriver — токен говорит, видит ли страница navigator.webdriver;
+//	auto     — галочка VK для автоклика: check — по первому клику, с тем,
+//	           доверенный ли он и сколько было движений мыши → OK с токеном;
+//	autobot  — то же, но check → BOT (слайдер), страница показывает слайдер;
+//	           человек (standHuman) → OK с токеном;
+//	autonone — галочки нет вовсе; человек (standHuman) → OK с токеном.
 //
 // via=xhr — те же запросы через XMLHttpRequest вместо fetch; delay=<срок> —
 // страница отвечает через столько (медленная сеть).
@@ -52,6 +57,7 @@ function api(method, extra) {
 	return fetch(url, {method: 'POST', body: 'session_token=stand'}).then(function (r) { return r.json(); });
 }
 function later(f) { setTimeout(f, 300); }
+if (scenario.indexOf('auto') === 0) { autoStand(); } else {
 api('initSession').then(function () { return api('settings'); }).then(function () {
 	return api('componentDone');
 }).then(function () {
@@ -71,14 +77,61 @@ api('initSession').then(function () { return api('settings'); }).then(function (
 		});
 	});
 });
+}
+// Галочка для автоклика — с классами и атрибутами VK. check уходит по
+// первому клику и несёт, был ли клик доверенным, сколько доверенных движений
+// мыши было до него, видна ли страница и сколько кадров она нарисовала за
+// последнюю секунду. Человека изображает standHuman(): тест зовёт его, когда
+// окно показано человеку.
+function autoStand() {
+	var moves = 0, frames = [];
+	document.addEventListener('mousemove', function (e) { if (e.isTrusted) { moves++; } }, true);
+	(function frame(t) { frames.push(performance.now()); requestAnimationFrame(frame); })();
+	function fps() {
+		var now = performance.now();
+		return frames.filter(function (t) { return now - t < 1000; }).length;
+	}
+	window.standHuman = function () {
+		api('check', '&attempt=2&human=1').then(function (r) {
+			if (r.response && r.response.status === 'OK') { api('endSession'); }
+		});
+	};
+	api('initSession').then(function () { return api('settings'); }).then(function () {
+		return api('componentDone');
+	}).then(function () {
+		if (scenario === 'autonone') { return; }
+		var label = document.createElement('label');
+		label.className = 'vkc__Checkbox-module__Checkbox';
+		label.htmlFor = 'not-robot-captcha-checkbox';
+		label.style.cssText = 'display:inline-block;margin:120px 40px;padding:14px 18px;border:1px solid #888';
+		label.innerHTML = '<input type="checkbox" id="not-robot-captcha-checkbox"> Я не робот';
+		setTimeout(function () { document.body.appendChild(label); }, +(q.get('boxdelay') || 0));
+		var sent = false;
+		document.addEventListener('click', function (e) {
+			if (sent) { return; }
+			sent = true;
+			api('check', '&attempt=1&trusted=' + e.isTrusted + '&moves=' + moves + '&vis=' + document.visibilityState +
+				'&fps=' + fps() + '&focus=' + document.hasFocus()).then(function (r) {
+				var st = r.response && r.response.status;
+				if (st === 'OK') { api('endSession'); return; }
+				label.remove();
+				var slider = document.createElement('div');
+				slider.className = 'vkc__SliderCaptcha-module__description';
+				slider.textContent = 'Сдвиньте ползунок';
+				document.body.appendChild(slider);
+			});
+		}, true);
+	});
+}
 </script>`
 
 // stand — сервер стенда; calls — какие методы API звала страница.
 type stand struct {
 	*httptest.Server
 
-	mu    sync.Mutex
-	calls []string
+	mu     sync.Mutex
+	calls  []string
+	checks []url.Values // запросы check: что страница сообщила о клике
 }
 
 func newStand(t *testing.T) *stand {
@@ -128,6 +181,9 @@ func (s *stand) handler() http.Handler {
 		q := r.URL.Query()
 		s.mu.Lock()
 		s.calls = append(s.calls, method)
+		if method == "check" {
+			s.checks = append(s.checks, q)
+		}
 		s.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		if method == "initSession" && q.Get("scenario") == "initerror" {
@@ -160,6 +216,10 @@ func standReply(method string, q url.Values) map[string]any {
 			return ok(standToken(scenario, via))
 		case "limit":
 			return map[string]any{"status": "ERROR_LIMIT"}
+		case "autobot":
+			if q.Get("attempt") == "1" {
+				return map[string]any{"status": "BOT", "show_captcha_type": "slider"}
+			}
 		case "webdriver":
 			return ok("stand-token-wd-" + q.Get("wd"))
 		}
@@ -173,6 +233,13 @@ func (s *stand) methods() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.calls...)
+}
+
+// checkQueries — запросы check, которые слала страница.
+func (s *stand) checkQueries() []url.Values {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]url.Values(nil), s.checks...)
 }
 
 // called — сколько раз страница звала метод API.
@@ -196,6 +263,13 @@ func (s *stand) page(scenario, via string) string {
 
 func standRequest(url string, budget time.Duration) Request {
 	return Request{Mode: ModeManual, RedirectURI: url, SessionToken: "stand", Deadline: time.Now().Add(budget)}
+}
+
+// standAutoRequest — запрос режима wv: окно сначала пробует автоклик.
+func standAutoRequest(url string, budget time.Duration) Request {
+	r := standRequest(url, budget)
+	r.Mode = ModeSelected
+	return r
 }
 
 // profilesNow — каталоги профилей, которые сейчас лежат во временном каталоге.

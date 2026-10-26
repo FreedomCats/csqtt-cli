@@ -88,6 +88,24 @@ func checkOutcome(r apiReply) *outcome {
 // журнал не попадает.
 type pageWatch struct {
 	logf func(string, ...any)
+	// checked, если задан, получает каждый ответ на check — и с исходом, и
+	// без: по нему автоклик узнаёт, поверил ли VK галочке (autoclick.go).
+	checked func(checkReply)
+}
+
+// checkReply — что VK ответил на check, без токена.
+type checkReply struct {
+	status   string
+	showType string
+	token    bool   // в ответе есть токен
+	vkError  int    // код ошибки VK; 0 — ответ без ошибки
+	vkMsg    string // её текст
+}
+
+func (w pageWatch) notify(r checkReply) {
+	if w.checked != nil {
+		w.checked(r)
+	}
 }
 
 // observe — один ответ API. Исход не nil — окно можно закрывать.
@@ -103,6 +121,9 @@ func (w pageWatch) observe(method string, body []byte) *outcome {
 	}
 	if r.Error != nil {
 		logf("[CAPTCHA] страница: %s — ошибка VK %d: %s", method, r.Error.Code, r.Error.Message)
+		if method == methodCheck {
+			w.notify(checkReply{vkError: r.Error.Code, vkMsg: r.Error.Message})
+		}
 		if method == methodInit {
 			return &outcome{err: fmt.Errorf("%w: initSession — ошибка VK %d: %s", ErrPageInit,
 				r.Error.Code, r.Error.Message)}
@@ -115,6 +136,7 @@ func (w pageWatch) observe(method string, body []byte) *outcome {
 		logf("[CAPTCHA] страница: %s — status=%s, тип капчи %q", method, status, showType)
 	case methodCheck:
 		out := checkOutcome(r)
+		w.notify(checkReply{status: status, showType: showType, token: out != nil && out.err == nil})
 		switch {
 		case out == nil:
 			logf("[CAPTCHA] страница: %s — status=%s, тип капчи %q: ждём решения в окне", method, status, showType)

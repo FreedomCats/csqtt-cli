@@ -75,3 +75,37 @@ func TestPageWatch(t *testing.T) {
 		})
 	}
 }
+
+// pageWatch.checked получает каждый ответ на check — им автоклик узнаёт исход
+// своего клика; ответы других методов его не трогают.
+func TestPageWatchChecked(t *testing.T) {
+	cases := []struct {
+		name   string
+		method string
+		body   string
+		want   *checkReply
+	}{
+		{"OK с токеном", methodCheck, `{"response":{"status":"OK","success_token":"выдуманный"}}`,
+			&checkReply{status: "OK", token: true}},
+		{"BOT", methodCheck, `{"response":{"status":"BOT","show_captcha_type":"slider"}}`,
+			&checkReply{status: "BOT", showType: "slider"}},
+		{"ERROR_LIMIT", methodCheck, `{"response":{"status":"ERROR_LIMIT"}}`, &checkReply{status: "ERROR_LIMIT"}},
+		{"ошибка VK", methodCheck, `{"error":{"error_code":100,"error_msg":"выдуманная"}}`,
+			&checkReply{vkError: 100, vkMsg: "выдуманная"}},
+		{"initSession", methodInit, `{"response":{"status":"OK","show_captcha_type":"checkbox"}}`, nil},
+		{"мусор", methodCheck, `не JSON`, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []checkReply
+			w := pageWatch{checked: func(r checkReply) { got = append(got, r) }}
+			w.observe(tc.method, []byte(tc.body))
+			switch {
+			case tc.want == nil && len(got) != 0:
+				t.Errorf("checked позван: %+v", got)
+			case tc.want != nil && (len(got) != 1 || got[0] != *tc.want):
+				t.Errorf("checked: %+v, ожидалось %+v", got, *tc.want)
+			}
+		})
+	}
+}

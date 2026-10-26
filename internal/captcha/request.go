@@ -5,7 +5,9 @@
 // CAPTCHA_RESULT. Bridge отвечает на auto отказом, а на manual и selected
 // открывает окно: WebView2 на Windows, браузер на Chromium под управлением по
 // CDP на Linux, иначе — ручной режим в консоли. Токен окно снимает с ответа
-// API страницы капчи (page.go), не трогая саму страницу.
+// API страницы капчи (page.go), не трогая саму страницу. На selected окно
+// WebView2 сначала само нажимает галочку, спрятанным за краем экрана, и
+// выходит человеку при неудаче (autoclick.go).
 package captcha
 
 import (
@@ -16,7 +18,8 @@ import (
 // Режимы запроса капчи (captcha.rs): auto — десятисекундный автопрогон в
 // цепочке ядра, manual — ручное окно в её конце, selected — окно режима wv
 // (coreproc.CaptchaModeWebView), с которым оболочка запускает ядро: оно
-// приходит сразу, без цепочки. Окно на manual и selected — одно и то же.
+// приходит сразу, без цепочки. Окно на manual и selected — одно и то же, но
+// на selected окно WebView2 сначала пробует автоклик (autoclick.go).
 const (
 	ModeAuto     = "auto"
 	ModeManual   = "manual"
