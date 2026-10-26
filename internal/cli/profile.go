@@ -31,7 +31,8 @@ func profileCommand() *command {
 		summary: "профили подключения: add, set, show, rm, list",
 		description: `Подкоманды:
   add <имя>     завести профиль: из ссылки csqtt:// (-link) или по полям (-peer)
-  set <имя>     изменить профиль; -password и -hashes спрашивают секреты заново
+  set <имя>     изменить профиль; -password и -hashes спрашивают секреты заново,
+                -link заменяет данные подключения по новой ссылке csqtt://
   show <имя>    показать настройки профиля; секреты не печатаются
   rm <имя>      удалить профиль вместе с его секретами
   list          перечислить профили
@@ -115,7 +116,7 @@ func addProfileFlags(fs *flag.FlagSet) *profileFlags {
 		workers:       fs.Int("workers", 0, "число воркеров: 5 или кратно 10, от 10 до 100 (в auto_js — не больше "+strconv.Itoa(coreproc.MaxWorkersAutoJS)+")"),
 		obfs:          fs.String("obfs", "", "маскировка RTP: audio, video или unified (по умолчанию "+config.DefaultObfs+")"),
 		turnTransport: fs.String("turn-transport", "", "до TURN по udp или tcp_tls"),
-		datapath:      fs.String("datapath", "", "как отдавать трафик: tun (весь трафик системы, нужен root; на Windows пока только с connect -allow-leak) или socks"),
+		datapath:      fs.String("datapath", "", "как отдавать трафик: tun (весь трафик системы; нужен root, на Windows — администратор) или socks"),
 		socksListen:   fs.String("socks-listen", "", "адрес SOCKS5 при datapath = socks, только loopback (по умолчанию "+datapath.DefaultSocksListen+")"),
 		killSwitch:    fs.Bool("kill-switch", true, "kill-switch: "+killSwitchUsage+"; -kill-switch=false — выключить"),
 		vkHashMode: fs.String("vk-hash-mode", "", "откуда звонок VK: manual — хеши профиля (по умолчанию) или auto_js — звонок создаёт ядро "+
@@ -203,7 +204,8 @@ VK (` + app.Name + ` vk login). Хеши из ссылки всё равно з�
 возврата к manual.
 
 Остальные флаги задают поля профиля. Профиль с таким именем уже есть —
-отказ: меняет профиль ` + app.Name + ` profile set.`,
+отказ: меняет профиль ` + app.Name + ` profile set, новую ссылку берёт
+` + app.Name + ` profile set <имя> -link.`,
 		run: runProfileAdd,
 	}
 }
@@ -241,7 +243,7 @@ func runProfileAdd(ctx context.Context, e *env, args []string) error {
 		return err
 	}
 	if _, ok := file.Profiles[name]; ok {
-		return fmt.Errorf("профиль %q уже есть: изменить его — %s profile set %s, заменить — сначала %s profile rm %s",
+		return fmt.Errorf("профиль %q уже есть: изменить его — %s profile set %s, взять ссылку взамен прежней — %s profile set %s -link",
 			name, app.Name, name, app.Name, name)
 	}
 
@@ -344,7 +346,7 @@ func (e *env) askHashes(ctx context.Context, name string) ([]string, error) {
 func profileSetCommand() *command {
 	return &command{
 		name:    "profile set",
-		args:    "<имя> [флаги]",
+		args:    "<имя> [-link] [флаги]",
 		summary: "изменить профиль",
 		description: `Флагом меняется одно поле профиля, остальные остаются как были.
 
@@ -352,6 +354,17 @@ func profileSetCommand() *command {
 спрашивается скрытым вводом. Аргументом его передать нельзя, чтобы секрет не
 попал в историю оболочки и в список процессов. Недоступный звонок профиль сам
 не меняет — замените хеши здесь.
+
+С -link профиль берёт новую ссылку csqtt:// из панели сервера взамен прежней:
+новый пароль, другой сервер, токен VK сервера. Ссылка читается скрытым вводом
+(или из stdin: ` + app.Name + ` profile set home -link < файл). Из неё берутся адрес
+сервера, пароль и хеши звонков. Пароля в ссылке нет — он спрашивается (из
+stdin — следующей строкой); хешей нет — остаются прежние. Токен VK сервера у
+профиля бывает только из последней ссылки: есть он в ней — профиль переходит
+в auto_js, нет — прежний токен стирается, и профиль, который работал по нему,
+возвращается к manual (названный -vk-hash-mode главнее). Остальное — режим,
+маршрутизация, kill-switch, device_id — остаётся как было, а прочие флаги
+применяются как обычно. -peer, -password и -hashes вместе с -link не ставятся.
 
 Файл настроек переписывается целиком: комментарии, если они там были,
 не сохранятся.`,
@@ -361,7 +374,7 @@ func profileSetCommand() *command {
 
 func runProfileSet(ctx context.Context, e *env, args []string) error {
 	cmd := profileSetCommand()
-	if err := rejectSecretValues(cmd, args, "password", "hashes"); err != nil {
+	if err := rejectSecretValues(cmd, args, "password", "hashes", "link"); err != nil {
 		return err
 	}
 	fs := newFlagSet(cmd)
@@ -369,6 +382,8 @@ func runProfileSet(ctx context.Context, e *env, args []string) error {
 	fields := addProfileFlags(fs)
 	askPassword := fs.Bool("password", false, "спросить пароль подключения заново (скрытым вводом)")
 	askHashes := fs.Bool("hashes", false, "спросить хеши звонков VK заново (скрытым вводом)")
+	fromLink := fs.Bool("link", false, "взять адрес, пароль и хеши или токен VK из новой ссылки csqtt:// (скрытым вводом); "+
+		"остальные поля остаются")
 	rest, err := parseWithArgs(e, fs, args)
 	if err != nil {
 		return err
@@ -378,6 +393,17 @@ func runProfileSet(ctx context.Context, e *env, args []string) error {
 		return err
 	}
 	named := setFlags(fs)
+	if *fromLink {
+		switch {
+		case named["peer"]:
+			return subUsagef(cmd, "адрес сервера — или из ссылки (-link), или флагом -peer, не оба сразу")
+		case *askPassword:
+			return subUsagef(cmd, "-password с -link не нужен: пароль берётся из ссылки, а нет его там — спрашивается сам")
+		case *askHashes:
+			return subUsagef(cmd, "-hashes с -link не ставится: хеши берутся из ссылки, а нет их там — остаются прежние; "+
+				"заменить хеши — отдельно: %s profile set <имя> -hashes", app.Name)
+		}
+	}
 
 	path, file, err := loadProfiles(*configPath)
 	if err != nil {
@@ -399,7 +425,12 @@ func runProfileSet(ctx context.Context, e *env, args []string) error {
 	}
 
 	var secrets profileSecrets
-	if *askPassword {
+	if *fromLink {
+		if secrets, err = e.linkSecrets(ctx, path, p, named); err != nil {
+			return err
+		}
+	}
+	if *askPassword || *fromLink && secrets.password == "" {
 		secrets.password, err = e.askNewSecret(ctx,
 			fmt.Sprintf("Новый пароль подключения для профиля %q (ввод не отображается): ", name),
 			"Повторите пароль: ", "пароль подключения", true)
@@ -409,7 +440,7 @@ func runProfileSet(ctx context.Context, e *env, args []string) error {
 	}
 	// Профиль, который возвращается из auto_js без хешей, без них не
 	// запишется: хеши спрашиваются и без -hashes.
-	if *askHashes || !p.AutoJS() && strings.TrimSpace(p.VkHashesRef) == "" {
+	if *askHashes || len(secrets.hashes) == 0 && !p.AutoJS() && strings.TrimSpace(p.VkHashesRef) == "" {
 		if secrets.hashes, err = e.askHashes(ctx, name); err != nil {
 			return err
 		}
@@ -419,6 +450,59 @@ func runProfileSet(ctx context.Context, e *env, args []string) error {
 	return storeProfile(e, path, file, p, true, secrets)
 }
 
+// linkSecrets — profile set -link: спрашивает ссылку и переносит её в профиль
+// p так же, как мастер меню переносит ссылку в заменяемый профиль. Адрес
+// сервера — из ссылки, остальные поля и device_id не трогаются: сервер до
+// 2.5.0 привязывал пароль к устройству. Чего в ссылке нет — пароля, — спросит
+// вызывающий; хешей нет — остаются прежние.
+func (e *env) linkSecrets(ctx context.Context, path string, p *config.Profile, named map[string]bool) (profileSecrets, error) {
+	link, err := e.askLink(ctx)
+	if err != nil {
+		return profileSecrets{}, err
+	}
+	p.Peer = link.Peer
+	// Токен VK от сервера у профиля — только из последней ссылки: звонки от
+	// аккаунта прежнего сервера с новой ссылкой ни к чему. Названный
+	// -vk-hash-mode главнее, а токен всё равно записывается — на случай
+	// перехода к auto_js.
+	if !named["vk-hash-mode"] {
+		switch {
+		case link.VKToken != "":
+			p.VkHashMode = config.VKHashModeAutoJS
+		case p.AutoJS() && p.ServerVKToken():
+			p.VkHashMode = ""
+		}
+	}
+	if err := checkBeforeAsking(p); err != nil {
+		return profileSecrets{}, err
+	}
+
+	secrets := profileSecrets{password: link.Password, hashes: link.Hashes, vkToken: link.VKToken, dropVKToken: true}
+	if secrets.password == "" {
+		fmt.Fprintln(e.stderr, "В ссылке нет пароля подключения.")
+	}
+	switch {
+	case len(secrets.hashes) > 0:
+	case strings.TrimSpace(p.VkHashesRef) != "":
+		// С токеном сервера хеши в работе не участвуют, и об этом скажет
+		// storeProfile.
+		if link.VKToken != "" {
+			break
+		}
+		if _, n := hashesNote(e.secretsFor(path), p.VkHashesRef); n > 0 {
+			fmt.Fprintf(e.stderr, "В ссылке нет хешей звонков VK — остаются прежние (%d).\n", n)
+		} else {
+			fmt.Fprintln(e.stderr, "В ссылке нет хешей звонков VK — остаются прежние.")
+		}
+	case p.AutoJS():
+	case link.VKToken != "":
+		fmt.Fprintln(e.stderr, "В ссылке нет хешей звонков VK (в ней токен VK сервера).")
+	default:
+		fmt.Fprintln(e.stderr, "В ссылке нет хешей звонков VK.")
+	}
+	return secrets, nil
+}
+
 // profileSecrets — новые значения секретов профиля. Пустое — не менять.
 type profileSecrets struct {
 	password string
@@ -426,7 +510,7 @@ type profileSecrets struct {
 	// vkToken — токен VK, выданный сервером в ссылке csqtt://.
 	vkToken string
 	// dropVKToken — стереть прежний токен VK от сервера: профиль заменён
-	// источником без токена (мастер меню).
+	// источником без токена (мастер меню, profile set -link).
 	dropVKToken bool
 }
 

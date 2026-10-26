@@ -171,9 +171,10 @@ func profileProblems(p *Profile) []string {
 	add(oneOfProblem("vk_hash_mode", p.VkHashMode, VKHashModeManual, VKHashModeAutoJS))
 	if p.ServerVKToken() && secretRefProblem("vk_token_ref", p.VkTokenRef, "токен VK") != "" {
 		// Значение не печатается, как у secretRefProblem. Записывает
-		// ссылку не profile set, а импорт ссылки csqtt://.
+		// ссылку только импорт ссылки csqtt://.
 		add("vk_token_ref: ожидается ссылка вида <хранилище>:<идентификатор>; сам токен VK в файле не хранится — " +
-			"его записывает импорт ссылки csqtt:// с токеном (`csqtt-cli profile add <имя> -link`)")
+			"его записывает импорт ссылки csqtt:// с токеном (`csqtt-cli profile add <имя> -link` " +
+			"или `csqtt-cli profile set <имя> -link`)")
 	}
 	add(deviceIDProblem(p.DeviceID))
 	add(workersProblem(p.Workers))

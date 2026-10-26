@@ -207,7 +207,8 @@ func run(ctx context.Context, e *env, args []string) int {
 	// повторять её в сообщении нельзя.
 	if hasShareLink(args) {
 		fmt.Fprintf(e.stderr, "%s: ссылка csqtt:// в аргументах не принимается — в ней пароль; "+
-			"она вводится скрытым вводом: %s profile add <имя> -link\n", app.Name, app.Name)
+			"она вводится скрытым вводом: %s profile add <имя> -link (у имеющегося профиля — profile set <имя> -link)\n",
+			app.Name, app.Name)
 		return exitUsage
 	}
 

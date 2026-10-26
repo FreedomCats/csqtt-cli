@@ -175,7 +175,7 @@ func TestConnectServerTokenRejected(t *testing.T) {
 	if !strings.Contains(stdout+stderr, "VK_JS_BOOTSTRAP:<скрыт") {
 		t.Errorf("строка токена в журнале не видна скрытой:\n%s\n%s", stdout, stderr)
 	}
-	for _, want := range []string{"токен VK выдан сервером", "csqtt-cli profile add js -link"} {
+	for _, want := range []string{"токен VK выдан сервером", "csqtt-cli profile set js -link"} {
 		if !strings.Contains(stderr, want) {
 			t.Errorf("нет %q:\n%s", want, stderr)
 		}
@@ -195,7 +195,7 @@ func TestConnectServerTokenUnreadable(t *testing.T) {
 	}
 	code, stdout, stderr := te.run("connect", "js")
 	if code != exitError || !strings.Contains(stderr, "токен VK от сервера (из ссылки csqtt://) профиля js не читается") ||
-		!strings.Contains(stderr, "profile add js -link") {
+		!strings.Contains(stderr, "profile set js -link") {
 		t.Errorf("код %d, stderr:\n%s", code, stderr)
 	}
 	if strings.Contains(stdout, "профиль js: сервер") {
@@ -304,7 +304,7 @@ func TestExplainConnectErrorServerToken(t *testing.T) {
 		t.Fatal("ParseFatal")
 	}
 	got := explainConnectError(&supervisor.TokenRejectedError{Fatal: fatal}, "js", true, nil, Build{}).Error()
-	if !strings.Contains(got, "токен VK выдан сервером") || !strings.Contains(got, "profile add js -link") ||
+	if !strings.Contains(got, "токен VK выдан сервером") || !strings.Contains(got, "profile set js -link") ||
 		strings.Contains(got, "vk login") {
 		t.Errorf("%q", got)
 	}

@@ -173,8 +173,15 @@ func (e *env) readLine(ctx context.Context) (string, error) {
 	case err != nil:
 		return "", fmt.Errorf("чтение ввода: %w", err)
 	}
-	return strings.TrimSpace(line), nil
+	// Строка из конвейера может начинаться с метки порядка байт U+FEFF: файл
+	// с BOM через <, преамбула UTF-8, которую .NET (PowerShell 5.1) пишет в
+	// stdin. TrimSpace её не снимает — это не пробел, — и пароль записался бы
+	// с ней, а ссылка не разобралась бы.
+	return strings.TrimSpace(strings.TrimPrefix(line, byteOrderMark)), nil
 }
+
+// byteOrderMark — U+FEFF в UTF-8.
+const byteOrderMark = string(rune(0xFEFF))
 
 // terminalFD отдаёт дескриптор stdin, если это терминал. Только у настоящего
 // файла есть дескриптор, а у терминала — режим, в котором можно погасить эхо.

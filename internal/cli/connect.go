@@ -294,10 +294,10 @@ func serverVKToken(store config.SecretStore, p *config.Profile) (string, error) 
 }
 
 // reimportHint — как сменить токен VK от сервера: он приходит только со
-// ссылкой, и профиль заводится из неё заново.
+// ссылкой, и профиль берёт её взамен прежней.
 func reimportHint(profile string) string {
-	return fmt.Sprintf("новый токен приходит с новой ссылкой от владельца сервера — заведите профиль заново: "+
-		"%s profile rm %s, затем %s profile add %s -link", app.Name, profile, app.Name, profile)
+	return fmt.Sprintf("новый токен приходит с новой ссылкой от владельца сервера — замените ею прежнюю: "+
+		"%s profile set %s -link", app.Name, profile)
 }
 
 // isRoot — запущен ли csqtt-cli с правами root, на Windows — администратора

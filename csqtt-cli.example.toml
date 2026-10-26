@@ -28,8 +28,8 @@ default_profile = "home"
 [profile.home]
 # Сервер CSQTT 2.5.0. Без порта — 46000. IPv6 — в скобках: "[2001:db8::1]:46000".
 peer = "203.0.113.10:46000"
-# Ссылки на секреты; их пишут `csqtt-cli profile add`, `profile set -password`
-# и `profile set -hashes`. Вид ссылки зависит от хранилища: dpapi:… на Windows,
+# Ссылки на секреты; их пишут `csqtt-cli profile add`, `profile set -password`,
+# `profile set -hashes` и `profile set -link`. Вид ссылки зависит от хранилища: dpapi:… на Windows,
 # secretservice:… (связка ключей) или file:… (secrets.json с правами 0600) на Linux.
 password_ref = "dpapi:8f2a1c"
 vk_hashes_ref = "dpapi:1c9bd4"
@@ -42,8 +42,8 @@ vk_hashes_ref = "dpapi:1c9bd4"
 # По умолчанию — manual.
 vk_hash_mode = "manual"
 # Токен VK, который сервер выдал в ссылке csqtt:// вместо хешей (общий токен
-# владельца сервера). Пишет его `csqtt-cli profile add <имя> -link` вместе с
-# vk_hash_mode = "auto_js"; с ним звонки создаются от аккаунта владельца
+# владельца сервера). Пишет его `csqtt-cli profile add <имя> -link` (или
+# `profile set <имя> -link`) вместе с vk_hash_mode = "auto_js"; с ним звонки создаются от аккаунта владельца
 # сервера, а не по вашему входу [vk]. Руками заводить незачем.
 # vk_token_ref = "dpapi:7e1f04"
 # Устройство для сервера до ядра 2.5.0. Заводится при первой записи профиля,
@@ -55,9 +55,8 @@ device_id = "3f9c2a71d04be658"
 
 # Дальше — необязательное; пропущенное берётся по умолчанию.
 
-# tun — весь трафик системы: нужны права root (sudo), пока только Linux.
-# socks — только программы, которым указан прокси; прав не нужно, работает и
-# на Windows. По умолчанию — tun.
+# tun — весь трафик системы: нужны права root (sudo), на Windows — администратора.
+# socks — только программы, которым указан прокси; прав не нужно. По умолчанию — tun.
 datapath = "socks"
 # Воркеров — 5 или группами по 10, от 10 до 100; в auto_js — не больше 70.
 # По умолчанию — 10.

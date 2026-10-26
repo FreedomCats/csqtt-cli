@@ -78,7 +78,7 @@ func TestHelpFlagPrintsFlags(t *testing.T) {
 func TestSubcommandHelp(t *testing.T) {
 	cases := map[string][]string{
 		"profile add":  {"-link", "-peer", "-workers", "-datapath", "-socks-listen", "-default", "-config"},
-		"profile set":  {"-password", "-hashes", "-peer", "-workers", "-config"},
+		"profile set":  {"-link", "-password", "-hashes", "-peer", "-workers", "-config"},
 		"profile show": {"-config"},
 		"profile rm":   {"-y", "-config"},
 		"profile list": {"-config"},

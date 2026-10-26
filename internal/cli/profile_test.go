@@ -122,6 +122,8 @@ func TestProfileRefusesSecretArgs(t *testing.T) {
 		"-password=значение":       {"profile", "set", "home", "-password=" + testPassword},
 		"--hashes=значение":        {"profile", "set", "home", "--hashes=" + testHashA},
 		"-link=значение":           {"profile", "add", "home", "-link=" + testHashA},
+		"set -link=значение":       {"profile", "set", "home", "-link=" + testHashA},
+		"set: ссылка аргументом":   {"profile", "set", "home", "-link", testLink},
 		"значение после -password": {"profile", "set", "home", "-password", testPassword},
 		"ссылка аргументом":        {"profile", "add", "home", testLink},
 		"ссылка где угодно":        {"connect", testLink},
