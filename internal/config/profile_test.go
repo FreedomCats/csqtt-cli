@@ -16,6 +16,7 @@ func TestCoreMapping(t *testing.T) {
 		Workers:       30,
 		Obfs:          "video",
 		TurnTransport: "tcp_tls",
+		CaptchaMode:   coreproc.CaptchaModeWebView,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Core = %+v,\nожидалось %+v", got, want)
@@ -23,16 +24,28 @@ func TestCoreMapping(t *testing.T) {
 }
 
 // Пропущенное в профиле ядро возьмёт своё; оболочка подставляет только
-// воркеров (coreproc.NormalizeWorkers из нуля сделал бы пять) и порт
-// сервера.
+// воркеров (coreproc.NormalizeWorkers из нуля сделал бы пять), порт
+// сервера и режим капчи — его в профиле нет.
 func TestCoreDefaults(t *testing.T) {
 	got := parse(t, minimalFile).Profiles["home"].Core()
-	want := coreproc.Config{Peer: "203.0.113.10:" + DefaultPeerPort, Workers: DefaultWorkers}
+	want := coreproc.Config{Peer: "203.0.113.10:" + DefaultPeerPort, Workers: DefaultWorkers,
+		CaptchaMode: coreproc.CaptchaModeWebView}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Core = %+v,\nожидалось %+v", got, want)
 	}
 	if args := got.Args(); !slices.Contains(args, "--workers=10") {
 		t.Errorf("аргументы ядра без --workers=10: %q", args)
+	}
+}
+
+// Капчу решает окно оболочки: ядро любого профиля, и в auto_js тоже,
+// запускается с --captcha-mode=wv и отдаёт капчу окну сразу.
+func TestCoreCaptchaModeWebView(t *testing.T) {
+	for _, mode := range []string{"", VKHashModeAutoJS} {
+		p := &Profile{Peer: "203.0.113.10", VkHashMode: mode}
+		if args := p.Core().Args(); !slices.Contains(args, "--captcha-mode=wv") {
+			t.Errorf("vk_hash_mode %q: аргументы ядра без --captcha-mode=wv: %q", mode, args)
+		}
 	}
 }
 

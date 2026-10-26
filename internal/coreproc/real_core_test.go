@@ -15,13 +15,14 @@ import (
 
 // realCoreConfig — запуск настоящего ядра без сервера: пир —
 // документационный адрес, хеш выдуман. Пароль и хеш — заметные строки, чтобы
-// искать их в командной строке.
+// искать их в командной строке. Режим капчи — тот же, что у подключений.
 var realCoreConfig = Config{
-	Peer:       "192.0.2.1:46000",
-	Password:   "real-core-password",
-	Hashes:     []string{"real-core-hash"},
-	Listen:     "127.0.0.1:0",
-	ListenPeer: "127.0.0.1:9",
+	Peer:        "192.0.2.1:46000",
+	Password:    "real-core-password",
+	Hashes:      []string{"real-core-hash"},
+	CaptchaMode: CaptchaModeWebView,
+	Listen:      "127.0.0.1:0",
+	ListenPeer:  "127.0.0.1:9",
 }
 
 func realCorePath(t *testing.T) string {
@@ -57,6 +58,7 @@ func TestRealCore(t *testing.T) {
 
 	cmdline := commandLine(t, p.PID())
 	if !strings.Contains(cmdline, "--secrets-stdin") || !strings.Contains(cmdline, "--listen-peer=127.0.0.1:9") ||
+		!strings.Contains(cmdline, "--captcha-mode=wv") ||
 		strings.Contains(cmdline, realCoreConfig.Password) || strings.Contains(cmdline, realCoreConfig.Hashes[0]) {
 		t.Errorf("командная строка ядра: %s", cmdline)
 	}

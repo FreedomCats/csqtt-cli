@@ -96,9 +96,9 @@ type Process struct {
 // Messages нужно читать до закрытия канала: пока его не читают, ядро стоит
 // на записи в stdout.
 //
-// Решатель капчи ядра выключен (CoreSolverOffEnv): капчу решает человек в
-// окне оболочки. Токен капчи в журнале ядра Messages отдаёт скрытым, а в
-// auto_js — и хеш созданного ядром звонка.
+// Решатель капчи ядра выключен (CoreSolverOffEnv): капчу решает окно
+// оболочки (режим CaptchaModeWebView задаёт cfg). Токен капчи в журнале
+// ядра Messages отдаёт скрытым, а в auto_js — и хеш созданного ядром звонка.
 func Start(path string, cfg Config) (*Process, error) {
 	return startConfig(path, cfg, nil)
 }

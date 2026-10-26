@@ -13,8 +13,11 @@
 //   - время окна — ManualTimeout, своим таймером: ядро о конце окна не
 //     сообщает. Вышло — окно закрывается, ядру не отвечают: оно ждало столько
 //     же и уже перестало;
+//   - manual и selected — одно и то же окно человеку. Оболочка запускает
+//     ядро в режиме wv (coreproc.CaptchaModeWebView), и на капчу оно сразу
+//     шлёт selected; manual приходит в конце цепочки режима auto;
 //   - auto — сразу отказ unsupported. Автопрогона в окне на десктопе пока нет,
-//     ждать десять секунд незачем.
+//     ждать десять секунд незачем; в режиме wv ядро auto не шлёт.
 //
 // При kill-switch окно ходит в сеть через прокси csqtt-cli (Dial), и правила
 // не трогаются. Всё, что идёт в сеть само, — ручной режим (браузер системы),
@@ -160,7 +163,7 @@ func newBridgeWith(opts Options, w, direct Window) *Bridge {
 // cancelled (ручной режим без ответа), failed (прочее). Время окна вышло или пришёл новый запрос —
 // ошибка с coreproc.ErrCaptchaNoReply: отвечать ядру не нужно.
 func (b *Bridge) Solve(ctx context.Context, creq coreproc.CaptchaRequest) (string, error) {
-	if creq.Mode != ModeManual {
+	if !windowMode(creq.Mode) {
 		b.mu.Lock()
 		b.supersede()
 		b.mu.Unlock()

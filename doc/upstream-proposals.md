@@ -171,10 +171,11 @@ if !self.peer_check.admit(&descriptor) {
 заново. Заодно сроки у разных режимов
 разные: в режиме `--captcha-mode wv` окно ждёт 120 с (`captcha.rs:194`).
 
-**Как сделано у нас.** Константа `MANUAL_WEBVIEW_TIMEOUT` = 180 с вместо литерала 60.
+**Как сделано у нас.** Константа `MANUAL_WEBVIEW_TIMEOUT` = 180 с вместо литералов 60
+(`manual`) и 120 (`wv`, `selected`): оболочка запускает ядро в режиме `wv`.
 
-**Тесты.** `captcha_window_tests.rs` (виртуальное время tokio): окно принимает токен
-позже апстримной минуты и закрывается через три минуты.
+**Тесты.** `captcha_window_tests.rs` (виртуальное время tokio): окно `manual` и окно
+режима `wv` принимают токен позже апстримного срока и закрываются через три минуты.
 
 **Android-клиенту** — возможно (вывод: человек тот же, но мы не знаем, как часто на
 телефоне не успевают за минуту). Можно и не поднимать срок, а принимать его флагом.
@@ -645,7 +646,7 @@ Noncommercial 1.0.0. Инструменты, которые собирают с�
 - **П7** — выключатель решателя капчи `ONLY_PRINT_URL`. Ядро 2.5.0 убрало проверку из
   `solve_once` (`captcha.rs:429`). Но у апстрима есть `--captcha-mode wv`: сразу окно клиента
   на 120 с, без решателя (`captcha.rs:192-195`). Клиенту, который решает капчу сам, этого
-  достаточно. Мы вернули проверку, чтобы сохранить свою цепочку окон.
+  достаточно. Мы перешли на `wv` (срок — 180 с по П5), а проверку оставили страховкой.
 
 ## Для нас
 
@@ -655,6 +656,7 @@ Noncommercial 1.0.0. Инструменты, которые собирают с�
 `bind_if_tests.rs`, `direct_relay_bind_if_tests.rs` и
 `vendor/primp-hyper-util/src/csqtt_bind.rs` (5). Сторож мест создания сокетов —
 `scripts/vendorcore/sockets.go`. Тесты на Go: `TestCoreSolverSwitchInCore`
-(`internal/coreproc`, проверка П7 на месте) и `TestRealCoreNetnsDirect` (`internal/datapath`,
+(`internal/coreproc`, проверка П7 на месте), `TestCoreCaptchaWindowInCore`
+(`internal/captcha`, режим `wv` и срок окна П5) и `TestRealCoreNetnsDirect` (`internal/datapath`,
 прямой путь ядра в контейнере). Обходы пунктов части 2 в оболочке описаны в
 [`architecture.md`](architecture.md), §04, §06 и §09.

@@ -154,7 +154,8 @@ impl fmt::Display for ShowTypeMismatch {
 
 impl std::error::Error for ShowTypeMismatch {}
 
-/// Правка П5 csqtt-cli: ручное окно капчи. У апстрима — 60 секунд.
+/// Правка П5 csqtt-cli: окно капчи человеку — ручное (manual) и режима wv
+/// (selected). У апстрима — 60 и 120 секунд.
 const MANUAL_WEBVIEW_TIMEOUT: Duration = Duration::from_secs(180);
 
 pub struct CaptchaSolver {
@@ -194,7 +195,7 @@ impl CaptchaSolver {
         match self.mode.as_ref() {
             "wv" => {
                 crate::log_info!("[STREAM {stream_id}] [КАПЧА] WBV: режим из настроек Android");
-                self.webview(stream_id, captcha, "selected", Duration::from_secs(120))
+                self.webview(stream_id, captcha, "selected", MANUAL_WEBVIEW_TIMEOUT)
                     .await
             }
             "rjs" => {

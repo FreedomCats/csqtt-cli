@@ -187,6 +187,8 @@ func (p *Profile) Core() coreproc.Config {
 		Workers:       p.Workers,
 		Obfs:          strings.TrimSpace(p.Obfs),
 		TurnTransport: strings.TrimSpace(p.TurnTransport),
+		// Капчу решает окно оболочки, и ядро отдаёт её окну сразу.
+		CaptchaMode: coreproc.CaptchaModeWebView,
 	}
 	if p.AutoJS() {
 		cfg.VKHashMode = coreproc.VKHashModeAutoJS

@@ -1,11 +1,11 @@
 // Package captcha — капча VK: окно, в котором её решает человек, и мост от
 // запроса ядра к этому окну (§08 doc/architecture.md).
 //
-// Ядро печатает CAPTCHA_SOLVE|<auto|manual>|<redirect_uri>|<session_token> и
-// ждёт CAPTCHA_RESULT. Bridge отвечает на auto отказом, а на manual открывает
-// окно: WebView2 на Windows, браузер на Chromium под управлением по CDP на
-// Linux, иначе — ручной режим в консоли. Токен окно снимает с ответа API
-// страницы капчи (page.go), не трогая саму страницу.
+// Ядро печатает CAPTCHA_SOLVE|<режим>|<redirect_uri>|<session_token> и ждёт
+// CAPTCHA_RESULT. Bridge отвечает на auto отказом, а на manual и selected
+// открывает окно: WebView2 на Windows, браузер на Chromium под управлением по
+// CDP на Linux, иначе — ручной режим в консоли. Токен окно снимает с ответа
+// API страницы капчи (page.go), не трогая саму страницу.
 package captcha
 
 import (
@@ -14,16 +14,22 @@ import (
 )
 
 // Режимы запроса капчи (captcha.rs): auto — десятисекундный автопрогон в
-// цепочке ядра, manual — ручное окно в её конце.
+// цепочке ядра, manual — ручное окно в её конце, selected — окно режима wv
+// (coreproc.CaptchaModeWebView), с которым оболочка запускает ядро: оно
+// приходит сразу, без цепочки. Окно на manual и selected — одно и то же.
 const (
-	ModeAuto   = "auto"
-	ModeManual = "manual"
+	ModeAuto     = "auto"
+	ModeManual   = "manual"
+	ModeSelected = "selected"
 )
 
-// ManualTimeout — сколько живёт окно ручной капчи: столько же ждёт ядро
-// (правка П5). Конца окна ядро оболочке не сообщает, поэтому у окна свой
-// таймер.
+// ManualTimeout — сколько живёт окно капчи (manual и selected): столько же
+// ждёт ядро (правка П5). Конца окна ядро оболочке не сообщает, поэтому у
+// окна свой таймер.
 const ManualTimeout = 180 * time.Second
+
+// windowMode — на запрос в этом режиме мост открывает окно.
+func windowMode(mode string) bool { return mode == ModeManual || mode == ModeSelected }
 
 // Request — что нужно окну, чтобы показать капчу.
 type Request struct {

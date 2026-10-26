@@ -37,6 +37,8 @@ func TestRealCore(t *testing.T) {
 			Peer:     "192.0.2.1:46000",
 			Password: "real-core-password",
 			Hashes:   []string{"real-core-hash"},
+			// Режим капчи — тот же, что у подключений.
+			CaptchaMode: coreproc.CaptchaModeWebView,
 		},
 		Link:     link,
 		Datapath: &fakeDatapath{},

@@ -1,6 +1,6 @@
-// Правка П5 csqtt-cli (doc/architecture.md, Р7): тесты ручного окна капчи.
-// Модуль — дочерний к captcha.rs (его подключает правило vendorcore), чтобы
-// видеть закрытый CaptchaSolver::webview.
+// Правка П5 csqtt-cli (doc/architecture.md, Р7): тесты окна капчи человеку —
+// ручного (manual) и режима wv (selected). Модуль — дочерний к captcha.rs (его
+// подключает правило vendorcore), чтобы видеть закрытый CaptchaSolver::webview.
 //
 // Файл не из апстрима: его кладёт в core/ scripts/vendorcore из
 // scripts/vendorcore/files, там его и править.
@@ -33,6 +33,18 @@ fn open_manual_window(solver: &Arc<CaptchaSolver>) -> tokio::task::JoinHandle<Re
     })
 }
 
+// Режим wv — через solve, как его зовёт воркер: решатель ядра (Rust v2) в нём
+// не вызывается, и клиенту не нужно ходить в сеть.
+fn open_wv_window(solver: &Arc<CaptchaSolver>) -> tokio::task::JoinHandle<Result<String>> {
+    let solver = solver.clone();
+    tokio::spawn(async move {
+        let client = Client::builder().build().unwrap();
+        solver
+            .solve(&client, &Profile::default(), None, 0, &captcha())
+            .await
+    })
+}
+
 #[test]
 fn manual_window_is_three_minutes() {
     assert_eq!(MANUAL_WEBVIEW_TIMEOUT, Duration::from_secs(180));
@@ -52,6 +64,24 @@ async fn manual_window_closes_after_three_minutes() {
     let solver = CaptchaSolver::new("auto", CancellationToken::new());
     let opened = Instant::now();
     let error = open_manual_window(&solver).await.unwrap().unwrap_err();
+    assert_eq!(opened.elapsed(), MANUAL_WEBVIEW_TIMEOUT);
+    assert!(format!("{error:#}").contains("timed out"), "{error:#}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn wv_window_accepts_a_token_after_the_upstream_two_minutes() {
+    let solver = CaptchaSolver::new("wv", CancellationToken::new());
+    let window = open_wv_window(&solver);
+    tokio::time::sleep(Duration::from_secs(179)).await;
+    assert!(solver.submit_result("token-after-three-minutes".to_owned()));
+    assert_eq!(window.await.unwrap().unwrap(), "token-after-three-minutes");
+}
+
+#[tokio::test(start_paused = true)]
+async fn wv_window_closes_after_three_minutes() {
+    let solver = CaptchaSolver::new("wv", CancellationToken::new());
+    let opened = Instant::now();
+    let error = open_wv_window(&solver).await.unwrap().unwrap_err();
     assert_eq!(opened.elapsed(), MANUAL_WEBVIEW_TIMEOUT);
     assert!(format!("{error:#}").contains("timed out"), "{error:#}");
 }

@@ -81,7 +81,7 @@ type (
 )
 
 // CaptchaRequest — ядро просит решить капчу (captcha.rs):
-// CAPTCHA_SOLVE|<auto|manual>|<redirect_uri>|<session_token>. Ответ —
+// CAPTCHA_SOLVE|<auto|manual|selected>|<redirect_uri>|<session_token>. Ответ —
 // команда CaptchaResult или CaptchaFailed.
 type CaptchaRequest struct {
 	Mode         string

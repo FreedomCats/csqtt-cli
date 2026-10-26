@@ -42,7 +42,10 @@ type Config struct {
 	// VKAuthMode — режим авторизации ядра (vkcalls, legacy) для живых
 	// прогонов капчи; в профиле его нет. В auto_js не действует: там он
 	// auto_js всегда.
-	VKAuthMode  string
+	VKAuthMode string
+	// CaptchaMode — режим капчи ядра; для подключений —
+	// CaptchaModeWebView (config.Profile.Core). Капча бывает только в
+	// legacy; в auto_js ядро флаг принимает и не использует.
 	CaptchaMode string
 	// VKHashMode — пусто (хеши из Hashes) или VKHashModeAutoJS: звонок
 	// создаёт ядро. В auto_js ядро получает оба своих режима — хешей и

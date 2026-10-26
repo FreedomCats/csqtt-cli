@@ -162,6 +162,25 @@ func TestBridgeOutcomes(t *testing.T) {
 	}
 }
 
+// selected (режим ядра wv) — то же окно, что manual, с тем же сроком, и
+// токен из него уходит ядру.
+func TestBridgeSelected(t *testing.T) {
+	w := newFakeWindow()
+	b, _ := testBridge(w, Options{})
+	req := manualReq("https://id.vk.com/a")
+	req.Mode = ModeSelected
+	done := solveAsync(b, context.Background(), req)
+	o := w.next(t)
+	if o.req.Mode != ModeSelected || o.req.SessionToken != "выдуманная-сессия" ||
+		o.req.Left(time.Now()) > ManualTimeout || o.req.Left(time.Now()) < ManualTimeout-time.Minute {
+		t.Errorf("запрос окну: %+v", o.req)
+	}
+	o.result <- outcome{token: "выдуманный-токен"}
+	if got := wait(t, done); got.token != "выдуманный-токен" || got.err != nil {
+		t.Fatalf("selected: %q, %v", got.token, got.err)
+	}
+}
+
 // Окно не открылось — та же капча решается вручную.
 func TestBridgeFallsBackToManual(t *testing.T) {
 	w := newFakeWindow()
