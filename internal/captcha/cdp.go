@@ -13,6 +13,10 @@
 // в окне WebView2: Network.responseReceived для captchaNotRobot.* →
 // Network.loadingFinished → Network.getResponseBody → pageWatch (page.go).
 // Страница при этом не изменена ни на байт.
+//
+// Автоклик (autoclick.go) шлёт вкладке свои команды — Runtime.evaluate,
+// Input.dispatchMouseEvent — по той же трубе, через разговор окна капчи
+// (cdpDriver, autoclick_cdp.go): автомат даёт им номера и отдаёт ответы.
 package captcha
 
 import (
@@ -73,6 +77,28 @@ type cdpConversation interface {
 	opened() bool
 }
 
+// cdpDriven — автомат, которому свои команды шлёт кто-то ещё (автоклик):
+// driverCalls — откуда они идут (nil — ниоткуда), drive — что из-за одной
+// из них отправить браузеру. Ответ автомат отдаёт в cdpCall.reply сам.
+type cdpDriven interface {
+	driverCalls() <-chan cdpCall
+	drive(call cdpCall) []cdpCommand
+}
+
+// cdpCall — команда автоклика вкладке капчи. reply — с буфером на один
+// ответ: автомат не ждёт, пока его заберут.
+type cdpCall struct {
+	method string
+	params any
+	reply  chan cdpReply
+}
+
+// cdpReply — ответ браузера на cdpCall: JSON результата или ошибка.
+type cdpReply struct {
+	result json.RawMessage
+	err    error
+}
+
 // browserLost — браузер пропал или за срок запуска не начал открывать
 // страницу: окна человек, скорее всего, так и не увидел. Каждое окно
 // называет это по-своему (ErrBrowser у капчи).
@@ -93,14 +119,16 @@ const (
 	callChild                    // подготовка фрейма или воркера: отказ не важен
 	callRelease                  // Runtime.runIfWaitingForDebugger: отказ не важен
 	callBody                     // Network.getResponseBody ответа VK
+	callDriver                   // команда автоклика: ответ — ему
 )
 
 type pendingCall struct {
 	kind    callKind
 	method  string
-	session string     // для callChild: сессия фрейма или воркера
-	key     requestKey // для callBody
-	api     string     // для callBody: метод API капчи
+	session string        // для callChild: сессия фрейма или воркера
+	key     requestKey    // для callBody
+	api     string        // для callBody: метод API капчи
+	reply   chan cdpReply // для callDriver: куда отдать ответ
 }
 
 // requestKey — запрос в сессии: requestId уникальны только внутри неё.
@@ -133,10 +161,21 @@ type requestKey struct {
 //     Network.enable придержанный service worker отвечает, только когда его
 //     отпустят, — их отпускаем сразу, вслед за подготовкой, как раньше.
 //  4. Читать ответы API капчи в любой из сессий, пока check не даст исход.
+//
+// Для автоклика (hidden) вкладка — всегда новая, в своём окне, открытом в
+// фоне: Target.createTarget с newWindow и background. Такое окно браузер
+// показывает, не активируя (на X11 — _NET_WM_USER_TIME=0: по EWMH оконный
+// менеджер не отдаёт ему фокус), а место ему — за краем экрана — задаёт
+// --window-position (browser_linux.go). Команды автоклика (calls) идут
+// вкладке, когда она подготовлена.
 type cdpCapture struct {
 	url   string
 	logf  func(string, ...any)
 	watch pageWatch
+
+	hidden  bool
+	calls   <-chan cdpCall
+	onReady func() // вкладка подготовлена, страница открывается
 
 	nextID  int64
 	pending map[int64]pendingCall
@@ -162,7 +201,33 @@ func (c *cdpCapture) opened() bool { return c.ready }
 
 // start — первые команды разговора.
 func (c *cdpCapture) start() []cdpCommand {
+	if c.hidden {
+		// Браузер запущен без окна (--no-startup-window): искать нечего.
+		return []cdpCommand{c.create()}
+	}
 	return []cdpCommand{c.call(pendingCall{kind: callTargets}, "", "Target.getTargets", nil)}
+}
+
+// create — своя вкладка; для автоклика — в новом окне, открытом в фоне.
+func (c *cdpCapture) create() cdpCommand {
+	params := map[string]any{"url": "about:blank"}
+	if c.hidden {
+		params["newWindow"] = true
+		params["background"] = true
+	}
+	return c.call(pendingCall{kind: callCreate}, "", "Target.createTarget", params)
+}
+
+func (c *cdpCapture) driverCalls() <-chan cdpCall { return c.calls }
+
+// drive — команда автоклика вкладке капчи. Пока вкладка не подготовлена,
+// слать её некуда: отказ сразу, автоклик спросит ещё раз.
+func (c *cdpCapture) drive(call cdpCall) []cdpCommand {
+	if !c.ready {
+		call.reply <- cdpReply{err: errors.New("вкладка капчи ещё не подготовлена")}
+		return nil
+	}
+	return []cdpCommand{c.call(pendingCall{kind: callDriver, reply: call.reply}, c.session, call.method, call.params)}
 }
 
 func (c *cdpCapture) call(p pendingCall, session, method string, params any) cdpCommand {
@@ -192,6 +257,15 @@ func (c *cdpCapture) reply(p pendingCall, m cdpMessage) ([]cdpCommand, *outcome)
 	if p.kind == callChild {
 		return c.childReady(p.session), nil
 	}
+	// Ответ автоклику, отказ тоже: что с ним делать, решает он.
+	if p.kind == callDriver {
+		r := cdpReply{result: m.Result}
+		if m.Error != nil {
+			r.err = m.Error
+		}
+		p.reply <- r
+		return nil, nil
+	}
 	if m.Error != nil {
 		switch p.kind {
 		case callRelease:
@@ -218,8 +292,7 @@ func (c *cdpCapture) reply(p pendingCall, m cdpMessage) ([]cdpCommand, *outcome)
 				return []cdpCommand{c.attach(t.TargetID)}, nil
 			}
 		}
-		return []cdpCommand{c.call(pendingCall{kind: callCreate}, "", "Target.createTarget",
-			map[string]any{"url": "about:blank"})}, nil
+		return []cdpCommand{c.create()}, nil
 
 	case callCreate:
 		var r struct {
@@ -254,6 +327,9 @@ func (c *cdpCapture) reply(p pendingCall, m cdpMessage) ([]cdpCommand, *outcome)
 		// когда пришли заголовки страницы, а это ожидание сети, не запуска.
 		// Медленная страница VK — не сбой браузера, и окно ждёт её дальше.
 		c.ready = true
+		if c.onReady != nil {
+			c.onReady()
+		}
 		return []cdpCommand{c.call(pendingCall{kind: callNavigate}, c.session, "Page.navigate",
 			map[string]any{"url": c.url})}, nil
 
@@ -433,8 +509,12 @@ func requestID(params json.RawMessage) string {
 // Не уложился — ErrBrowser: окна человек, скорее всего, так и не увидел.
 func captureToken(ctx context.Context, r io.Reader, w io.Writer, url string, startup time.Duration,
 	logf func(string, ...any)) (string, error) {
+	return runCapture(ctx, r, w, newCDPCapture(url, logf), startup)
+}
 
-	token, err := converse(ctx, r, w, newCDPCapture(url, logf), startup)
+// runCapture — то же для готового автомата c (окно с автокликом).
+func runCapture(ctx context.Context, r io.Reader, w io.Writer, c *cdpCapture, startup time.Duration) (string, error) {
+	token, err := converse(ctx, r, w, c, startup)
 	var lost *browserLost
 	switch {
 	case errors.As(err, &lost):
@@ -526,8 +606,17 @@ func converse(ctx context.Context, r io.Reader, w io.Writer, conv cdpConversatio
 	}
 	queue := enqueue(nil, conv.start())
 
+	// Команды со стороны (автоклик) — если автомат их принимает.
+	var calls <-chan cdpCall
+	driven, _ := conv.(cdpDriven)
+	if driven != nil {
+		calls = driven.driverCalls()
+	}
+
 	// gone — браузер пропал: до страницы это сбой запуска, после — окно
-	// закрыл человек (Chromium выходит с последним окном).
+	// закрыл человек. Обычно Chromium выходит с последним окном; браузер
+	// окна с автокликом (--no-startup-window) не выходит, и закрытие окна
+	// видно по отключению от вкладки (Target.detachedFromTarget).
 	gone := func(cause error) error {
 		if !conv.opened() {
 			return &browserLost{cause}
@@ -558,6 +647,8 @@ func converse(ctx context.Context, r io.Reader, w io.Writer, conv cdpConversatio
 			queue = queue[1:]
 		case cmd := <-delayed:
 			queue = append(queue, cmd)
+		case call := <-calls:
+			queue = enqueue(queue, driven.drive(call))
 		case err := <-writeErr:
 			return "", gone(err)
 		case err := <-readErr:

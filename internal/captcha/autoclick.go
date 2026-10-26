@@ -16,9 +16,10 @@
 // (autoclick_diag.go).
 //
 // Платформе остаётся только autoDriver (методы DevTools страницы) и показ
-// окна человеку (autoRun.reveal): WebView2 на Windows. Браузер по CDP на
-// Linux (browser_linux.go) пока сразу показывает окно человеку — здесь же
-// он получит автоклик (К3).
+// окна человеку (autoRun.reveal): WebView2 на Windows
+// (webview2_windows.go), браузер по CDP на Linux (browser_linux.go,
+// autoclick_cdp.go). В сеансе Wayland окна не спрятать, и автоклик там идёт
+// в видимом окне.
 package captcha
 
 import (
@@ -539,6 +540,13 @@ func newAutoRun(out io.Writer, logf func(string, ...any), req Request, reveal fu
 // announce — строка о том, что капча пробуется автоматически.
 func (a *autoRun) announce() {
 	fmt.Fprintln(a.out, "\nVK просит решить капчу — пробую пройти её автоматически.")
+}
+
+// announceVisible — то же, когда окно не спрятать и автоклик идёт у
+// человека на глазах: пусть пару секунд не трогает окно.
+func (a *autoRun) announceVisible() {
+	fmt.Fprintln(a.out, "\nVK просит решить капчу — открыто окно, в нём сейчас пробую пройти её автоматически; "+
+		"несколько секунд не трогайте его.")
 }
 
 // run — автофаза на странице d; неудача — окно человеку. checks — ответы на

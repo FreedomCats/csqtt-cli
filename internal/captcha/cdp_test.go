@@ -416,6 +416,8 @@ func (f fakeBrowser) run(t *testing.T, cmds io.Reader, out io.WriteCloser) {
 		switch cmd.Method {
 		case "Target.getTargets":
 			reply(`{"targetInfos":[{"targetId":"P","type":"page"}]}`)
+		case "Target.createTarget":
+			reply(`{"targetId":"P"}`)
 		case "Target.attachToTarget":
 			reply(`{"sessionId":"S1"}`)
 		case "Page.navigate":

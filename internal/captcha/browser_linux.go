@@ -3,8 +3,11 @@
 // WebView2 на Linux нет, а встроенный движок (WebKitGTK, Qt WebEngine, CEF)
 // требует cgo и системных библиотек. Поэтому csqtt-cli запускает установленный
 // браузер на Chromium со своим временным профилем, открывает в нём страницу
-// капчи и забирает токен по протоколу DevTools (cdp.go). Человек только
-// решает капчу — как в окне WebView2 на Windows.
+// капчи и забирает токен по протоколу DevTools (cdp.go). На selected окно
+// сначала прячется за край экрана и пробует автоклик (autoclick.go,
+// autoclick_cdp.go), как окно WebView2 на Windows (не спрятать — пробует на
+// виду); человек решает капчу, если автоклик не прошёл, и сразу — на
+// manual.
 //
 // Управление — по трубе (--remote-debugging-pipe), дескрипторы 3 и 4 через
 // ExtraFiles: порта нет, и чужой процесс к браузеру не подключится. Нет
@@ -21,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -89,6 +93,16 @@ type Browser struct {
 	extraArgs []string
 	started   func(pid int)
 	authURL   string
+	// Только для тестов автоклика: hidden получает страницу скрытого окна,
+	// как только вкладка подготовлена; revealed — после того, как окно
+	// выведено человеку; quietReveal — выводить без переднего плана и
+	// фокуса; autoTiming — свои сроки автофазы; wayland заменяет
+	// waylandSession.
+	hidden      func(autoDriver)
+	revealed    func(autoDriver)
+	quietReveal bool
+	autoTiming  *autoTiming
+	wayland     func() bool
 }
 
 // NewBrowser находит браузер на Chromium и собирает решатель. Браузер до
@@ -173,12 +187,40 @@ func insertArgs(args []string, extra ...string) []string {
 // captchaWindowSize — окно капчи: страница VK узкая.
 const captchaWindowSize = "520,760"
 
+// autoWindowArgs — браузер окна с автокликом. Окна при запуске нет: окно
+// капчи откроет в фоне, без фокуса, Target.createTarget (cdpCapture.hidden).
+//
+// Окно за краем экрана Chromium на X11 считает перекрытым: страница —
+// hidden, кадры не рисуются (проверено на стенде).
+// --disable-backgrounding-occluded-windows это снимает;
+// --disable-renderer-backgrounding — страховка, как у WebView2. Окну на
+// виду (Wayland) они не мешают.
+var autoWindowArgs = []string{
+	"--no-startup-window",
+	"--disable-backgrounding-occluded-windows",
+	"--disable-renderer-backgrounding",
+}
+
+// offscreenArg ставит новые окна за нижний край экрана. Не влево и не
+// вверх: отрицательные координаты оконный менеджер может заменить нулём
+// (так делает, например, Mutter), и окно окажется на экране, а за нижний
+// край окно обычно пускают. Не пустили — окно на экране, автоклик это видит
+// (windowHidden). 10000 — ниже любого разумного набора мониторов и в
+// пределах 16-битных координат X11 и при масштабе 3.
+const offscreenArg = "--window-position=0,10000"
+
+// waylandSession — сеанс Wayland: браузер (Chromium 140 и новее сам выбирает
+// Wayland, если он есть) не может поставить окно за край экрана — у клиента
+// Wayland нет координат на экране, место окну выбирает композитор. Автоклик
+// там идёт в видимом окне.
+func waylandSession() bool { return os.Getenv("WAYLAND_DISPLAY") != "" }
+
 // Solve запускает браузер со страницей капчи и ждёт токена.
 //
-// Автоклика здесь пока нет: и на manual, и на selected окно сразу у
-// человека. Автоклик (autoclick.go) сюда встанет так же, как в WebView2:
-// окно за краем экрана, autoDriver поверх разговора по CDP, autoRun —
-// показ окна человеку при неудаче (К3).
+// На selected окно открывается в фоне за краем экрана и сначала пробует
+// пройти капчу само (autoclick.go); человеку выводится, только если не
+// вышло. В сеансе Wayland и когда оконный менеджер прижал окно к экрану,
+// автоклик идёт в видимом окне. На manual окно сразу у человека.
 //
 // Возвращается, как только исход известен: браузер закрывается и профиль
 // убирается уже без нас. Кроме отмены ctx — тогда уборка дожидается, чтобы
@@ -208,17 +250,38 @@ func (b *Browser) Solve(ctx context.Context, req Request) (string, error) {
 	if proxy != nil {
 		proxyAddr = proxy.Addr()
 	}
-	browser, err := b.start(browserArgs(profile, proxyAddr, captchaWindowSize))
+	auto := req.Mode == ModeSelected
+	visible := auto && b.waylandSession()
+	if visible {
+		b.logf("[CAPTCHA] сеанс Wayland: окно браузера за край экрана не спрятать — автоклик в видимом окне")
+	}
+	args := browserArgs(profile, proxyAddr, captchaWindowSize)
+	if auto {
+		args = insertArgs(args, autoWindowArgs...)
+		if !visible {
+			args = insertArgs(args, offscreenArg)
+		}
+	}
+	browser, err := b.start(args)
 	if err != nil {
 		closeProxy()
 		removeProfile(profile)
 		return "", fmt.Errorf("%w: %v", ErrBrowser, err)
 	}
 
-	fmt.Fprintf(b.opts.Out, "\nVK просит решить капчу — открыто окно браузера %s, время на это %s.\n",
-		filepath.Base(b.exe), req.Left(time.Now()).Round(time.Second))
+	capture := newCDPCapture(req.RedirectURI, b.opts.Logf)
+	var finish func(token string, err error)
+	if auto {
+		finish = b.startAuto(ctx, req, capture, visible)
+	} else {
+		fmt.Fprintf(b.opts.Out, "\nVK просит решить капчу — открыто окно браузера %s, время на это %s.\n",
+			filepath.Base(b.exe), req.Left(time.Now()).Round(time.Second))
+	}
 
-	token, err := captureToken(ctx, browser.out, browser.in, req.RedirectURI, browserStartup, b.opts.Logf)
+	token, err := runCapture(ctx, browser.out, browser.in, capture, browserStartup)
+	if finish != nil {
+		finish(token, err)
+	}
 
 	cleanup := func() {
 		browser.stop()
@@ -231,6 +294,97 @@ func (b *Browser) Solve(ctx context.Context, req Request) (string, error) {
 		go cleanup()
 	}
 	return token, err
+}
+
+// startAuto готовит автофазу окна capture: окно — в фоне за краем экрана
+// (visible — на экране: Wayland), команды автоклика — через разговор с
+// браузером. Автофаза начинается, когда вкладка подготовлена; тогда же —
+// строка о ней: спряталось ли окно, известно только к этому времени.
+// finish зовётся с исходом разговора: автофаза кончается, и, если токен
+// получен без человека, — строка об этом.
+func (b *Browser) startAuto(ctx context.Context, req Request, capture *cdpCapture, visible bool) (finish func(string, error)) {
+	calls := make(chan cdpCall)
+	done := make(chan struct{})
+	ready := make(chan struct{})
+	checks := make(chan checkReply, 8)
+	capture.hidden = true
+	capture.calls = calls
+	capture.onReady = sync.OnceFunc(func() { close(ready) })
+	capture.watch.checked = func(r checkReply) {
+		select {
+		case checks <- r:
+		default:
+		}
+	}
+	driver := &cdpDriver{calls: calls, done: done}
+
+	actx, stopAuto := context.WithCancel(ctx)
+	auto := newAutoRun(b.opts.Out, b.opts.Logf, req, func() {
+		rctx, cancel := context.WithTimeout(actx, revealTimeout)
+		defer cancel()
+		if err := revealWindow(rctx, driver, !b.quietReveal, b.logf); err != nil {
+			b.logf("[CAPTCHA] окно капчи не вывести на экран: %v", err)
+		}
+		if b.revealed != nil {
+			b.revealed(driver)
+		}
+	})
+	if b.autoTiming != nil {
+		auto.timing = *b.autoTiming
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		select {
+		case <-ready:
+		case <-actx.Done():
+			return
+		}
+		if b.hidden != nil {
+			b.hidden(driver)
+		}
+		// Оконный менеджер мог прижать окно к экрану: тогда автоклик идёт у
+		// человека на глазах, и строка просит окно не трогать.
+		if !visible {
+			switch g, hidden, err := windowHidden(actx, driver, auto.timing.poll); {
+			case actx.Err() != nil:
+				return
+			case err != nil:
+				b.logf("[CAPTCHA] автоклик: не узнать, спряталось ли окно: %v", err)
+			case !hidden:
+				b.logf("[CAPTCHA] автоклик: окно не спряталось за край экрана (%.0f,%.0f %.0f×%.0f) — "+
+					"автоклик в видимом окне", g.window.Left, g.window.Top, g.window.Width, g.window.Height)
+				visible = true
+			}
+		}
+		if visible {
+			auto.announceVisible()
+		} else {
+			auto.announce()
+		}
+		auto.run(actx, driver, checks)
+	}()
+
+	return func(token string, err error) {
+		// Сначала отмена, потом done: автоклик, получивший «окно закрыто» при
+		// живом ctx, счёл бы это неудачей и сказал бы о ней человеку.
+		stopAuto()
+		close(done)
+		wg.Wait()
+		if err == nil && token != "" {
+			auto.solved()
+		}
+	}
+}
+
+// waylandSession — сеанс Wayland (b.wayland у тестов).
+func (b *Browser) waylandSession() bool {
+	if b.wayland != nil {
+		return b.wayland()
+	}
+	return waylandSession()
 }
 
 // runningBrowser — запущенный браузер и концы трубы к нему.
