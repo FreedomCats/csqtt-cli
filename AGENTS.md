@@ -1,101 +1,147 @@
-# Правила проекта для агентов
+# Project rules for agents
 
-## Личные данные — никогда в репозиторий
+## Personal data — never into the repository
 
-**Это вопрос безопасности разработчика, а не аккуратности.** Если разработчика
-вычислят, это угрожает его жизни, здоровью и свободе. Поэтому в репозиторий не
-должно попадать ничего, что позволяет его опознать: настоящее имя, почта,
-IP-адреса, имена профилей, организация, где он работает, хеши звонков, детали
-рабочего окружения и ОС, имя пользователя — и вообще любая деталь, по которой его
-легко найти. При сомнении — не записывать.
+**This is about the developer's safety, not about tidiness.** If the developer is
+identified, it threatens his life, health and freedom. So nothing that can identify him
+may reach the repository: real name, e-mail, IP addresses, profile names, employer,
+call hashes, details of the working environment and OS, user name — in short, any
+detail by which he is easy to find. When in doubt — do not record it.
 
-Репозиторий публичный. В документацию (`README.md`, примеры), код, тесты,
-комментарии и сообщения коммитов **нельзя** записывать:
+The repository is public. Into documentation (`README.md`, examples), code, tests,
+comments and commit messages one **must not** write:
 
-- настоящее имя пользователя, его почты (личную и рабочую), имя его личного
-  аккаунта GitHub и других аккаунтов, работодателя;
-- окружение разработчика: дистрибутив и машину, на которых идёт работа, имя
-  пользователя, группы, домашние каталоги (`/home/…`, `C:\Users\…`), рабочие сети;
-- даты и время работы: когда что сделано, проверено, сверено;
-- внешние IP-адреса пользователя: домашний и адрес VPS;
-- имя и адрес сервера CSQTT (домен, IP, порт);
-- адреса домашней сети (префикс ULA, локальные адреса машин) и корпоративной сети
-  (сервер корпоративного VPN, корпоративные DNS, домены поиска);
-- хеши звонков VK и ссылки на звонки — ни целиком, ни сокращённые, как их печатает
-  лог (`abcdEF-1…`); токены VK, ссылки `csqtt://` и их части;
-- имена профилей пользователя. Исключение — `home`: это и имя-пример в коде, тестах
-  и README, его можно оставлять;
-- пароли, ключи и любые значения из файлов секретов и профилей пользователя.
+- the user's real name, his e-mails (personal and work), the name of his personal GitHub
+  account and other accounts, his employer;
+- the developer's environment: the distribution and the machine the work is done on, the
+  user name, groups, home directories (`/home/…`, `C:\Users\…`), working networks;
+- dates and times of work: when something was done, checked, verified;
+- the user's external IP addresses: home and VPS;
+- the name and address of the CSQTT server (domain, IP, port);
+- home network addresses (ULAs, local machine addresses) and corporate network ones
+  (corporate VPN server, corporate DNS, search domains);
+- VK call hashes and call links — neither whole nor shortened as the log prints them
+  (`abcdEF-1…`); VK tokens, `csqtt://` links and their parts;
+- the user's profile names. The exception is `home`: it is also the example name in
+  code, tests and `README.md`, and may stay;
+- passwords, keys and any values from the user's secret and profile files.
 
-Вместо них — слова или заглушки: «адрес VPS», «домашний адрес», «сервер CSQTT»,
-`<профиль>`, `<хеш>`, `10.x`, `192.168.1.x`, `fd…`, пользователь `user`. В тестах —
-документационные адреса (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`,
-`2001:db8::/32`) и выдуманные значения.
+In their place — words or placeholders: "the VPS address", "the home address", "the
+CSQTT server", `<profile>`, `<hash>`, `10.x`, `192.168.1.x`, `fd…`, user `user`. In
+tests — documentation addresses (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`,
+`2001:db8::/32`) and made-up values.
 
-Показывать эти значения пользователю в чате можно. В файлы репозитория — нет.
+Showing these values to the user in chat is fine. Into repository files — no.
 
-## Документы в `doc/`: что публикуется, а что нет
+## Documents in `doc/`: what is published and what is not
 
-В репозитории — всё, что лежит прямо в `doc/`. На эти документы действуют все правила
-выше: ни дат работы, ни времени суток («ночью», «поздно»), ни окружения и машины, ни имён
-и путей — только суть. Итоги живых проверок писать можно — без окружения, скоростей канала
-и адресов; ход работы по дням — только в журналах.
+The repository holds everything that lies directly in `doc/`. All the rules above apply
+to those documents: no dates of work, no time of day ("at night", "late"), no
+environment or machine, no names and paths — only the substance. Outcomes of live checks
+may be written — without environment, channel speed or addresses; the work log by day
+goes into journals only.
 
-Вне git (`.gitignore`) — два подкаталога:
+Out of git (`.gitignore`) — two subdirectories:
 
-- `doc/local/` — планы и журналы этапов `plan-*.md` (в них неизбежно окружение и
-  даты), рабочие записки (точка продолжения для новых сессий) и копии документов до чистки;
-- `doc/runs/` — скрипты и логи живых прогонов.
+- `doc/local/` — stage journals `plan-*.md` (they inevitably hold environment and
+  dates), working notes (the continuation point for new sessions) and copies of
+  documents before cleaning;
+- `doc/runs/` — scripts and logs of live runs.
 
-Новый документ для публикации проверить по этому файлу до `git add`; черновик с
-окружением класть в `doc/local/`.
+Check a new document against this file before `git add`; a draft with environment goes
+into `doc/local/`.
 
-## Чужой код под несовместимой лицензией
+## Roadmap
 
-Код под лицензией, несовместимой с лицензией оболочки (§11 `doc/architecture.md`),
-исполнитель — тот, кто пишет код, — не открывает. Сейчас это:
+The plan of work is a tree of stages and tasks in `doc/roadmap/<map>/`: `plan.md` is a
+node, nested directories with `plan.md` are its children, the order is set by `NN-`
+prefixes. The list of maps is `doc/roadmap/README.md`; they are driven by the agent
+`lead`, nodes are detailed by `planner`, tasks are executed by `coordinator`.
 
-- фрагменты qwdtt-cli, перенесённые из Android-клиента qWDTT (GPL-3): `internal/core`,
-  `supervisor/restart.go`, `captcha/token.go`, `captcha/solver.go` и их тесты;
-- Android-клиенты qWDTT и CSQTT на Kotlin (PolyForm NC), а также focsq;
-- оболочка стороннего клиента CSQTT-Windows на C# (`windows-client`, PolyForm NC).
+- A map covers a project or a large feature. There is one now: `doc/roadmap/csqtt-cli/`
+  — the main roadmap of the project.
+- `doc/local/` stays for stage journals (`plan-*.md`), working notes and drafts: the map
+  holds only the goal, the steps and the outcome, not the work log.
 
-Код ядра в `core/` к этому не относится: это вендор, читать его можно.
+**A map's `journal.md` is not in git.** It holds "where we left off" and the decision
+log: machines, dates, working-tree state — things that must not be in the repository.
+Like `doc/local/`, it is in `.gitignore` (`/doc/roadmap/*/journal*.md`, and
+`journal-archive-*.md` as well). Everything else under `doc/roadmap/` — node `plan.md`
+files and `README.md` — is published.
 
-Если нужно знать, что делает такой код, его читает другой участник — координатор или
-отдельный агент, который потом сам код не пишет. Исполнителю он передаёт описание
-поведения своими словами: какие запросы и поля, порядок шагов, тайминги, условия,
-наблюдаемые результаты. Описание не повторяет структуру кода, имена функций и
-переменных, порядок строк; фрагменты кода, даже пересказанные, не передаются. Протоколы,
-форматы и поведение — факты, их реализуют заново (§11).
+## Language
 
-Лучше всего — факты из первоисточника: живая запись поведения страницы или сервиса,
-разбор ответов. Откуда взято описание (файл чужого проекта, без путей с машины), —
-указать в журнале этапа (`doc/local/`).
+The language of the project is English. English is used for:
 
-## Коммиты
+- new documents, including the map and its `journal.md` (`lang: en` in the root);
+- new comments and messages in code, output lines and help texts;
+- project memory (`~/.claude/projects/…/memory/`) and working notes;
+- commit messages — both the subject and the body.
 
-Автор и коммиттер — только `FreedomCats <noreply@freedomcats.invalid>` (задано в
-`.git/config` репозитория). Дата — сегодняшняя, но без времени: полночь UTC.
-Время дня и часовой пояс в историю не попадают:
+What was written in Russian does not get retranslated: `doc/architecture.md`,
+`doc/plan.md`, `doc/upstream-proposals.md`, `README.md`, the older stage journals in
+`doc/local/` — that is the history of the project as it was written. They stay Russian,
+and an edit inside one of them is written in its language — otherwise the document
+becomes bilingual and hard to read. Everything new is English.
+
+The rule about commit messages overrides the general rule in `~/.claude/CLAUDE.md`,
+which asks for a Russian body.
+
+## Foreign code under an incompatible licence
+
+Code under a licence incompatible with the licence of the shell (§11
+`doc/architecture.md`) is not opened by the executor — the one who writes code. Today
+that is:
+
+- fragments of qwdtt-cli carried over from the qWDTT Android client (GPL-3):
+  `internal/core`, `supervisor/restart.go`, `captcha/token.go`, `captcha/solver.go` and
+  their tests;
+- the qWDTT and CSQTT Android clients in Kotlin (PolyForm NC), and focsq;
+- the shell of the third-party client CSQTT-Windows in C# (`windows-client`, PolyForm
+  NC).
+
+The core code in `core/` is not covered by this: it is a vendor, reading it is allowed.
+
+If you need to know what such code does, another participant reads it — the coordinator
+or a separate agent, who then does not write code himself. He passes the behaviour to
+the executor in his own words: which requests and fields, the order of steps, timings,
+conditions, observable results. The description does not repeat the structure of the
+code, function and variable names, the order of lines; code fragments, even retold, are
+not passed on. Protocols, formats and behaviour are facts; they are implemented anew
+(§11).
+
+Best of all — facts from the primary source: a live recording of how a page or a service
+behaves, an analysis of responses. Where the description came from (a file of the foreign
+project, without paths from the machine) — say in the stage journal (`doc/local/`).
+
+## Commits
+
+Author and committer are only `FreedomCats <noreply@freedomcats.invalid>` (set in the
+repository's `.git/config`). The date is today's, but without the time: midnight UTC.
+Time of day and time zone never reach the history:
 
     d=$(date +%F)T00:00:00Z
     GIT_AUTHOR_DATE=$d GIT_COMMITTER_DATE=$d git commit …
 
-Домен `.invalid` зарезервирован (RFC 2606): такой почты ни у кого нет, и GitHub
-не припишет коммиты чужой учётной записи.
+The `.invalid` domain is reserved (RFC 2606): nobody owns such an address, and GitHub
+will not attribute the commits to someone else's account.
 
-То же при `--amend`, `rebase` и `cherry-pick`: git ставит коммиттеру текущее время.
+The same applies to `--amend`, `rebase` and `cherry-pick`: git puts the current time as
+the committer time.
 
-Теги релизов (`v*`) — только лёгкие: `git tag v0.1.0`, без `-a`, `-s` и `-m`.
-Аннотированный тег хранит имя, почту и дату того, кто его поставил.
+Release tags (`v*`) are light only: `git tag v0.1.0`, without `-a`, `-s` and `-m`. An
+annotated tag stores the name, e-mail and date of whoever created it.
 
-**Перед каждым коммитом** проверить `git diff --cached` на всё перечисленное выше:
-адреса, полученные в живых прогонах, значения из каталога настроек csqtt-cli, имя
-сервера, хеши, токены, пути и имена с машины разработчика, даты. После коммита —
-`git log -1 --format='%an <%ae> %ad | %cn <%ce> %cd' --date=iso-strict`. Сами
-запретные значения в этот файл и в скрипты проверки не записываются.
+**Before every commit** check `git diff --cached` against everything listed above:
+addresses obtained in live runs, values from the csqtt-cli settings directory, the
+server name, hashes, tokens, paths and names from the developer's machine, dates. After
+the commit — `git log -1 --format='%an <%ae> %ad | %cn <%ce> %cd' --date=iso-strict`.
+The forbidden values themselves are never written into this file or into check scripts.
 
-Если такое всё же попало в историю — сказать пользователю сразу. Чистка истории
-(`git filter-repo`) переписывает все хеши коммитов и делается только с согласия
-пользователя.
+If something like that still reached the history — tell the user at once. Cleaning the
+history (`git filter-repo`) rewrites every commit hash and is done only with the user's
+consent.
+
+The commit subject and body are in English (see «Language»). Say what changed and why,
+so that a colleague understands the change without opening the diff; do not retell the
+diff line by line.

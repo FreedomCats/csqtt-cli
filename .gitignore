@@ -23,3 +23,6 @@ secrets.json
 # Журналы этапов, рабочие записки, скрипты и логи прогонов — локально (AGENTS.md).
 /doc/local/
 /doc/runs/
+# Журнал дорожной карты — тоже рабочая записка: машины, даты, состояние дерева.
+# A map journal is a working note as well: machines, dates, working-tree state.
+/doc/roadmap/*/journal*.md

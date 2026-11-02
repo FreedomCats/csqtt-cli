@@ -1000,7 +1000,9 @@ systemd-resolved настройки уходят вместе с адаптер�
 идёт через туннель.
 
 Протокол с сервером правки не трогают. Как всё устроено, — в
-[`doc/architecture.md`](doc/architecture.md), план работ — в [`doc/plan.md`](doc/plan.md).
+[`doc/architecture.md`](doc/architecture.md), план работ — в дорожной карте
+[`doc/roadmap/csqtt-cli/plan.md`](doc/roadmap/csqtt-cli/plan.md)
+(`doc/plan.md` — запись уже сделанного).
 Меню, профили, защита DNS, kill-switch и окна капчи перенесены из
 [qwdtt-cli](https://github.com/FreedomCats/qwdtt-cli) — консольного клиента к qWDTT того же
 автора.
