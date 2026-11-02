@@ -1,28 +1,27 @@
-# Сборка
+# Build output
 /build/
 /dist/
 *.exe
-# go build ./cmd/csqtt-cli без -o кладёт бинарь в корень.
+# `go build ./cmd/csqtt-cli` without -o drops the binary in the repository root.
 /csqtt-cli
 *.zip
-# Сборка ядра на Rust.
+# Rust build directory of the core.
 target/
 
-# Конфигурация и секреты — никогда не в репозиторий.
+# Configuration and secrets — never into the repository.
 profiles.toml
 secrets.json
 
-# Локальное окружение
+# Local environment
 .idea/
 .vscode/
 *.log
 
-# Выгрузки сессий Claude Code: рабочие записи, а не код проекта.
+# Claude Code session dumps: working notes, not project code.
 /claude-sessions/
 
-# Журналы этапов, рабочие записки, скрипты и логи прогонов — локально (AGENTS.md).
+# Stage journals, working notes, scripts and run logs — local only (AGENTS.md).
 /doc/local/
 /doc/runs/
-# Журнал дорожной карты — тоже рабочая записка: машины, даты, состояние дерева.
-# A map journal is a working note as well: machines, dates, working-tree state.
+# A roadmap journal is a working note as well: machines, dates, working-tree state.
 /doc/roadmap/*/journal*.md
