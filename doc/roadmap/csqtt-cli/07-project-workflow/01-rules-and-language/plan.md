@@ -1,6 +1,6 @@
 ---
 kind: task
-status: todo
+status: done
 detailed: true
 ---
 
@@ -64,4 +64,8 @@ Target files: `AGENTS.md`, `.gitignore`, `CLAUDE.md`.
 
 ## Outcome
 
-(filled in by the coordinator)
+The roadmap and language rules are documented in `AGENTS.md`; roadmap journals are
+ignored by git, and `CLAUDE.md` imports the roadmap index. `git check-ignore`
+confirmed that both `journal.md` and `journal-archive-*.md` stay out of the repository.
+The Claude import itself was not verified because invoking the external client could
+send project content to an external service.

@@ -1,6 +1,6 @@
 ---
 kind: task
-status: todo
+status: done
 detailed: true
 ---
 
@@ -22,9 +22,11 @@ Target file: `doc/local/resume.md`.
    - the user's decisions that still hold: purpose (whitelist-only networks),
      name and module path, wrapper plus vendored core, licence split (shell MIT, core
      PolyForm NC, the whole build non-commercial), the update rule for the core;
-   - the working order: stage journals in `doc/local/`, outcomes into `doc/plan.md` or
-     `doc/architecture.md`, commits strictly per `AGENTS.md`, roadmap work through
-     `lead`;
+   - the working order: stage journals in `doc/local/`, outcomes of roadmap tasks in
+     their corresponding roadmap nodes; `doc/plan.md` is a frozen historical document
+     and is not updated; update `doc/architecture.md` only when recording architectural
+     decisions or facts that belong there; commits strictly per `AGENTS.md`, roadmap
+     work through `lead`;
    - how to build and run by hand: `go run ./scripts/buildcore`, `go build -o
      build/out/csqtt-cli ./cmd/csqtt-cli`, the core is looked up next to the binary;
    - the test rule that must never be lost: every `go test` and test binary runs under
@@ -57,4 +59,7 @@ Target file: `doc/local/resume.md`.
 
 ## Outcome
 
-(filled in by the coordinator)
+`doc/local/resume.md` is a compact English continuation note retaining the operating
+rules, build and test procedures, environment guidance and licensing boundary, without
+the former session-by-session history. Its task outcomes now point to the corresponding
+roadmap nodes; the frozen `doc/plan.md` is not updated. The note remains ignored by git.

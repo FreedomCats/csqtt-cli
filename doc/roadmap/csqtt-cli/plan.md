@@ -22,10 +22,10 @@ a pointer to the detailed record. Everything still ahead starts at stage 07.
 
 **Conventions of this map.**
 
-- `lang: en` — the map is written in English, as are new comments in code, project
-  memory and commit messages (both subject and body). Existing Russian documents
-  (`doc/architecture.md`, `doc/plan.md`, `README.md`) are not retranslated; they are
-  edited in English from now on.
+- `lang: en` — the map is written in English, as are new documents, new comments in
+  code, project memory and commit messages (both subject and body). Existing Russian
+  documents (`doc/architecture.md`, `doc/plan.md`, `README.md`) are not retranslated;
+  edits inside them are written in Russian.
 - [`doc/plan.md`](../../plan.md) is the historical record of the step-by-step plan the
   stages 01–06 came from: per-task "done when" and outcomes. It is frozen, not
   updated. `doc/local/plan-*.md` journals hold the working notes (environment,
@@ -68,7 +68,7 @@ Menu, profile wizard, `csqtt://` links, release archives, licence, publication.
 
 VK login in a window, token in secret storage, the core creating the VK call.
 
-### 7. [Project workflow: roadmap, rules and language](07-project-workflow/plan.md) — todo
+### 7. [Project workflow: roadmap, rules and language](07-project-workflow/plan.md) — done
 
 Move the project onto this scheme: roadmap in `doc/`, rules in `AGENTS.md`, a
 compact continuation note, links from `README.md` and the architecture.

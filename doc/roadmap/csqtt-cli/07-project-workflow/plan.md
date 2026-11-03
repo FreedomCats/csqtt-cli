@@ -1,6 +1,6 @@
 ---
 kind: stage
-status: todo
+status: done
 base: 5c7585f
 ---
 
@@ -36,3 +36,13 @@ English.
 2. Pointers from `README.md` and `doc/architecture.md`; the archive note in
    `doc/plan.md`.
 3. A compact `doc/local/resume.md`.
+
+## Outcome
+
+Moved project planning to the roadmap and aligned the repository rules, entry-point
+documentation and continuation note with that workflow. Existing Russian documents
+remain in Russian, including edits within them; the old `doc/plan.md` remains a frozen
+record. Roadmap journal ignore rules were checked for both journal filename forms.
+The Claude import was not executed because invoking the external client could send
+project content to an external service. Review found and resolved conflicting language
+and outcome-writing instructions in the roadmap and continuation note.

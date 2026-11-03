@@ -1,6 +1,6 @@
 ---
 kind: task
-status: todo
+status: done
 detailed: true
 ---
 
@@ -41,4 +41,6 @@ Target files: `README.md`, `doc/architecture.md`, `doc/plan.md`.
 
 ## Outcome
 
-(filled in by the coordinator)
+`README.md` and `doc/architecture.md` point to the roadmap for current work;
+`doc/plan.md` is marked as a frozen historical record. The project-wide search found
+no live document presenting `doc/plan.md` as the current plan.
