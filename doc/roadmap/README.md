@@ -6,7 +6,7 @@ Development roadmaps of this project. Each map is a tree of stages and tasks in
 
 | Slug | Status | What it is |
 |---|---|---|
-| [csqtt-cli](csqtt-cli/plan.md) | todo | The main roadmap of the project: work done so far (short) and everything still ahead. |
+| [csqtt-cli](csqtt-cli/plan.md) | in-progress | The main roadmap of the project: work done so far (short) and everything still ahead. |
 
 Layout: `plan.md` is the node itself; child nodes are nested directories with their
 own `plan.md`, ordered by numeric prefixes. `journal.md` holds the working log and

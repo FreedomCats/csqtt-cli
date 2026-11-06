@@ -1,10 +1,10 @@
 ---
 kind: root
-status: todo
+status: in-progress
 lang: en
 source: doc/architecture.md
 branch: main
-base: 5c7585f
+base: cc183a4
 ---
 
 # csqtt-cli roadmap
@@ -78,10 +78,11 @@ compact continuation note, links from `README.md` and the architecture.
 W6: a live measurement of Wi-Fi ↔ Ethernet switching, then the choice between
 `BIND_IF` and a restart of the core, recorded in §06 of the architecture.
 
-### 9. [Backlog](09-backlog/plan.md) — todo
+### 9. [Backlog](09-backlog/plan.md) — in-progress
 
 Small defects found while working, the 2.5.0 features never verified live, and
-follow-ups of tunnel bypass routing. To be detailed by `planner` when reached.
+follow-ups of tunnel bypass routing, grouped into the three child stages above. The
+user chooses the order of these groups and their candidates.
 
 ### 10. [Open decisions](10-open-decisions/plan.md) — blocked
 
