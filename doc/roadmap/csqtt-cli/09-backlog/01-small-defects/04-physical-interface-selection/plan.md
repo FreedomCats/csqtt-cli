@@ -1,6 +1,6 @@
 ---
 kind: task
-status: in-progress
+status: done
 detailed: true
 ---
 
@@ -40,3 +40,18 @@ and the existing IPv4/IPv6 behavior.
 - The existing Windows route-selection tests retain IPv4 and IPv6 coverage and account for
   the intentional Teredo/ISATAP exclusion.
 - The Windows target builds, and the relevant Windows `winsys` and `netguard` tests pass.
+
+## Outcome
+
+- `winsys.DefaultInterface` rejects only Teredo and ISATAP interface rows before metric
+  comparison, for both address families. The default-prefix, excluded-LUID,
+  operational-status, and metric checks are unchanged.
+- Deterministic tunnel-type tests cover both excluded types, an ordinary interface, all
+  other defined tunnel types, and an unknown type. The live best-route comparison skips
+  intentionally excluded tunnel types and retains IPv4, IPv6, and excluded-LUID coverage.
+- Both address families in `netguard` already use `winsys.DefaultInterface`; no
+  `netguard` behavior changes were needed.
+- Verification passed: Windows CLI cross-build, Windows `winsys` and `netguard` test
+  cross-compilation, Windows-targeted `go vet` for both packages, common deterministic
+  and full Linux `netguard` test suites, and formatting checks. Windows test binaries
+  were not executed; native route-selection and socket-binding checks remain unverified.

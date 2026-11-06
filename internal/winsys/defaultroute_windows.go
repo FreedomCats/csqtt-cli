@@ -42,6 +42,9 @@ func DefaultInterface(ipv6 bool, exclude uint64) (iface Interface, ok bool, err 
 		if err != nil || ifrow.OperStatus != winipcfg.IfOperStatusUp {
 			continue
 		}
+		if excludedTunnelType(ifrow.TunnelType) {
+			continue
+		}
 		ipif, err := rows[i].InterfaceLUID.IPInterface(family)
 		if err != nil {
 			continue
@@ -58,4 +61,8 @@ func DefaultInterface(ipv6 bool, exclude uint64) (iface Interface, ok bool, err 
 		}
 	}
 	return iface, ok, nil
+}
+
+func excludedTunnelType(tunnelType winipcfg.TunnelType) bool {
+	return tunnelType == winipcfg.TunnelTypeTeredo || tunnelType == winipcfg.TunnelTypeIsatap
 }
