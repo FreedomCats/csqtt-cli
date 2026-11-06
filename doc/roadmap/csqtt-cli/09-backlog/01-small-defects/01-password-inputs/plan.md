@@ -1,6 +1,6 @@
 ---
 kind: task
-status: todo
+status: in-progress
 detailed: true
 ---
 
