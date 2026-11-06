@@ -1,6 +1,6 @@
 ---
 kind: task
-status: blocked
+status: done
 detailed: true
 ---
 
@@ -53,14 +53,7 @@ and the existing IPv4/IPv6 behavior.
   `netguard` behavior changes were needed.
 - Verification passed: Windows CLI cross-build, Windows `winsys` and `netguard` test
   cross-compilation, Windows-targeted `go vet` for both packages, common deterministic
-  and full Linux `netguard` test suites, and formatting checks. Windows test binaries
-  were not executed; native route-selection and socket-binding checks remain unverified.
-
-## Waiting for the user
-
-The done-when criterion requires the Windows `winsys` and `netguard` tests to pass, but
-their test binaries were only cross-compiled and have not been executed. The criterion
-remains unmet. A native Windows test run is needed; starting the configured hosted
-Windows workflow requires an authorized push. The user must choose whether to wait for a
-Windows runner, authorize a push to run the workflow, or accept revised criteria that do
-not require native Windows test execution.
+  and full Linux `netguard` test suites, and formatting checks. The hosted Windows
+  workflow then ran the native Windows `go build`, `go vet`, and `go test` jobs
+  successfully, including the `winsys` and `netguard` packages; the core build and tests
+  passed there as well.
