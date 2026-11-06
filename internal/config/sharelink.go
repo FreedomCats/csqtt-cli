@@ -298,13 +298,21 @@ func linkPeer(host, port string) (string, error) {
 	return peer, nil
 }
 
+// CheckPassword validates a literal password without decoding percent escapes.
+func CheckPassword(password string) error {
+	if strings.Contains(password, "|") {
+		return errors.New("password must not contain '|'; ask the server administrator for a password without this character")
+	}
+	return nil
+}
+
 // checkLinkPassword: пробельных знаков в пароле панель не создаёт; пробел
 // значит, что ссылку разорвали переносом строки.
 func checkLinkPassword(password string) error {
 	if strings.IndexFunc(password, unicode.IsSpace) >= 0 {
 		return errors.New("в пароле из ссылки пробел или перевод строки — ссылка повреждена; скопируйте её целиком ещё раз")
 	}
-	return nil
+	return CheckPassword(password)
 }
 
 // checkLinkToken — токен VK из ссылки идёт ядру строкой stdin. Пробелов и

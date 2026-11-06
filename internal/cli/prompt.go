@@ -18,6 +18,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/FreedomCats/csqtt-cli/internal/config"
 	"github.com/FreedomCats/csqtt-cli/internal/lines"
 )
 
@@ -112,6 +113,18 @@ func (e *env) askNewSecret(ctx context.Context, prompt, again, what string, conf
 	}
 	if repeat != value {
 		return "", fmt.Errorf("%s: введённые значения не совпали", what)
+	}
+	return value, nil
+}
+
+// askNewPassword confirms a new password and checks its literal value.
+func (e *env) askNewPassword(ctx context.Context, prompt, again, what string) (string, error) {
+	value, err := e.askNewSecret(ctx, prompt, again, what, true)
+	if err != nil {
+		return "", err
+	}
+	if err := config.CheckPassword(value); err != nil {
+		return "", err
 	}
 	return value, nil
 }

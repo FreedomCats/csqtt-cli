@@ -1,6 +1,6 @@
 ---
 kind: task
-status: in-progress
+status: done
 detailed: true
 ---
 
@@ -57,3 +57,20 @@ percent-encoded values correctly. See the password protocol decision in the pare
 - Malformed percent escapes continue to be rejected, and no server-side protocol change
   is introduced.
 - Focused and full Go tests, `go build ./...`, and `go vet ./...` pass.
+
+## Outcome
+
+The client now rejects `|` in manually entered passwords and in passwords decoded
+from every supported current and legacy share-link form. A shared validation rule
+keeps `%` valid for manual input, while share-link parsing decodes percent escapes
+once, so `%25` becomes a literal `%` and encoded pipe characters are rejected after
+decoding. Malformed percent escapes remain errors, and validation messages do not
+include password values or link contents. The server protocol was not changed.
+
+Focused configuration and CLI tests, the full Go test suite under Xvfb, `go build
+./...`, and `go vet ./...` passed. Regression coverage includes all named profile,
+wizard, and menu password entry routes, current and legacy links, sealed and
+fallback link forms, malformed escapes, literal percent input, and output secrecy.
+Review found no defects in this scope. The previously known possibility of a failed
+profile save leaving an old peer paired with a new password remains deferred to the
+separate profile-save-consistency task.

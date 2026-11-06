@@ -257,6 +257,10 @@ func (m *menu) askPassword(ctx context.Context, cancellable bool) (string, error
 			fmt.Fprintln(m.e.stderr, "Пароль не может быть пустым.")
 			continue
 		}
+		if err := config.CheckPassword(value); err != nil {
+			fmt.Fprintln(m.e.stderr, err)
+			continue
+		}
 		repeat, err := m.wizardSecret(ctx, "Повторите пароль: ")
 		if err != nil {
 			return "", err

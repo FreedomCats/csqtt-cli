@@ -274,6 +274,102 @@ func TestWizardCreatesFirstProfile(t *testing.T) {
 	}
 }
 
+func TestWizardPasswordValidation(t *testing.T) {
+	for _, fromLink := range []bool{false, true} {
+		for _, tc := range []struct {
+			name, password string
+		}{
+			{"percent", "fake%password"},
+			{"literal escape text", "fake%7C%25%zzpassword"},
+		} {
+			route := "manual"
+			if fromLink {
+				route = "passwordless link"
+			}
+			t.Run(route+"/"+tc.name, func(t *testing.T) {
+				tunSupport(t, nil)
+				te := newMenuEnv(t)
+				const rejected = "fake|password"
+				if fromLink {
+					te.answer(sealedNoPasswordLink, rejected, tc.password, tc.password)
+					te.input("\n\n2\n0\n")
+				} else {
+					te.answer("", rejected, tc.password, tc.password, testHashA)
+					te.input("\n\n203.0.113.7\n2\n0\n")
+				}
+				code, stdout, stderr := te.run("menu")
+				if code != exitOK {
+					t.Fatalf("exit code %d; stderr:\n%s", code, stderr)
+				}
+				checkPasswordRejection(t, stderr)
+				if strings.Count(stderr, "password must not contain") != 1 || strings.Contains(stderr, "Пароли не совпали") {
+					t.Errorf("invalid password was not rejected before confirmation:\n%s", stderr)
+				}
+				noPasswordEcho(t, stdout+stderr+strings.Join(te.asked, "\n"), rejected, tc.password)
+				if len(te.answers) != 0 {
+					t.Errorf("unused hidden answers: %d", len(te.answers))
+				}
+				p := loadTestFile(t, te).Profiles["home"]
+				if got, err := te.store.Get(p.PasswordRef); err != nil || got != tc.password {
+					t.Errorf("literal password changed: %q, error %v", got, err)
+				}
+			})
+		}
+	}
+}
+
+func TestWizardRejectedPasswordCancellation(t *testing.T) {
+	for _, fromLink := range []bool{false, true} {
+		te := newMenuEnv(t)
+		te.endOfInput = true
+		const rejected = "fake|password"
+		if fromLink {
+			te.answer(sealedNoPasswordLink, rejected)
+			te.input("\n\n0\n")
+		} else {
+			te.answer("", rejected)
+			te.input("\n\n203.0.113.7\n0\n")
+		}
+		code, stdout, stderr := te.run("menu")
+		if code != exitOK || !strings.Contains(stdout, "Профиль не записан") {
+			t.Fatalf("exit code %d; stdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+		}
+		checkPasswordRejection(t, stderr)
+		noPasswordEcho(t, stdout+stderr+strings.Join(te.asked, "\n"), rejected)
+		if _, err := os.Stat(te.configPath()); !os.IsNotExist(err) {
+			t.Errorf("profile file created after rejection and cancellation: %v", err)
+		}
+		if len(te.store.values) != 0 {
+			t.Error("secrets written after rejection and cancellation")
+		}
+	}
+}
+
+func TestWizardLinkRejectsPipePassword(t *testing.T) {
+	tunSupport(t, nil)
+	for _, input := range []string{
+		strings.Replace(testLink, "link-password-0123", "fake%7Cpassword", 1),
+		"csqtt://fake%7Cpassword@203.0.113.7:46000",
+	} {
+		te := newMenuEnv(t)
+		te.answer(input, testLink)
+		te.input("\n\n2\n0\n")
+		code, stdout, stderr := te.run("menu")
+		if code != exitOK {
+			t.Fatalf("exit code %d; stderr:\n%s", code, stderr)
+		}
+		checkPasswordRejection(t, stderr)
+		noPasswordEcho(t, stdout+stderr+strings.Join(te.asked, "\n"), "fake|password", "fake%7Cpassword", "link-password-0123", input)
+		if len(te.asked) != 2 || len(te.answers) != 0 {
+			t.Errorf("invalid link did not prompt for a replacement: %q", te.asked)
+		}
+		p := loadTestFile(t, te).Profiles["home"]
+		if got, err := te.store.Get(p.PasswordRef); err != nil || got != "link-password-0123" {
+			t.Errorf("replacement link password not stored: %q, error %v", got, err)
+		}
+	}
+}
+
 // Ссылка csqtt:// с хешами: адрес, пароль и звонки — из неё, спрашиваются
 // только имя и режим. Ни ссылки, ни пароля из неё в выводе нет.
 func TestWizardFromShareLink(t *testing.T) {

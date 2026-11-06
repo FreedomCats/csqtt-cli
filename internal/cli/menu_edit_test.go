@@ -164,6 +164,61 @@ func TestMenuReplacesPassword(t *testing.T) {
 	}
 }
 
+func TestMenuReplacePasswordValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name, password string
+	}{
+		{"percent", "fake%password"},
+		{"literal escape text", "fake%7C%25%zzpassword"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			te := newMenuEnv(t)
+			te.addHome()
+			te.asked = nil
+			const rejected = "fake|password"
+			te.answer(rejected, tc.password, tc.password)
+			te.input("5\n1\n0\n")
+			code, stdout, stderr := te.run("menu")
+			if code != exitOK {
+				t.Fatalf("exit code %d; stderr:\n%s", code, stderr)
+			}
+			checkPasswordRejection(t, stderr)
+			noPasswordEcho(t, stdout+stderr+strings.Join(te.asked, "\n"), rejected, tc.password)
+			if len(te.asked) != 3 || len(te.answers) != 0 || strings.Contains(stderr, "Пароли не совпали") {
+				t.Errorf("invalid password was not rejected before confirmation: %q; stderr:\n%s", te.asked, stderr)
+			}
+			p := loadTestFile(t, te).Profiles["home"]
+			if got, err := te.store.Get(p.PasswordRef); err != nil || got != tc.password {
+				t.Errorf("literal password changed: %q, error %v", got, err)
+			}
+		})
+	}
+}
+
+func TestMenuReplaceRejectedPasswordCancellation(t *testing.T) {
+	te := newMenuEnv(t)
+	te.addHome()
+	before, err := os.ReadFile(te.configPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets := maps.Clone(te.store.values)
+	te.asked = nil
+	const rejected = "fake|password"
+	te.answer(rejected, "")
+	te.input("5\n1\n0\n")
+	code, stdout, stderr := te.run("menu")
+	if code != exitOK || !strings.Contains(stdout, "Пароль не изменён") {
+		t.Fatalf("exit code %d; stdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	checkPasswordRejection(t, stderr)
+	noPasswordEcho(t, stdout+stderr+strings.Join(te.asked, "\n"), rejected)
+	after, err := os.ReadFile(te.configPath())
+	if err != nil || string(after) != string(before) || !maps.Equal(te.store.values, secrets) {
+		t.Errorf("profile or secrets changed after rejection and cancellation: %v", err)
+	}
+}
+
 // Конец ввода посреди пароля — пароль прежний.
 func TestMenuReplacePasswordCancelled(t *testing.T) {
 	te := newMenuEnv(t)

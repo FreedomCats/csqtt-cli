@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"maps"
 	"os"
 	"regexp"
 	"strings"
@@ -270,6 +271,135 @@ func TestProfileSetPassword(t *testing.T) {
 	file, _ := config.Load(te.configPath())
 	if got, _ := te.store.Get(file.Profiles["home"].PasswordRef); got != "новый-пароль" {
 		t.Errorf("пароль: %q", got)
+	}
+}
+
+func checkPasswordRejection(t *testing.T, text string) {
+	t.Helper()
+	for _, want := range []string{"password", "'|'", "server administrator", "without this character"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("password rejection lacks %q:\n%s", want, text)
+		}
+	}
+}
+
+func noPasswordEcho(t *testing.T, text string, passwords ...string) {
+	t.Helper()
+	noSecrets(t, "output", text)
+	for _, password := range passwords {
+		if strings.Contains(text, password) {
+			t.Errorf("output exposes the supplied password:\n%s", text)
+		}
+	}
+}
+
+func TestProfileManualPasswordValidation(t *testing.T) {
+	routes := []struct {
+		name string
+		args []string
+		link string
+		set  bool
+	}{
+		{name: "add", args: []string{"profile", "add", "home", "-peer", "203.0.113.10"}},
+		{name: "add after passwordless link", args: []string{"profile", "add", "home", "-link"}, link: sealedNoPasswordLink},
+		{name: "set password", args: []string{"profile", "set", "home", "-password"}, set: true},
+	}
+	cases := []struct {
+		name, password string
+		reject         bool
+	}{
+		{"pipe", "fake|password", true},
+		{"percent", "fake%password", false},
+		{"literal escape text", "fake%7C%25%zzpassword", false},
+	}
+	for _, route := range routes {
+		for _, pipe := range []bool{false, true} {
+			for _, tc := range cases {
+				mode := "interactive"
+				if pipe {
+					mode = "stdin"
+				}
+				t.Run(route.name+"/"+mode+"/"+tc.name, func(t *testing.T) {
+					te := newTestEnv(t)
+					if route.set {
+						te.addHome()
+					}
+					before, err := os.ReadFile(te.configPath())
+					if route.set && err != nil {
+						t.Fatal(err)
+					}
+					secrets := maps.Clone(te.store.values)
+					te.asked = nil
+					var answers []string
+					if route.link != "" {
+						answers = append(answers, route.link)
+					}
+					answers = append(answers, tc.password)
+					if !pipe {
+						answers = append(answers, tc.password)
+					}
+					if !route.set && route.link == "" && !tc.reject {
+						answers = append(answers, testHashA)
+					}
+					if pipe {
+						te.pipe = true
+						te.stdin = strings.NewReader(strings.Join(answers, "\n") + "\n")
+					} else {
+						te.answer(answers...)
+					}
+
+					code, stdout, stderr := te.run(route.args...)
+					noPasswordEcho(t, stdout+stderr+strings.Join(te.asked, "\n"), tc.password)
+					if tc.reject {
+						if code != exitError {
+							t.Fatalf("exit code %d; want %d; stderr:\n%s", code, exitError, stderr)
+						}
+						checkPasswordRejection(t, stderr)
+						after, err := os.ReadFile(te.configPath())
+						if route.set {
+							if err != nil || string(after) != string(before) {
+								t.Errorf("profile changed on rejection: %v", err)
+							}
+						} else if !os.IsNotExist(err) {
+							t.Errorf("profile file created on rejection: %v", err)
+						}
+						if !maps.Equal(te.store.values, secrets) {
+							t.Error("secrets changed on rejection")
+						}
+						return
+					}
+					if code != exitOK {
+						t.Fatalf("exit code %d; stderr:\n%s", code, stderr)
+					}
+					p := loadTestFile(t, te).Profiles["home"]
+					if got, err := te.store.Get(p.PasswordRef); err != nil || got != tc.password {
+						t.Errorf("literal password changed: %q, error %v", got, err)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestProfileAddLinkRejectsPipePassword(t *testing.T) {
+	for _, input := range []string{
+		strings.Replace(testLink, "link-password-0123", "fake%7Cpassword", 1),
+		"csqtt://fake%7Cpassword@203.0.113.7:46000",
+	} {
+		te := newTestEnv(t)
+		te.answer(input)
+		code, stdout, stderr := te.run("profile", "add", "home", "-link")
+		if code != exitError {
+			t.Fatalf("exit code %d; stderr:\n%s", code, stderr)
+		}
+		checkPasswordRejection(t, stderr)
+		noPasswordEcho(t, stdout+stderr+strings.Join(te.asked, "\n"), "fake|password", "fake%7Cpassword", input)
+		if _, err := os.Stat(te.configPath()); !os.IsNotExist(err) {
+			t.Errorf("profile file created on rejection: %v", err)
+		}
+		if len(te.store.values) != 0 {
+			t.Error("secrets written on rejection")
+		}
 	}
 }
 

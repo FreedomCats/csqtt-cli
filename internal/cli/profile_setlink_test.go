@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"maps"
 	"os"
 	"strings"
 	"testing"
@@ -194,6 +195,87 @@ func TestProfileSetLinkWithoutPassword(t *testing.T) {
 	p = loadTestFile(t, te).Profiles["home"]
 	if got, _ := te.store.Get(p.PasswordRef); got != "пароль-из-конвейера" {
 		t.Errorf("пароль из конвейера: %q", got)
+	}
+}
+
+func TestProfileSetLinkManualPasswordValidation(t *testing.T) {
+	for _, pipe := range []bool{false, true} {
+		for _, tc := range []struct {
+			name, password string
+			reject         bool
+		}{
+			{"pipe", "fake|password", true},
+			{"percent", "fake%password", false},
+			{"literal escape text", "fake%7C%25%zzpassword", false},
+		} {
+			mode := "interactive"
+			if pipe {
+				mode = "stdin"
+			}
+			t.Run(mode+"/"+tc.name, func(t *testing.T) {
+				te := newTestEnv(t)
+				te.addHome()
+				before, err := os.ReadFile(te.configPath())
+				if err != nil {
+					t.Fatal(err)
+				}
+				secrets := maps.Clone(te.store.values)
+				te.asked = nil
+				if pipe {
+					te.pipe = true
+					te.stdin = strings.NewReader(sealedNoPasswordLink + "\n" + tc.password + "\n")
+				} else {
+					te.answer(sealedNoPasswordLink, tc.password, tc.password)
+				}
+				code, stdout, stderr := te.run("profile", "set", "home", "-link")
+				noPasswordEcho(t, stdout+stderr+strings.Join(te.asked, "\n"), tc.password)
+				if tc.reject {
+					if code != exitError {
+						t.Fatalf("exit code %d; want %d; stderr:\n%s", code, exitError, stderr)
+					}
+					checkPasswordRejection(t, stderr)
+					after, err := os.ReadFile(te.configPath())
+					if err != nil || string(after) != string(before) || !maps.Equal(te.store.values, secrets) {
+						t.Errorf("profile or secrets changed on rejection: %v", err)
+					}
+					return
+				}
+				if code != exitOK {
+					t.Fatalf("exit code %d; stderr:\n%s", code, stderr)
+				}
+				p := loadTestFile(t, te).Profiles["home"]
+				if got, err := te.store.Get(p.PasswordRef); err != nil || got != tc.password {
+					t.Errorf("literal password changed: %q, error %v", got, err)
+				}
+			})
+		}
+	}
+}
+
+func TestProfileSetLinkRejectsPipePassword(t *testing.T) {
+	for _, input := range []string{
+		strings.Replace(testLink, "link-password-0123", "fake%7Cpassword", 1),
+		"csqtt://fake%7Cpassword@203.0.113.7:46000",
+	} {
+		te := newTestEnv(t)
+		te.addHome()
+		before, err := os.ReadFile(te.configPath())
+		if err != nil {
+			t.Fatal(err)
+		}
+		secrets := maps.Clone(te.store.values)
+		te.asked = nil
+		te.answer(input)
+		code, stdout, stderr := te.run("profile", "set", "home", "-link")
+		if code != exitError {
+			t.Fatalf("exit code %d; stderr:\n%s", code, stderr)
+		}
+		checkPasswordRejection(t, stderr)
+		noPasswordEcho(t, stdout+stderr+strings.Join(te.asked, "\n"), "fake|password", "fake%7Cpassword", input)
+		after, err := os.ReadFile(te.configPath())
+		if err != nil || string(after) != string(before) || !maps.Equal(te.store.values, secrets) {
+			t.Errorf("profile or secrets changed on rejection: %v", err)
+		}
 	}
 }
 

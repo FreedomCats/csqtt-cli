@@ -151,3 +151,78 @@ func TestParseShareLinkRejects(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckPassword(t *testing.T) {
+	for _, password := range []string{"test-password", "%", "fake%7Cpassword", "fake%25password", "fake%zzpassword"} {
+		if err := CheckPassword(password); err != nil {
+			t.Errorf("literal password rejected: %v", err)
+		}
+	}
+	for _, password := range []string{"|", "fake|password", "fake%|password"} {
+		err := CheckPassword(password)
+		if err == nil {
+			t.Error("password containing a pipe accepted")
+			continue
+		}
+		if !strings.Contains(err.Error(), "'|'") || !strings.Contains(err.Error(), "server administrator") {
+			t.Errorf("password error does not explain how to fix it: %v", err)
+		}
+		if strings.Contains(err.Error(), "fake") {
+			t.Errorf("password error exposes the supplied value: %v", err)
+		}
+	}
+}
+
+func TestParseShareLinkPasswordDecoding(t *testing.T) {
+	forms := []struct {
+		name, format string
+	}{
+		{"query", "csqtt://connect?v=2&host=203.0.113.7&peer=46000&password=%s"},
+		{"glued", "csqtt://connect?v=2host=203.0.113.7peer=46000password=%s"},
+		{"html", "csqtt://connect?v=2&amp;host=203.0.113.7&amp;peer=46000&amp;password=%s"},
+		{"semicolon", "csqtt://connect?v=2;host=203.0.113.7;peer=46000;password=%s"},
+		{"legacy", "csqtt://%s@203.0.113.7:46000"},
+	}
+	cases := []struct {
+		name, encoded, want, wantErr string
+	}{
+		{name: "percent only", encoded: "%25", want: "%"},
+		{name: "literal percent", encoded: "fake%25password", want: "fake%password"},
+		{name: "encoded pipe text", encoded: "fake%257Cpassword", want: "fake%7Cpassword"},
+		{name: "encoded percent text", encoded: "fake%2525password", want: "fake%25password"},
+		{name: "percent before non-hex text", encoded: "fake%25zzpassword", want: "fake%zzpassword"},
+		{name: "literal pipe", encoded: "fake|password", wantErr: "'|'"},
+		{name: "encoded pipe", encoded: "fake%7Cpassword", wantErr: "'|'"},
+		{name: "lowercase encoded pipe", encoded: "fake%7cpassword", wantErr: "'|'"},
+		{name: "bare percent", encoded: "fake%", wantErr: "%-последовательность"},
+		{name: "short escape", encoded: "fake%7", wantErr: "%-последовательность"},
+		{name: "non-hex escape", encoded: "fake%zzpassword", wantErr: "%-последовательность"},
+		{name: "partly non-hex escape", encoded: "fake%7Gpassword", wantErr: "%-последовательность"},
+	}
+	for _, form := range forms {
+		for _, tc := range cases {
+			t.Run(form.name+"/"+tc.name, func(t *testing.T) {
+				input := fmt.Sprintf(form.format, tc.encoded)
+				got, err := ParseShareLink(input)
+				if tc.wantErr != "" {
+					if err == nil {
+						t.Fatal("invalid password accepted")
+					}
+					if got != nil || !strings.Contains(err.Error(), tc.wantErr) {
+						t.Errorf("got %+v, error %v; want an error containing %q", got, err, tc.wantErr)
+					}
+					if strings.Contains(err.Error(), "fake") || strings.Contains(err.Error(), input) {
+						t.Errorf("error exposes the supplied password or link: %v", err)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.Password != tc.want || got.Peer != "203.0.113.7:46000" {
+					t.Errorf("got %+v; want password %q and the original peer", got, tc.want)
+				}
+			})
+		}
+	}
+}

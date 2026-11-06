@@ -288,9 +288,9 @@ func runProfileAdd(ctx context.Context, e *env, args []string) error {
 		}
 	}
 	if secrets.password == "" {
-		secrets.password, err = e.askNewSecret(ctx,
+		secrets.password, err = e.askNewPassword(ctx,
 			fmt.Sprintf("Пароль подключения для профиля %q (ввод не отображается): ", name),
-			"Повторите пароль: ", "пароль подключения", true)
+			"Повторите пароль: ", "пароль подключения")
 		if err != nil {
 			return err
 		}
@@ -431,9 +431,9 @@ func runProfileSet(ctx context.Context, e *env, args []string) error {
 		}
 	}
 	if *askPassword || *fromLink && secrets.password == "" {
-		secrets.password, err = e.askNewSecret(ctx,
+		secrets.password, err = e.askNewPassword(ctx,
 			fmt.Sprintf("Новый пароль подключения для профиля %q (ввод не отображается): ", name),
-			"Повторите пароль: ", "пароль подключения", true)
+			"Повторите пароль: ", "пароль подключения")
 		if err != nil {
 			return err
 		}

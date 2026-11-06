@@ -163,3 +163,59 @@ func TestParseSealedLinkRejects(t *testing.T) {
 		}
 	}
 }
+
+func TestParseSealedLinkPasswordDecoding(t *testing.T) {
+	forms := []struct {
+		name string
+		wrap func(string) string
+	}{
+		{"sealed", func(plain string) string { return sealLink(t, plain) }},
+		{"base64", func(plain string) string {
+			return "csqtt://" + base64.RawURLEncoding.EncodeToString([]byte(plain))
+		}},
+	}
+	cases := []struct {
+		name, encoded, want, wantErr string
+	}{
+		{name: "percent only", encoded: "%25", want: "%"},
+		{name: "literal percent", encoded: "fake%25password", want: "fake%password"},
+		{name: "encoded pipe text", encoded: "fake%257Cpassword", want: "fake%7Cpassword"},
+		{name: "encoded percent text", encoded: "fake%2525password", want: "fake%25password"},
+		{name: "percent before non-hex text", encoded: "fake%25zzpassword", want: "fake%zzpassword"},
+		{name: "literal pipe", encoded: "fake|password", wantErr: "'|'"},
+		{name: "encoded pipe", encoded: "fake%7Cpassword", wantErr: "'|'"},
+		{name: "lowercase encoded pipe", encoded: "fake%7cpassword", wantErr: "'|'"},
+		{name: "bare percent", encoded: "fake%", wantErr: "%-последовательность"},
+		{name: "short escape", encoded: "fake%7", wantErr: "%-последовательность"},
+		{name: "non-hex escape", encoded: "fake%zzpassword", wantErr: "%-последовательность"},
+	}
+	for _, form := range forms {
+		for _, tc := range cases {
+			t.Run(form.name+"/"+tc.name, func(t *testing.T) {
+				plain := "connect?v=2&host=203.0.113.7&peer=46000&password=" + tc.encoded
+				input := form.wrap(plain)
+				got, err := ParseShareLink(input)
+				if tc.wantErr != "" {
+					if err == nil {
+						t.Fatal("invalid password accepted")
+					}
+					if got != nil || !strings.Contains(err.Error(), tc.wantErr) {
+						t.Errorf("got %+v, error %v; want an error containing %q", got, err, tc.wantErr)
+					}
+					for _, secret := range []string{"fake", plain, input, "203.0.113.7"} {
+						if strings.Contains(err.Error(), secret) {
+							t.Errorf("error exposes the supplied link contents: %v", err)
+						}
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.Password != tc.want || got.Peer != "203.0.113.7:46000" {
+					t.Errorf("got %+v; want password %q and the original peer", got, tc.want)
+				}
+			})
+		}
+	}
+}
