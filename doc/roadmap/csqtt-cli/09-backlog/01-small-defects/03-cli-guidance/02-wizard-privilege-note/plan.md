@@ -1,6 +1,6 @@
 ---
 kind: task
-status: in-progress
+status: done
 detailed: true
 ---
 
@@ -115,3 +115,33 @@ rendering, or window lifecycle. If a native wizard observation is available, rec
 it separately; otherwise identify that evidence as unverified in the outcome. A
 Windows cross-build cannot supply it. No native elevation experiment, credentials,
 user decision, or external action is required for this scoped correction.
+
+## Outcome
+
+`askMode` now appends the existing platform-specific `adminNote` only when
+`Requirements.Admin && !isRoot()`. An already privileged process sees the original
+first-option label without a trailing separator. Availability and missing-guard
+checks still precede this rendering; platform wording, privilege detection,
+elevation/relaunch, mode choices, defaults, and persistence are unchanged.
+
+`TestWizardModePrivilegeNote` covers both injected privilege states and Enter,
+`1`, and `2` with serial subtests. It checks the actual numbered option lines,
+the exact note and its occurrence count, saved modes, first-profile default, and
+absence of the synthetic link and secrets from both output streams.
+`TestWizardModeWithoutGuard` and `TestWizardModeWithoutTun` cover both privilege
+states, SOCKS5-only selection, rejection of item `2`, Enter saving SOCKS5, the
+existing unavailability reasons and `-allow-leak` guidance, and absence of the
+rights-needed note. Existing helpers restore all injected globals.
+
+Focused wizard/menu/elevation regressions, the complete CLI suite,
+`go build ./...`, and `go vet ./...` passed in implementation and independent
+review. All Go tests used the required memory limits. Formatting and
+`git diff --check` passed. Review found no defects, required no revisions, and
+identified no incidental old problems or cost-based deferrals.
+
+The Windows/amd64 cross-build passed and establishes compilation only.
+Deterministic privilege-state tests do not establish native Windows token
+detection, UAC, console rendering, or window lifecycle; those observations remain
+unverified. No real elevation, server, or network tunnel was used. The full Go
+suite, Rust/core, and container checks were not repeated for this scoped rendering
+change.

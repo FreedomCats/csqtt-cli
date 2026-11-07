@@ -356,7 +356,11 @@ func (m *menu) askMode(ctx context.Context) (string, error) {
 		}
 	}
 
-	fmt.Fprintln(w, "  1. Весь трафик компьютера. "+adminNote)
+	tun := "  1. Весь трафик компьютера."
+	if req.Admin && !isRoot() {
+		tun += " " + adminNote
+	}
+	fmt.Fprintln(w, tun)
 	fmt.Fprintf(w, "  2. %s\n", socks)
 	for {
 		line, err := m.wizardAsk(ctx, "Выберите [1]: ")

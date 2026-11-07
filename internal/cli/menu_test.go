@@ -682,54 +682,146 @@ func TestWizardCancelledOnEachQuestion(t *testing.T) {
 	}
 }
 
-// Где tun работает только без защиты DNS и kill-switch,
-// мастер его не предлагает: согласие на утечку — -allow-leak командной
-// строки. Причина и команда — в строке о режиме.
-func TestWizardModeWithoutGuard(t *testing.T) {
-	tunSupport(t, nil)
-	withTunGuard(t, errors.New("здесь он работает без защиты от утечки DNS и kill-switch"))
-	te := newMenuEnv(t)
-	te.answer("", testPassword, testPassword, testHashA)
-	te.input("\n\nexample.org\n\n0\n")
+func wizardModeLines(t *testing.T, stdout string) [2]string {
+	t.Helper()
+	const header = "Что пускать через туннель?\n"
+	start := strings.Index(stdout, header)
+	if start < 0 {
+		t.Fatalf("wizard mode prompt is missing:\n%s", stdout)
+	}
+	lines := strings.SplitN(stdout[start+len(header):], "\n", 3)
+	if len(lines) < 2 {
+		t.Fatalf("wizard mode options are missing:\n%s", stdout)
+	}
+	return [2]string{lines[0], lines[1]}
+}
 
-	code, stdout, stderr := te.run("menu")
-	if code != exitOK {
-		t.Fatalf("код возврата %d, stderr:\n%s", code, stderr)
-	}
-	if !strings.Contains(stdout, "здесь недоступен: здесь он работает без защиты от утечки DNS и kill-switch "+
-		"(подключиться так можно только из командной строки: csqtt-cli connect -datapath tun -allow-leak)") ||
-		strings.Contains(stdout, "Весь трафик компьютера.") {
-		t.Errorf("режимы показаны не так:\n%s", stdout)
-	}
-	if got := loadTestFile(t, te).Profiles["home"]; got == nil || got.Datapath != config.DatapathSocks {
-		t.Errorf("профиль: %+v", got)
+func TestWizardModePrivilegeNote(t *testing.T) {
+	for _, privileged := range []bool{false, true} {
+		for _, tc := range []struct {
+			name  string
+			reply string
+			want  string
+		}{
+			{name: "Enter", want: config.DatapathTun},
+			{name: "1", reply: "1", want: config.DatapathTun},
+			{name: "2", reply: "2", want: config.DatapathSocks},
+		} {
+			t.Run(fmt.Sprintf("privileged=%t/%s", privileged, tc.name), func(t *testing.T) {
+				tunSupport(t, nil)
+				runAsRoot(t, privileged)
+				te := newMenuEnv(t)
+				te.answer(testLink)
+				te.input("\n\n" + tc.reply + "\n0\n")
+
+				code, stdout, stderr := te.run("menu")
+				if code != exitOK {
+					t.Fatalf("exit code %d; stderr:\n%s", code, stderr)
+				}
+
+				lines := wizardModeLines(t, stdout)
+				wantTun := "  1. Весь трафик компьютера."
+				if !privileged {
+					wantTun += " " + adminNote
+				}
+				if lines[0] != wantTun {
+					t.Errorf("tun option = %q; want %q", lines[0], wantTun)
+				}
+				wantSocks := fmt.Sprintf("  2. Только программы, в которых указан прокси SOCKS5 %s.", datapath.DefaultSocksListen)
+				if lines[1] != wantSocks {
+					t.Errorf("SOCKS5 option = %q; want %q", lines[1], wantSocks)
+				}
+				wantNoteCount := 0
+				if !privileged {
+					wantNoteCount = 1
+				}
+				if got := strings.Count(stdout+stderr, adminNote); got != wantNoteCount {
+					t.Errorf("admin note appears %d times; want %d", got, wantNoteCount)
+				}
+				noSecrets(t, "stdout", stdout, testLink, "link-password-0123")
+				noSecrets(t, "stderr", stderr, testLink, "link-password-0123")
+
+				file := loadTestFile(t, te)
+				profile := file.Profiles["home"]
+				if profile == nil || profile.Datapath != tc.want {
+					t.Errorf("saved profile = %+v; want datapath %q", profile, tc.want)
+				}
+				if file.DefaultProfile != "home" || !reflect.DeepEqual(file.Names(), []string{"home"}) {
+					t.Errorf("first profile is not the default: default=%q, profiles=%v", file.DefaultProfile, file.Names())
+				}
+			})
+		}
 	}
 }
 
-// Где tun не работает (Windows до своего адаптера), мастер по Enter выбирает
-// socks и говорит, почему весь трафик недоступен; tun не предлагается.
-func TestWizardModeWithoutTun(t *testing.T) {
-	tunSupport(t, errors.New("datapath tun пока работает только на Linux"))
-	te := newMenuEnv(t)
-	te.answer("", testPassword, testPassword, testHashA)
-	te.input("\n\nexample.org\n2\n\n0\n")
+// Where tun works only without DNS and kill-switch protection, the wizard does
+// not offer it: consent to a leak requires the -allow-leak command-line flag.
+func TestWizardModeWithoutGuard(t *testing.T) {
+	for _, privileged := range []bool{false, true} {
+		t.Run(fmt.Sprintf("privileged=%t", privileged), func(t *testing.T) {
+			tunSupport(t, nil)
+			withTunGuard(t, errors.New("здесь он работает без защиты от утечки DNS и kill-switch"))
+			runAsRoot(t, privileged)
+			te := newMenuEnv(t)
+			te.answer("", testPassword, testPassword, testHashA)
+			te.input("\n\nexample.org\n2\n\n0\n")
 
-	code, stdout, stderr := te.run("menu")
-	if code != exitOK {
-		t.Fatalf("код возврата %d, stderr:\n%s", code, stderr)
+			code, stdout, stderr := te.run("menu")
+			if code != exitOK {
+				t.Fatalf("exit code %d; stderr:\n%s", code, stderr)
+			}
+			lines := wizardModeLines(t, stdout)
+			wantSocks := fmt.Sprintf("  1. Только программы, в которых указан прокси SOCKS5 %s.", datapath.DefaultSocksListen)
+			if lines[0] != wantSocks || lines[1] != "Весь трафик компьютера (режим tun) здесь недоступен: здесь он работает без защиты от утечки DNS и kill-switch (подключиться так можно только из командной строки: csqtt-cli connect -datapath tun -allow-leak)." {
+				t.Errorf("wizard mode lines = %q", lines)
+			}
+			if !strings.Contains(stderr, "Нет такого пункта: \"2\". Введите 1.") {
+				t.Errorf("option 2 was not rejected:\n%s", stderr)
+			}
+			if strings.Contains(stdout+stderr, adminNote) {
+				t.Error("admin note appeared while tun was unavailable")
+			}
+			noSecrets(t, "stdout", stdout)
+			noSecrets(t, "stderr", stderr)
+			if got := loadTestFile(t, te).Profiles["home"]; got == nil || got.Datapath != config.DatapathSocks {
+				t.Errorf("saved profile = %+v; want SOCKS5", got)
+			}
+		})
 	}
-	if !strings.Contains(stdout, "1. Только программы, в которых указан прокси SOCKS5 127.0.0.1:1080") ||
-		!strings.Contains(stdout, "здесь недоступен: datapath tun пока работает только на Linux") {
-		t.Errorf("режимы без tun показаны не так:\n%s", stdout)
-	}
-	if strings.Contains(stdout, "Весь трафик компьютера.") {
-		t.Errorf("предложен tun, которого нет:\n%s", stdout)
-	}
-	if !strings.Contains(stderr, "Введите 1.") {
-		t.Errorf("пункт 2 не отвергнут:\n%s", stderr)
-	}
-	if got := loadTestFile(t, te).Profiles["home"]; got == nil || got.Datapath != config.DatapathSocks {
-		t.Errorf("профиль записан неверно: %+v", got)
+}
+
+// Where tun is unsupported, the wizard offers SOCKS5 and explains why full
+// traffic mode is unavailable.
+func TestWizardModeWithoutTun(t *testing.T) {
+	for _, privileged := range []bool{false, true} {
+		t.Run(fmt.Sprintf("privileged=%t", privileged), func(t *testing.T) {
+			tunSupport(t, errors.New("datapath tun пока работает только на Linux"))
+			runAsRoot(t, privileged)
+			te := newMenuEnv(t)
+			te.answer("", testPassword, testPassword, testHashA)
+			te.input("\n\nexample.org\n2\n\n0\n")
+
+			code, stdout, stderr := te.run("menu")
+			if code != exitOK {
+				t.Fatalf("exit code %d; stderr:\n%s", code, stderr)
+			}
+			lines := wizardModeLines(t, stdout)
+			wantSocks := fmt.Sprintf("  1. Только программы, в которых указан прокси SOCKS5 %s.", datapath.DefaultSocksListen)
+			if lines[0] != wantSocks || lines[1] != "Весь трафик компьютера (режим tun) здесь недоступен: datapath tun пока работает только на Linux." {
+				t.Errorf("wizard mode lines = %q", lines)
+			}
+			if !strings.Contains(stderr, "Нет такого пункта: \"2\". Введите 1.") {
+				t.Errorf("option 2 was not rejected:\n%s", stderr)
+			}
+			if strings.Contains(stdout+stderr, adminNote) {
+				t.Error("admin note appeared while tun was unavailable")
+			}
+			noSecrets(t, "stdout", stdout)
+			noSecrets(t, "stderr", stderr)
+			if got := loadTestFile(t, te).Profiles["home"]; got == nil || got.Datapath != config.DatapathSocks {
+				t.Errorf("saved profile = %+v; want SOCKS5", got)
+			}
+		})
 	}
 }
 
