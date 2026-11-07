@@ -10,8 +10,9 @@ Everything that is known to be undone but is not a stage of its own: small defec
 found while working, features of core 2.5.0 never verified live, and follow-ups of
 tunnel bypass routing. The candidates are preserved in the three child stages below,
 using the categories in which they were collected. Their numbering is structural, not
-a priority order. The user must choose which child stage to start, and the order of
-work within it, before work begins.
+a priority order. The user selected small defects first and authorized continuing
+through that group in map order, skipping Windows-only work until its verification is
+available. The reported core CI failure is the current priority within that group.
 
 ## Done when
 
@@ -35,6 +36,5 @@ work within it, before work begins.
    collected tunnel-bypass follow-ups. Done when each candidate has an outcome and any
    implemented behaviour passes its build and tests.
 
-These groups retain the original candidate categories, not a selected execution
-priority. The user must choose the stage and work order before any of these candidates
-is started.
+The live-verification and routing-follow-up groups still require the user's choice
+before work starts.

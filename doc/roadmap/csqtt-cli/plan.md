@@ -81,8 +81,10 @@ W6: a live measurement of Wi-Fi ↔ Ethernet switching, then the choice between
 ### 9. [Backlog](09-backlog/plan.md) — in-progress
 
 Small defects found while working, the 2.5.0 features never verified live, and
-follow-ups of tunnel bypass routing, grouped into the three child stages above. The
-user chooses the order of these groups and their candidates.
+follow-ups of tunnel bypass routing, grouped into three child stages. The user selected
+small defects first and authorized continuing in map order while skipping Windows-only
+work until verification is available. The reported core CI failure takes precedence
+over the remaining small defects; the other groups still await the user's choice.
 
 ### 10. [Open decisions](10-open-decisions/plan.md) — blocked
 
