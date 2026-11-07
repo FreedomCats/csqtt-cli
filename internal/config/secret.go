@@ -35,6 +35,7 @@ type SecretStore interface {
 	// записи при каждом запуске.
 	Put(name, value string) (ref string, err error)
 	// Get разворачивает ссылку обратно в значение.
+	// Confirmed absence matches os.ErrNotExist; store failures do not.
 	Get(ref string) (value string, err error)
 	// Delete убирает значение из хранилища. Ссылка, которой в хранилище нет,
 	// ошибкой не считается: `csqtt-cli profile rm` должен доводить удаление до конца,
@@ -197,7 +198,15 @@ func (s *store) putKeyring(name, value string) (string, error) {
 	return keyringScheme + ":" + id, nil
 }
 
-func (s *store) Get(ref string) (string, error) {
+func (s *store) Get(ref string) (value string, retErr error) {
+	defer func() {
+		var missing missingSecret
+		if errors.Is(retErr, os.ErrNotExist) && !errors.As(retErr, &missing) {
+			// ENOENT from a keyring helper or decryption is a store failure,
+			// not confirmation that the requested record is absent.
+			retErr = unreadableSecret{retErr}
+		}
+	}()
 	scheme, id, err := s.splitRef(ref)
 	if err != nil {
 		return "", err
@@ -212,8 +221,8 @@ func (s *store) Get(ref string) (string, error) {
 	}
 	entry, ok := data.Secrets[id]
 	if !ok {
-		return "", fmt.Errorf(
-			"секрет %q не найден в хранилище %s — возможно, профиль заводили не через `csqtt-cli profile set`", ref, s.path)
+		return "", missingSecret{fmt.Errorf(
+			"секрет %q не найден в хранилище %s — возможно, профиль заводили не через `csqtt-cli profile set`", ref, s.path)}
 	}
 	if entry.Store == keyringScheme {
 		// Значение переехало в связку, а ссылка в профиле осталась прежней:
@@ -244,12 +253,24 @@ func (s *store) getKeyring(ref, id string) (string, error) {
 	value, err := k.Get(id)
 	s.note(err)
 	if errors.Is(err, errKeyringNotFound) {
-		return "", fmt.Errorf("секрет %q не найден в связке ключей — возможно, его удалили из неё вручную", ref)
+		return "", missingSecret{fmt.Errorf("секрет %q не найден в связке ключей — возможно, его удалили из неё вручную", ref)}
 	}
 	if err != nil {
 		return "", fmt.Errorf("секрет %q: %w", ref, err)
 	}
 	return value, nil
+}
+
+// missingSecret preserves the diagnostic while distinguishing a confirmed
+// absent record from an unreadable store or an unavailable keyring.
+type missingSecret struct{ error }
+
+func (e missingSecret) Is(target error) bool { return target == os.ErrNotExist }
+
+type unreadableSecret struct{ error }
+
+func (e unreadableSecret) Is(target error) bool {
+	return target != os.ErrNotExist && errors.Is(e.error, target)
 }
 
 func (s *store) Delete(ref string) error {

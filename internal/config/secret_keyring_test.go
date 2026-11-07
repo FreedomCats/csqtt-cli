@@ -245,8 +245,44 @@ func TestKeyringDelete(t *testing.T) {
 func TestKeyringGetMissing(t *testing.T) {
 	k := newFakeKeyring()
 	s := keyringStore(filepath.Join(t.TempDir(), SecretsFileName), k)
-	if _, err := s.Get(keyringScheme + ":0123456789abcdef"); err == nil || !strings.Contains(err.Error(), "не найден") {
-		t.Errorf("Get: %v", err)
+	if _, err := s.Get(keyringScheme + ":0123456789abcdef"); !errors.Is(err, os.ErrNotExist) || !strings.Contains(err.Error(), "не найден") {
+		t.Error("missing keyring secret was not identified as absent")
+	}
+}
+
+func TestKeyringMissingIndexedValue(t *testing.T) {
+	k := newFakeKeyring()
+	s := keyringStore(filepath.Join(t.TempDir(), SecretsFileName), k)
+	ref, err := s.Put("home.password", "original-test-only")
+	if err != nil {
+		t.Fatal("cannot prepare indexed keyring record")
+	}
+	_, id, _ := strings.Cut(ref, ":")
+	delete(k.values, id)
+	for _, ref := range []string{ref, secretScheme + ":" + id} {
+		if _, err := s.Get(ref); !errors.Is(err, os.ErrNotExist) {
+			t.Error("missing indexed keyring value was not identified as absent")
+		}
+	}
+	if got, err := s.Put("home.password", "replacement-test-only"); err != nil || got != ref {
+		t.Error("replacement of a missing keyring value changed its indexed reference")
+	}
+}
+
+func TestKeyringGetFailureIsNotAbsence(t *testing.T) {
+	for _, failure := range []error{ErrKeyringLocked, errKeyringUnavailable, errors.New("keyring failure"), fmt.Errorf("keyring helper: %w", os.ErrNotExist)} {
+		k := newFakeKeyring()
+		k.err = failure
+		s := keyringStore(filepath.Join(t.TempDir(), SecretsFileName), k)
+		if _, err := s.Get(keyringScheme + ":0123456789abcdef"); err == nil || errors.Is(err, os.ErrNotExist) {
+			t.Error("unreadable keyring was treated as a missing secret")
+		}
+	}
+	k := newFakeKeyring()
+	k.unavailable = true
+	s := keyringStore(filepath.Join(t.TempDir(), SecretsFileName), k)
+	if _, err := s.Get(keyringScheme + ":0123456789abcdef"); err == nil || errors.Is(err, os.ErrNotExist) {
+		t.Error("unavailable keyring was treated as a missing secret")
 	}
 }
 

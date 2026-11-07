@@ -517,37 +517,87 @@ type profileSecrets struct {
 // storeProfile записывает профиль: секреты — в хранилище, профиль — в файл
 // настроек, и говорит, что сделано. Значения секретов не печатаются — только
 // где они лежат и сколько хешей.
-func storeProfile(e *env, path string, file *config.File, p *config.Profile, existed bool, secrets profileSecrets) error {
-	store := e.secretsFor(path)
-
-	if secrets.password != "" {
-		// Имя записи в хранилище — «<профиль>.password»: у каждого профиля
-		// свои секреты, а Put по тому же имени перезаписывает прежнее значение
-		// и не плодит осиротевших записей.
-		ref, err := store.Put(p.Name+".password", secrets.password)
-		if err != nil {
-			return err
+func storeProfile(e *env, path string, file *config.File, p *config.Profile, existed bool, secrets profileSecrets) (retErr error) {
+	// Callers have already edited file and p. Read the persisted state before
+	// any Put so rollback restores the old peer, default and secret references.
+	previous, err := config.Load(path)
+	if errors.Is(err, os.ErrNotExist) {
+		previous = &config.File{}
+		if file.Profiles != nil {
+			previous.Profiles = map[string]*config.Profile{}
 		}
-		p.PasswordRef = ref
+	} else if err != nil {
+		return err
+	}
+	requested := *p
+	store := e.secretsFor(path)
+	old := previous.Profiles[p.Name]
+	if old == nil {
+		old = &config.Profile{}
+	}
+
+	type secretUpdate struct {
+		kind, value, previousRef string
+		ref                      *string
+	}
+	var updates []secretUpdate
+	if secrets.password != "" {
+		updates = append(updates, secretUpdate{kind: "password", value: secrets.password, previousRef: old.PasswordRef, ref: &p.PasswordRef})
 	}
 	if len(secrets.hashes) > 0 {
-		// Хранятся разобранные хеши через запятую — так же их получает ядро.
-		ref, err := store.Put(p.Name+".vk_hashes", strings.Join(secrets.hashes, ","))
+		updates = append(updates, secretUpdate{kind: "vk_hashes", value: strings.Join(secrets.hashes, ","), previousRef: old.VkHashesRef, ref: &p.VkHashesRef})
+	}
+	if secrets.vkToken != "" {
+		updates = append(updates, secretUpdate{kind: "vk_token", value: secrets.vkToken, previousRef: old.VkTokenRef, ref: &p.VkTokenRef})
+	}
+	var rollback func() error
+	defer func() {
+		if retErr == nil {
+			return
+		}
+		if rollback != nil {
+			retErr = errors.Join(retErr, rollback())
+		}
+		if saved := previous.Profiles[p.Name]; saved != nil {
+			*p = *saved
+		} else {
+			*p = requested
+		}
+		// Save can assign device IDs to other profiles before it fails. Restore
+		// those too, retaining any profile pointers held by the caller.
+		for name, saved := range previous.Profiles {
+			if current := file.Profiles[name]; current != nil {
+				*current = *saved
+				previous.Profiles[name] = current
+			}
+		}
+		*file = *previous
+	}()
+	// Snapshot every old value before writing any new value. If one cannot be
+	// read, no earlier secret has been overwritten without a usable backup.
+	put := store.Put
+	if len(updates) > 0 {
+		references := make(map[string]string, len(updates))
+		for _, u := range updates {
+			references[p.Name+"."+u.kind] = u.previousRef
+		}
+		if put, rollback, err = config.PreserveProfileSecrets(store, path, references); err != nil {
+			return err
+		}
+	}
+	for i := range updates {
+		u := &updates[i]
+		// Stable per-profile names keep Put references reusable on rollback.
+		ref, err := put(p.Name+"."+u.kind, u.value)
 		if err != nil {
 			return err
 		}
-		p.VkHashesRef = ref
+		*u.ref = ref
 	}
 	// Прежний токен стирается из хранилища только после записи файла:
 	// иначе неудачная запись оставила бы профиль со ссылкой в пустоту.
 	dropToken := ""
-	if secrets.vkToken != "" {
-		ref, err := store.Put(p.Name+".vk_token", secrets.vkToken)
-		if err != nil {
-			return err
-		}
-		p.VkTokenRef = ref
-	} else if secrets.dropVKToken && p.ServerVKToken() {
+	if secrets.vkToken == "" && secrets.dropVKToken && p.ServerVKToken() {
 		dropToken, p.VkTokenRef = p.VkTokenRef, ""
 	}
 
@@ -555,7 +605,13 @@ func storeProfile(e *env, path string, file *config.File, p *config.Profile, exi
 		file.Profiles = map[string]*config.Profile{}
 	}
 	file.Profiles[p.Name] = p
-	if err := config.Save(path, file); err != nil {
+	save := e.saveProfile
+	if save == nil {
+		save = config.Save
+	}
+	// config.Save leaves the old file intact on error; rollback restores the
+	// overwritten secrets and its in-memory mutations without rewriting it.
+	if err := save(path, file); err != nil {
 		return err
 	}
 	if dropToken != "" {

@@ -284,18 +284,75 @@ const (
 type fakeStore struct {
 	mu     sync.Mutex
 	values map[string]string
+	refs   map[string]string
+	path   string
 	// getErr — чем отвечать на Get; nil — значением.
-	getErr error
+	getErr        error
+	putErr        error
+	deleteErr     error
+	puts, deletes int
 }
 
-func newFakeStore() *fakeStore { return &fakeStore{values: map[string]string{}} }
+func newFakeStore(path string) *fakeStore {
+	return &fakeStore{values: map[string]string{}, refs: map[string]string{}, path: path}
+}
+
+func (s *fakeStore) readIndex() error {
+	raw, err := os.ReadFile(s.path)
+	if errors.Is(err, os.ErrNotExist) {
+		s.refs = map[string]string{}
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var index struct {
+		Secrets map[string]struct{ Name, Store string }
+	}
+	if err := json.Unmarshal(raw, &index); err != nil {
+		return err
+	}
+	s.refs = map[string]string{}
+	for id, entry := range index.Secrets {
+		s.refs[entry.Name] = entry.Store + ":" + id
+	}
+	return nil
+}
+
+// writeIndex mirrors only the production name/ref metadata, never the values.
+func (s *fakeStore) writeIndex() error {
+	entries := map[string]map[string]string{}
+	for name, ref := range s.refs {
+		scheme, id, _ := strings.Cut(ref, ":")
+		entries[id] = map[string]string{"name": name, "store": scheme}
+	}
+	raw, err := json.Marshal(map[string]any{"secrets": entries})
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(s.path, raw, 0o600)
+}
 
 func (s *fakeStore) Put(name, value string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ref := "fake:" + name
+	s.puts++
+	if s.putErr != nil {
+		return "", s.putErr
+	}
+	if err := s.readIndex(); err != nil {
+		return "", err
+	}
+	ref := s.refs[name]
+	if ref == "" {
+		ref = "fake:" + name
+	}
+	s.refs[name] = ref
 	s.values[ref] = value
-	return ref, nil
+	return ref, s.writeIndex()
 }
 
 func (s *fakeStore) Get(ref string) (string, error) {
@@ -306,7 +363,7 @@ func (s *fakeStore) Get(ref string) (string, error) {
 	}
 	v, ok := s.values[ref]
 	if !ok {
-		return "", errors.New("записи нет")
+		return "", os.ErrNotExist
 	}
 	return v, nil
 }
@@ -314,8 +371,20 @@ func (s *fakeStore) Get(ref string) (string, error) {
 func (s *fakeStore) Delete(ref string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.deletes++
+	if s.deleteErr != nil {
+		return s.deleteErr
+	}
+	if err := s.readIndex(); err != nil {
+		return err
+	}
 	delete(s.values, ref)
-	return nil
+	for name, saved := range s.refs {
+		if saved == ref {
+			delete(s.refs, name)
+		}
+	}
+	return s.writeIndex()
 }
 
 // syncBuffer — буфер, который читают, пока в него пишут (connect в горутине).
@@ -380,11 +449,14 @@ type testEnv struct {
 	// vkLogin — env.vkLogin: окно входа VK. Пусто — открыть окно считается
 	// ошибкой теста: настоящий браузер тесты CLI не открывают.
 	vkLogin func(opts captcha.LoginOptions) (captcha.LoginWindow, error)
+	// saveProfile injects a failure after storeProfile has written the secrets.
+	saveProfile func(path string, file *config.File) error
 }
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
-	return &testEnv{t: t, dir: t.TempDir(), store: newFakeStore()}
+	dir := t.TempDir()
+	return &testEnv{t: t, dir: dir, store: newFakeStore(filepath.Join(dir, config.SecretsFileName))}
 }
 
 func (te *testEnv) configPath() string { return filepath.Join(te.dir, config.FileName) }
@@ -401,11 +473,15 @@ func (te *testEnv) env(stdout, stderr io.Writer) *env {
 		stdin = strings.NewReader("")
 	}
 	e := &env{
-		stdout:      stdout,
-		stderr:      stderr,
-		stdin:       stdin,
-		build:       Build{Version: "1.2.3", Commit: "abcdef0"},
-		secretStore: func(string) config.SecretStore { return te.store },
+		stdout: stdout,
+		stderr: stderr,
+		stdin:  stdin,
+		build:  Build{Version: "1.2.3", Commit: "abcdef0"},
+		secretStore: func(path string) config.SecretStore {
+			te.store.path = filepath.Join(filepath.Dir(path), config.SecretsFileName)
+			return te.store
+		},
+		saveProfile: te.saveProfile,
 		secrets: func(prompt string) (string, error) {
 			if len(te.asked) >= maxTestQuestions {
 				panic(fmt.Sprintf("больше %d скрытых вопросов: похоже, вопрос повторяется на конце ввода", maxTestQuestions))
@@ -479,11 +555,11 @@ func (te *testEnv) addHome(extra ...string) {
 }
 
 // noSecrets проверяет, что в тексте нет ни пароля, ни хешей.
-func noSecrets(t *testing.T, where, text string) {
+func noSecrets(t *testing.T, where, text string, extra ...string) {
 	t.Helper()
-	for _, secret := range []string{testPassword, testHashA, testHashB, testHashC} {
-		if strings.Contains(text, secret) {
-			t.Errorf("%s: в выводе секрет %q:\n%s", where, secret, text)
+	for _, secret := range append([]string{testPassword, testHashA, testHashB, testHashC}, extra...) {
+		if secret != "" && strings.Contains(text, secret) {
+			t.Errorf("%s contains a secret value", where)
 		}
 	}
 }

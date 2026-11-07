@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/base64"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -123,8 +124,21 @@ func TestSecretGetMalformedRef(t *testing.T) {
 
 func TestSecretGetUnknownID(t *testing.T) {
 	s := tempStore(t)
-	if _, err := s.Get(secretScheme + ":deadbeef"); err == nil {
-		t.Error("несуществующий идентификатор принят")
+	if _, err := s.Get(secretScheme + ":deadbeef"); !errors.Is(err, os.ErrNotExist) {
+		t.Error("missing secret was not identified as absent")
+	}
+}
+
+func TestSecretGetFailureIsNotAbsence(t *testing.T) {
+	s := tempStore(t)
+	if err := os.WriteFile(s.path, []byte("{"), 0o600); err != nil {
+		t.Fatal("cannot prepare damaged store")
+	}
+	if _, err := s.Get(secretScheme + ":deadbeef"); err == nil || errors.Is(err, os.ErrNotExist) {
+		t.Error("damaged store was treated as a missing secret")
+	}
+	if _, err := s.Get("unsupported:deadbeef"); err == nil || errors.Is(err, os.ErrNotExist) {
+		t.Error("unsupported store was treated as a missing secret")
 	}
 }
 

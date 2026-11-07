@@ -79,6 +79,8 @@ type env struct {
 	// secretStore подменяет хранилище секретов рядом с файлом настроек.
 	// Пусто — config.NewSecretStoreFor; подменяют тесты.
 	secretStore func(configPath string) config.SecretStore
+	// saveProfile overrides only storeProfile's file save. Nil uses config.Save.
+	saveProfile func(path string, file *config.File) error
 	// hashCheck подменяет coreproc.CheckHashes. Пусто — настоящая проверка.
 	hashCheck func(ctx context.Context, corePath string, cfg coreproc.Config, onLog func(coreproc.Log)) ([]coreproc.HashCheck, error)
 	// connectRun подменяет подъём туннеля по готовому плану — для меню

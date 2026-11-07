@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -476,6 +478,115 @@ func TestWizardReplaceKeepsDeviceID(t *testing.T) {
 	p := loadTestFile(t, te).Profiles["home"]
 	if p.DeviceID != id || p.Peer != "203.0.113.20:46001" {
 		t.Errorf("профиль после замены: %+v, прежний device_id %s", p, id)
+	}
+}
+
+func TestWizardReplacementSave(t *testing.T) {
+	for _, missing := range []bool{false, true} {
+		for _, failSave := range []bool{true, false} {
+			name := "success"
+			if failSave {
+				name = "save failure"
+			}
+			if missing {
+				name += "/missing secrets"
+			}
+			t.Run(name, func(t *testing.T) {
+				tunSupport(t, nil)
+				te := newMenuEnv(t)
+				te.addHome("-datapath", "socks", "-workers", "30", "-routing-template", "-kill-switch=false")
+				before := loadTestFile(t, te)
+				old := before.Profiles["home"]
+				if missing {
+					for _, ref := range []string{old.PasswordRef, old.VkHashesRef} {
+						if err := te.store.Delete(ref); err != nil {
+							t.Fatal("cannot remove original secret")
+						}
+					}
+				}
+				rawBefore, err := os.ReadFile(te.configPath())
+				if err != nil {
+					t.Fatal("cannot read original profile file")
+				}
+				secretsBefore := maps.Clone(te.store.values)
+				saveErr := errors.New("injected profile save failure")
+				var attempted *config.File
+				if failSave {
+					te.saveProfile = func(_ string, file *config.File) error {
+						attempted = file
+						p := file.Profiles["home"]
+						if got, err := te.store.Get(p.PasswordRef); err != nil || got != "link-password-0123" {
+							t.Error("save failure was not injected after the password write")
+						}
+						if got, err := te.store.Get(p.VkHashesRef); err != nil || got != testHashA+","+testHashB {
+							t.Error("save failure was not injected after the hashes write")
+						}
+						return saveErr
+					}
+				}
+				wantPeer, wantPassword, wantHashes := "203.0.113.20:46001", "link-password-0123", testHashA+","+testHashB
+				if failSave {
+					wantPeer, wantPassword, wantHashes = config.PeerWithPort(old.Peer), testPassword, testHashA+","+testHashB+","+testHashC
+				}
+				connections := 0
+				te.core = "connected"
+				te.connectRun = func(_ context.Context, plan *connectPlan) error {
+					connections++
+					if plan.cfg.Peer != wantPeer || plan.cfg.Password != wantPassword || strings.Join(plan.cfg.Hashes, ",") != wantHashes {
+						t.Error("menu continued with an inconsistent peer/password or hashes")
+					}
+					return nil
+				}
+				te.asked = nil
+				te.answer(testLink)
+				if missing && failSave {
+					te.input("3\nhome\ny\n2\n0\n")
+				} else {
+					te.input("3\nhome\ny\n2\n1\n0\n")
+				}
+				code, stdout, stderr := te.run("menu")
+				noSecrets(t, "stdout", stdout, testLink, "link-password-0123")
+				noSecrets(t, "stderr", stderr, testLink, "link-password-0123")
+				noSecrets(t, "prompts", strings.Join(te.asked, "\n"), testLink, "link-password-0123")
+				wantConnections := 1
+				if missing && failSave {
+					wantConnections = 0
+				}
+				if code != exitOK || connections != wantConnections || !strings.Contains(stdout, "До свидания") {
+					t.Error("menu did not continue to connect and exit after replacement")
+				}
+				if len(te.asked) != 1 || len(te.answers) != 0 {
+					t.Error("wizard did not use only the supplied link")
+				}
+				if failSave {
+					if !strings.Contains(stderr, "Не получилось: "+saveErr.Error()) || strings.Contains(stdout, "изменён:") || strings.Contains(stdout, "Готово.") {
+						t.Error("wizard did not report a failed save without success output")
+					}
+					if attempted == nil || !reflect.DeepEqual(attempted, before) {
+						t.Error("wizard did not restore the in-memory file")
+					}
+					rawAfter, err := os.ReadFile(te.configPath())
+					if err != nil || !bytes.Equal(rawBefore, rawAfter) || !maps.Equal(te.store.values, secretsBefore) {
+						t.Error("failed wizard replacement changed the persisted profile or secrets")
+					}
+				} else if strings.Contains(stderr, "Не получилось:") || !strings.Contains(stdout, "Профиль \"home\" изменён:") ||
+					!strings.Contains(stdout, "Готово. Подключиться к home") || !strings.Contains(stdout, "пароль: записан (") {
+					t.Error("successful wizard replacement lost its established output")
+				}
+				file := loadTestFile(t, te)
+				p := file.Profiles["home"]
+				if config.PeerWithPort(p.Peer) != wantPeer || p.DeviceID != old.DeviceID || p.Workers != old.Workers ||
+					p.Datapath != "socks" || !p.RoutingTemplateOn() || p.KillSwitchOn() || file.DefaultProfile != before.DefaultProfile ||
+					p.PasswordRef != old.PasswordRef || p.VkHashesRef != old.VkHashesRef {
+					t.Error("wizard replacement changed preserved settings or stable references")
+				}
+				if got, err := te.store.Get(p.PasswordRef); err != nil || got != wantPassword {
+					if !(missing && failSave && errors.Is(err, os.ErrNotExist)) {
+						t.Error("persisted wizard peer and password are inconsistent")
+					}
+				}
+			})
+		}
 	}
 }
 

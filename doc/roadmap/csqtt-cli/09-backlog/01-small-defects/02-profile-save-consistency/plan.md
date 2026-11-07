@@ -1,6 +1,6 @@
 ---
 kind: task
-status: in-progress
+status: done
 detailed: true
 ---
 
@@ -67,3 +67,31 @@ contract in §10 of `doc/architecture.md`.
   `systemd-run --user --scope -q -p MemoryMax=4G -p MemorySwapMax=0`; the full suite is
   additionally run through `xvfb-run -a -s "-screen 0 1280x1024x24 -noreset"` with the
   prescribed timeout.
+
+## Outcome
+
+Implemented transactional profile persistence at the existing `storeProfile` boundary.
+The operation now preserves the old profile state and every affected password, VK hash,
+and server-token destination before writing. Rollback restores only the destinations
+owned by the operation, preserves stable references and backend identity, detects
+observable destination conflicts, keeps independent secret records, and aggregates
+secret-free rollback context. Superseded server VK tokens are still deleted only after
+the profile file has been saved successfully.
+
+Added the narrow profile-save test seam, production fallback to `config.Save`, and
+regressions for `profile set` and wizard replacement success and failure paths. The
+tests also cover missing records, mismatched profile and index references, backend
+migration, rollback failures, shared destinations, device-id preservation, and
+secret-free output and diagnostics. Secret-store reads now distinguish confirmed
+missing records from unavailable or damaged storage, so stale references can be
+replaced without treating storage failures as absence.
+
+The focused CLI/configuration tests, the required memory-limited full Go suite with
+the prescribed window-test display setup, `go build ./...`, and `go vet ./...` pass.
+
+Scoped rollback does not serialize independent writers across processes between its
+final conflict check and the merge write. A complete cross-process guarantee would
+require a common lock or transaction protocol in every secret-store and keyring
+writer, which would change unrelated persistence transactions and is outside this
+task. The pre-existing failure mode where a keyring value can change before its
+metadata write fails is likewise unchanged.

@@ -1,8 +1,14 @@
 package cli
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
 	"maps"
 	"os"
+	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -272,6 +278,547 @@ func TestProfileSetPassword(t *testing.T) {
 	if got, _ := te.store.Get(file.Profiles["home"].PasswordRef); got != "новый-пароль" {
 		t.Errorf("пароль: %q", got)
 	}
+}
+
+func TestProfileSetPeerPasswordSave(t *testing.T) {
+	for _, failSave := range []bool{true, false} {
+		name := "success"
+		if failSave {
+			name = "save failure"
+		}
+		t.Run(name, func(t *testing.T) {
+			te := newTestEnv(t)
+			te.addHome("-datapath", "socks")
+			before := loadTestFile(t, te)
+			old := before.Profiles["home"]
+			rawBefore, err := os.ReadFile(te.configPath())
+			if err != nil {
+				t.Fatal("cannot read original profile file")
+			}
+			const password = "replacement-password-test-only"
+			const peer = "198.51.100.20:46001"
+			saveErr := errors.New("injected profile save failure")
+			var attempted *config.File
+			if failSave {
+				te.saveProfile = func(_ string, file *config.File) error {
+					attempted = file
+					p := file.Profiles["home"]
+					if got, err := te.store.Get(p.PasswordRef); err != nil || got != password {
+						t.Error("save failure was not injected after the password write")
+					}
+					return saveErr
+				}
+			}
+			te.asked = nil
+			te.answer(password, password)
+			code, stdout, stderr := te.run("profile", "set", "home", "-peer", peer, "-password", "-default")
+			noSecrets(t, "stdout", stdout, password)
+			noSecrets(t, "stderr", stderr, password)
+			noSecrets(t, "prompts", strings.Join(te.asked, "\n"), password)
+			if len(te.asked) != 2 || len(te.answers) != 0 {
+				t.Error("peer/password update did not ask only for password confirmation")
+			}
+			file := loadTestFile(t, te)
+			p := file.Profiles["home"]
+			wantPeer, wantPassword := peer, password
+			if failSave {
+				if code != exitError || !strings.Contains(stderr, saveErr.Error()) {
+					t.Error("profile set did not report the injected save failure")
+				}
+				if stdout != "" {
+					t.Error("failed profile set printed success output")
+				}
+				if attempted == nil || !reflect.DeepEqual(attempted, before) {
+					t.Error("failed profile set did not restore the in-memory file")
+				}
+				rawAfter, err := os.ReadFile(te.configPath())
+				if err != nil || !bytes.Equal(rawBefore, rawAfter) {
+					t.Error("failed profile set changed the persisted file")
+				}
+				wantPeer, wantPassword = old.Peer, testPassword
+			} else {
+				if code != exitOK || stderr != "" {
+					t.Error("profile set failed")
+				}
+				for _, want := range []string{"Профиль \"home\" изменён:", "сервер: " + peer, "пароль: записан ("} {
+					if !strings.Contains(stdout, want) {
+						t.Error("profile set lost its success output")
+					}
+				}
+				if file.DefaultProfile != "home" {
+					t.Error("profile set did not save the requested default")
+				}
+			}
+			if p.Peer != wantPeer || p.DeviceID != old.DeviceID || p.PasswordRef != old.PasswordRef || p.VkHashesRef != old.VkHashesRef {
+				t.Error("profile set persisted incorrect profile fields or changed stable references")
+			}
+			if got, err := te.store.Get(p.PasswordRef); err != nil || got != wantPassword {
+				t.Error("persisted peer and password are inconsistent")
+			}
+		})
+	}
+}
+
+func TestStoreProfileSaveRollback(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		existing    bool
+		dropVKToken bool
+	}{
+		{name: "overwrite all secrets", existing: true},
+		{name: "create all secrets"},
+		{name: "defer token deletion", existing: true, dropVKToken: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			te := newTestEnv(t)
+			before := &config.File{}
+			if tc.existing {
+				te.addHome()
+				before = loadTestFile(t, te)
+				ref, err := te.store.Put("home.vk_token", serverToken)
+				if err != nil {
+					t.Fatal("cannot prepare server token")
+				}
+				before.Profiles["home"].VkTokenRef = ref
+				if err := config.Save(te.configPath(), before); err != nil {
+					t.Fatal("cannot prepare profile file")
+				}
+			}
+			rawBefore, readErr := os.ReadFile(te.configPath())
+			if tc.existing && readErr != nil || !tc.existing && !os.IsNotExist(readErr) {
+				t.Fatal("unexpected original profile file state")
+			}
+			secretsBefore := maps.Clone(te.store.values)
+			file := &config.File{}
+			p := &config.Profile{Name: "home", Peer: "198.51.100.20:46001"}
+			original := *p
+			if tc.existing {
+				file = loadTestFile(t, te)
+				p = file.Profiles["home"]
+				original = *p
+				p.Peer = "198.51.100.20:46001"
+			}
+			file.DefaultProfile = "home"
+			secrets := profileSecrets{password: "replacement-password-test-only", hashes: []string{newHash}, vkToken: "replacement-token-test-only"}
+			if tc.dropVKToken {
+				secrets.vkToken, secrets.dropVKToken = "", true
+			}
+			saveErr := errors.New("injected profile save failure")
+			called := false
+			te.saveProfile = func(_ string, file *config.File) error {
+				called = true
+				if got, err := te.store.Get(p.PasswordRef); err != nil || got != secrets.password {
+					t.Error("save did not follow the password write")
+				}
+				if got, err := te.store.Get(p.VkHashesRef); err != nil || got != newHash {
+					t.Error("save did not follow the hashes write")
+				}
+				if tc.dropVKToken {
+					if p.VkTokenRef != "" || te.store.deletes != 0 {
+						t.Error("server token was not retained until file save")
+					}
+				} else if got, err := te.store.Get(p.VkTokenRef); err != nil || got != secrets.vkToken {
+					t.Error("save did not follow the server token write")
+				}
+				file.Profiles["home"].DeviceID = "0123456789abcdef"
+				return saveErr
+			}
+			var stdout, stderr bytes.Buffer
+			err := storeProfile(te.env(&stdout, &stderr), te.configPath(), file, p, tc.existing, secrets)
+			if !called || !errors.Is(err, saveErr) {
+				t.Fatal("storeProfile did not return the injected save error")
+			}
+			noSecrets(t, "rollback error and output", err.Error()+stdout.String()+stderr.String(), secrets.password, secrets.vkToken, newHash, serverToken)
+			if stdout.Len() != 0 || stderr.Len() != 0 {
+				t.Error("failed storeProfile printed output")
+			}
+			if !reflect.DeepEqual(file, before) || !reflect.DeepEqual(*p, original) {
+				t.Error("rollback did not restore file/profile state")
+			}
+			if !maps.Equal(te.store.values, secretsBefore) {
+				t.Error("rollback did not restore all previous secret records")
+			}
+			rawAfter, err := os.ReadFile(te.configPath())
+			if tc.existing {
+				if err != nil || !bytes.Equal(rawBefore, rawAfter) {
+					t.Error("rollback changed the original profile file")
+				}
+			} else if !os.IsNotExist(err) {
+				t.Error("failed profile creation left a profile file")
+			}
+		})
+	}
+}
+
+func TestStoreProfileRollbackErrorsAreSecretFree(t *testing.T) {
+	for _, existing := range []bool{true, false} {
+		name := "delete new records"
+		if existing {
+			name = "restore old records"
+		}
+		t.Run(name, func(t *testing.T) {
+			te := newTestEnv(t)
+			before := &config.File{}
+			file := &config.File{}
+			p := &config.Profile{Name: "home", Peer: "198.51.100.20:46001"}
+			if existing {
+				te.addHome()
+				before = loadTestFile(t, te)
+				file = loadTestFile(t, te)
+				p = file.Profiles["home"]
+			}
+			original := *p
+			secrets := profileSecrets{password: "replacement-password-test-only", hashes: []string{newHash}, vkToken: "replacement-token-test-only"}
+			saveErr := errors.New("injected profile save failure")
+			puts, deletes := 0, 0
+			te.saveProfile = func(string, *config.File) error {
+				puts, deletes = te.store.puts, te.store.deletes
+				// Deliberately hostile errors must not escape rollback diagnostics.
+				storeErr := errors.New(strings.Join([]string{testPassword, testHashA, secrets.password, newHash, secrets.vkToken}, " "))
+				te.store.putErr, te.store.deleteErr = storeErr, storeErr
+				return saveErr
+			}
+			var stdout, stderr bytes.Buffer
+			err := storeProfile(te.env(&stdout, &stderr), te.configPath(), file, p, existing, secrets)
+			if !errors.Is(err, saveErr) || err == saveErr {
+				t.Fatal("rollback did not retain the save error and add failure context")
+			}
+			noSecrets(t, "rollback error and output", err.Error()+stdout.String()+stderr.String(), secrets.password, newHash, secrets.vkToken)
+			if existing {
+				if te.store.puts-puts != 2 || te.store.deletes-deletes != 1 {
+					t.Error("rollback stopped before attempting every secret restoration")
+				}
+			} else if te.store.deletes-deletes != 3 {
+				t.Error("rollback stopped before attempting every new secret deletion")
+			}
+			if !reflect.DeepEqual(file, before) || !reflect.DeepEqual(*p, original) {
+				t.Error("rollback errors prevented file/profile restoration")
+			}
+		})
+	}
+}
+
+func TestStoreProfileUnreadableBackupDoesNotWrite(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"locked", config.ErrKeyringLocked},
+		{"unavailable", errors.New("store unavailable")},
+		{"damaged value", errors.New("damaged secret")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			te := newTestEnv(t)
+			te.addHome()
+			file := loadTestFile(t, te)
+			before := loadTestFile(t, te)
+			p := file.Profiles["home"]
+			p.Peer = "198.51.100.20:46001"
+			secretsBefore := maps.Clone(te.store.values)
+			puts := te.store.puts
+			te.store.getErr = tc.err
+			te.saveProfile = func(string, *config.File) error {
+				t.Error("save was called without a readable secret backup")
+				return nil
+			}
+			var stdout, stderr bytes.Buffer
+			err := storeProfile(te.env(&stdout, &stderr), te.configPath(), file, p, true, profileSecrets{password: "replacement-password-test-only"})
+			if !errors.Is(err, tc.err) {
+				t.Fatal("storeProfile did not report the unreadable backup")
+			}
+			noSecrets(t, "backup error and output", err.Error()+stdout.String()+stderr.String(), "replacement-password-test-only")
+			if te.store.puts != puts || !maps.Equal(te.store.values, secretsBefore) || !reflect.DeepEqual(file, before) {
+				t.Error("unreadable backup changed the profile or secrets")
+			}
+		})
+	}
+}
+
+func TestStoreProfileDamagedIndexDoesNotWrite(t *testing.T) {
+	te := newTestEnv(t)
+	te.addHome()
+	file := loadTestFile(t, te)
+	before := loadTestFile(t, te)
+	values := maps.Clone(te.store.values)
+	puts := te.store.puts
+	if err := os.WriteFile(te.store.path, []byte("{"), 0o600); err != nil {
+		t.Fatal("cannot prepare damaged index")
+	}
+	te.saveProfile = func(string, *config.File) error {
+		t.Error("save was called with a damaged secret index")
+		return nil
+	}
+	var stdout, stderr bytes.Buffer
+	err := storeProfile(te.env(&stdout, &stderr), te.configPath(), file, file.Profiles["home"], true, profileSecrets{password: sealedPassword})
+	if err == nil {
+		t.Fatal("damaged index did not block the update")
+	}
+	noSecrets(t, "damaged index error and output", err.Error()+stdout.String()+stderr.String(), sealedPassword)
+	if te.store.puts != puts || !maps.Equal(te.store.values, values) || !reflect.DeepEqual(file, before) {
+		t.Error("damaged index allowed a profile or secret write")
+	}
+}
+
+func TestStoreProfileMissingIndexedValues(t *testing.T) {
+	for _, failSave := range []bool{false, true} {
+		name := "success"
+		if failSave {
+			name = "save failure"
+		}
+		t.Run(name, func(t *testing.T) {
+			te := newTestEnv(t)
+			te.addHome()
+			file := loadTestFile(t, te)
+			p := file.Profiles["home"]
+			ref, err := te.store.Put("home.vk_token", serverToken)
+			if err != nil {
+				t.Fatal("cannot prepare indexed token")
+			}
+			p.VkTokenRef = ref
+			if err := config.Save(te.configPath(), file); err != nil {
+				t.Fatal("cannot prepare indexed references")
+			}
+			// Model removal from the keyring without removal of the file index.
+			for _, ref := range []string{p.PasswordRef, p.VkHashesRef, p.VkTokenRef} {
+				delete(te.store.values, ref)
+			}
+			indexBefore, err := os.ReadFile(te.store.path)
+			if err != nil {
+				t.Fatal("cannot read original secret index")
+			}
+			old := *p
+			saveErr := errors.New("injected profile save failure")
+			called := false
+			if failSave {
+				te.saveProfile = func(string, *config.File) error {
+					called = true
+					return saveErr
+				}
+			}
+			secrets := profileSecrets{password: sealedPassword, hashes: []string{newHash}, vkToken: "replacement-token-test-only"}
+			var stdout, stderr bytes.Buffer
+			err = storeProfile(te.env(&stdout, &stderr), te.configPath(), file, p, true, secrets)
+			if failSave {
+				if !called || !errors.Is(err, saveErr) {
+					t.Fatal("missing indexed values blocked replacement before save")
+				}
+				noSecrets(t, "rollback error", err.Error(), sealedPassword, newHash, secrets.vkToken)
+				indexAfter, readErr := os.ReadFile(te.store.path)
+				if readErr != nil || !equalSecretIndex(indexBefore, indexAfter) || !reflect.DeepEqual(*p, old) {
+					t.Error("rollback lost indexed IDs or profile references")
+				}
+				for _, ref := range []string{old.PasswordRef, old.VkHashesRef, old.VkTokenRef} {
+					if _, err := te.store.Get(ref); !errors.Is(err, os.ErrNotExist) {
+						t.Error("rollback did not restore the absent indexed value")
+					}
+				}
+			} else if err != nil {
+				t.Fatal("storeProfile could not replace missing indexed values")
+			}
+			if !failSave {
+				for _, secret := range []struct{ ref, value string }{
+					{p.PasswordRef, secrets.password}, {p.VkHashesRef, newHash}, {p.VkTokenRef, secrets.vkToken},
+				} {
+					if got, err := te.store.Get(secret.ref); err != nil || got != secret.value {
+						t.Error("replacement of an indexed value was not saved")
+					}
+				}
+			}
+			noSecrets(t, "output", stdout.String()+stderr.String(), sealedPassword, newHash, secrets.vkToken)
+			if p.PasswordRef != old.PasswordRef || p.VkHashesRef != old.VkHashesRef || p.VkTokenRef != old.VkTokenRef {
+				t.Error("replacement changed stable indexed references")
+			}
+		})
+	}
+}
+
+func TestStoreProfileRollbackPreservesNamedDestinations(t *testing.T) {
+	for _, withProfile := range []bool{false, true} {
+		name := "no prior profile references"
+		if withProfile {
+			name = "references to other records"
+		}
+		t.Run(name, func(t *testing.T) {
+			te := newTestEnv(t)
+			store := config.NewSecretStoreFor(te.configPath())
+			owner := &config.Profile{Name: "home", Peer: "203.0.113.10"}
+			for _, secret := range []struct {
+				kind, value string
+				ref         *string
+			}{
+				{"password", testPassword, &owner.PasswordRef},
+				{"vk_hashes", testHashA, &owner.VkHashesRef},
+				{"vk_token", serverToken, &owner.VkTokenRef},
+			} {
+				ref, err := store.Put("home."+secret.kind, secret.value)
+				if err != nil {
+					t.Fatal("cannot prepare shared destination")
+				}
+				*secret.ref = ref
+			}
+			otherPath := filepath.Join(te.dir, "other.toml")
+			if err := config.Save(otherPath, &config.File{Profiles: map[string]*config.Profile{"home": owner}}); err != nil {
+				t.Fatal("cannot prepare other configuration")
+			}
+			otherBefore, err := os.ReadFile(otherPath)
+			if err != nil {
+				t.Fatal("cannot read other configuration")
+			}
+			file := &config.File{}
+			p := &config.Profile{Name: "home", Peer: "198.51.100.20:46001"}
+			var unrelatedRef string
+			if withProfile {
+				unrelatedRef, err = store.Put("other.password", sealedPassword)
+				if err != nil {
+					t.Fatal("cannot prepare unrelated record")
+				}
+				p.PasswordRef, p.VkHashesRef, p.VkTokenRef = unrelatedRef, unrelatedRef, unrelatedRef
+				file.Profiles = map[string]*config.Profile{"home": p}
+				if err := config.Save(te.configPath(), file); err != nil {
+					t.Fatal("cannot prepare original profile")
+				}
+			}
+			secrets := profileSecrets{password: "replacement-password-test-only", hashes: []string{newHash}, vkToken: "replacement-token-test-only"}
+			saveErr := errors.New("injected profile save failure")
+			called := false
+			te.saveProfile = func(string, *config.File) error {
+				called = true
+				if got, err := store.Get(owner.PasswordRef); err != nil || got != secrets.password {
+					t.Error("failure did not follow a write to the shared destination")
+				}
+				return saveErr
+			}
+			var stdout, stderr bytes.Buffer
+			e := te.env(&stdout, &stderr)
+			e.secretStore = func(string) config.SecretStore { return store }
+			err = storeProfile(e, te.configPath(), file, p, withProfile, secrets)
+			if !called || !errors.Is(err, saveErr) {
+				t.Fatal("storeProfile did not reach the injected save failure")
+			}
+			noSecrets(t, "rollback error and output", err.Error()+stdout.String()+stderr.String(), secrets.password, newHash, secrets.vkToken, serverToken, sealedPassword)
+			for _, secret := range []struct{ ref, value string }{
+				{owner.PasswordRef, testPassword}, {owner.VkHashesRef, testHashA}, {owner.VkTokenRef, serverToken},
+			} {
+				if got, err := store.Get(secret.ref); err != nil || got != secret.value {
+					t.Error("rollback damaged a shared destination or its stable reference")
+				}
+			}
+			if withProfile {
+				if got, err := store.Get(unrelatedRef); err != nil || got != sealedPassword {
+					t.Error("rollback changed the unrelated profile reference's value")
+				}
+			}
+			otherAfter, err := os.ReadFile(otherPath)
+			if err != nil || !bytes.Equal(otherBefore, otherAfter) {
+				t.Error("rollback changed the other configuration")
+			}
+		})
+	}
+}
+
+func TestProfileSetReplacesMissingSecrets(t *testing.T) {
+	for _, shared := range []bool{false, true} {
+		for _, failSave := range []bool{false, true} {
+			name := "missing destination"
+			if shared {
+				name = "shared destination with stale profile references"
+			}
+			if failSave {
+				name += "/save failure"
+			} else {
+				name += "/success"
+			}
+			t.Run(name, func(t *testing.T) {
+				te := newTestEnv(t)
+				store := config.NewSecretStoreFor(te.configPath())
+				passwordRef, err := store.Put("home.password", testPassword)
+				if err != nil {
+					t.Fatal("cannot prepare original password")
+				}
+				hashesRef, err := store.Put("home.vk_hashes", testHashA)
+				if err != nil {
+					t.Fatal("cannot prepare original hashes")
+				}
+				p := &config.Profile{Name: "home", Peer: "203.0.113.10", PasswordRef: passwordRef, VkHashesRef: hashesRef}
+				file := &config.File{Profiles: map[string]*config.Profile{"home": p}}
+				if shared {
+					scheme, _, _ := strings.Cut(passwordRef, ":")
+					p.PasswordRef, p.VkHashesRef = scheme+":missing-password", scheme+":missing-hashes"
+				} else {
+					for _, ref := range []string{p.PasswordRef, p.VkHashesRef} {
+						if err := store.Delete(ref); err != nil {
+							t.Fatal("cannot remove original secret")
+						}
+					}
+				}
+				if err := config.Save(te.configPath(), file); err != nil {
+					t.Fatal("cannot prepare stale references")
+				}
+				before := loadTestFile(t, te)
+				indexBefore, err := os.ReadFile(filepath.Join(te.dir, config.SecretsFileName))
+				if err != nil {
+					t.Fatal("cannot read original secret index")
+				}
+				saveErr := errors.New("injected profile save failure")
+				called := false
+				if failSave {
+					te.saveProfile = func(_ string, file *config.File) error {
+						called = true
+						if got, err := store.Get(file.Profiles["home"].PasswordRef); err != nil || got != sealedPassword {
+							t.Error("save failure did not follow replacement of a missing password")
+						}
+						return saveErr
+					}
+				}
+				te.asked = nil
+				te.answer(sealedPassword, sealedPassword, newHash)
+				var out, errOut bytes.Buffer
+				e := te.env(&out, &errOut)
+				e.secretStore = func(string) config.SecretStore { return store }
+				code := run(context.Background(), e, []string{"profile", "set", "home", "-peer", "198.51.100.20:46001", "-password", "-hashes", "-config", te.configPath()})
+				stdout, stderr := out.String(), errOut.String()
+				noSecrets(t, "stdout", stdout, sealedPassword, newHash)
+				noSecrets(t, "stderr", stderr, sealedPassword, newHash)
+				noSecrets(t, "prompts", strings.Join(te.asked, "\n"), sealedPassword, newHash)
+				if failSave {
+					if !called || code != exitError || !strings.Contains(stderr, saveErr.Error()) {
+						t.Error("missing secrets blocked replacement before the save failure")
+					}
+					indexAfter, err := os.ReadFile(filepath.Join(te.dir, config.SecretsFileName))
+					if !reflect.DeepEqual(loadTestFile(t, te), before) || err != nil || !equalSecretIndex(indexBefore, indexAfter) {
+						t.Error("rollback changed the missing secrets or shared destination")
+					}
+					if shared {
+						if got, err := store.Get(passwordRef); err != nil || got != testPassword {
+							t.Error("rollback damaged the shared password destination")
+						}
+						if got, err := store.Get(hashesRef); err != nil || got != testHashA {
+							t.Error("rollback damaged the shared hashes destination")
+						}
+					}
+					return
+				}
+				if code != exitOK {
+					t.Fatal("profile set could not replace missing secrets")
+				}
+				p = loadTestFile(t, te).Profiles["home"]
+				if p.Peer != "198.51.100.20:46001" || p.DeviceID != before.Profiles["home"].DeviceID {
+					t.Error("replacement of missing secrets changed preserved profile state")
+				}
+				if got, err := store.Get(p.PasswordRef); err != nil || got != sealedPassword {
+					t.Error("replacement password was not saved")
+				}
+				if got, err := store.Get(p.VkHashesRef); err != nil || got != newHash {
+					t.Error("replacement hashes were not saved")
+				}
+			})
+		}
+	}
+}
+
+func equalSecretIndex(before, after []byte) bool {
+	var original, current any
+	return json.Unmarshal(before, &original) == nil && json.Unmarshal(after, &current) == nil && reflect.DeepEqual(original, current)
 }
 
 func checkPasswordRejection(t *testing.T, text string) {
