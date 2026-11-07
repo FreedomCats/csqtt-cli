@@ -137,8 +137,8 @@ UDP shutdown correction within the [Small defects](../plan.md) stage; resume
   Go suite, `go build ./...`, and `go vet ./...` pass. Every test uses the required
   4 GiB/no-swap scope and timeout; browser tests also use Xvfb with `-noreset`.
 - The outcome explains the mechanism without private log contents and distinguishes
-  local evidence from pending hosted Linux/Windows and downstream CI checks. No
-  external write is performed under this task's current authorization.
+  local evidence from hosted Linux/Windows and downstream CI checks. A push or other
+  external write is performed only with the user's explicit authorization.
 
 ## Risks and limits
 
@@ -151,9 +151,8 @@ UDP shutdown correction within the [Small defects](../plan.md) stage; resume
 - The controlled regression confirms this narrow production correction. A wider
   TURN/transport redesign or a changed shutdown contract would require a separate
   task and replanning rather than extending this queue-lifecycle fix.
-- No credentials, live server, or user interaction are needed for local regressions.
-  Hosted validation and native Windows checks remain subject to available execution
-  and separately authorized external actions.
+- No credentials or live server are needed for local regressions. Hosted validation
+  requires separately authorized external actions.
 
 ## Outcome
 
@@ -213,7 +212,12 @@ connection to this shutdown correction was found, and the existing test was not
 changed or suppressed. No review finding required a code revision or was deferred
 because of implementation cost.
 
-Hosted Linux and Windows validation on the correction remains pending, including
-the hosted downstream license, real-core, container, and glibc steps skipped after
-the original Linux failure. Local results do not establish hosted or native Windows
-success. No push, workflow rerun/dispatch, or other external write was performed.
+After explicit user authorization, the prepared commits were pushed and both normal
+hosted workflows passed on implementation commit `cbeaad4`, without a rerun or dispatch.
+Linux passed Go build, vet, race tests, network-namespace tests, vendor verification,
+core build, and the full core suite (403 passed, none failed, 13 existing ignores).
+The original failing test and all four new regressions passed. The downstream license,
+real-core, direct-route container, and glibc checks also passed. Windows passed native
+Go build, vet, tests, vendor verification, core build and tests, and real-core checks.
+The hosted-validation gap is closed; the separately observed authenticated-flow
+instability remains recorded above.

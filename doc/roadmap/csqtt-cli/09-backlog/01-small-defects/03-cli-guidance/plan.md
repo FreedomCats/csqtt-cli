@@ -1,6 +1,7 @@
 ---
 kind: stage
-status: todo
+status: in-progress
+base: cbeaad4
 ---
 
 # CLI guidance
@@ -12,14 +13,17 @@ PowerShell input semantics: explain the ambiguity of server silence, avoid a mis
 administrator-rights note in the wizard, and document a pipe form for reading `-link` in
 PowerShell.
 
-## Candidates
+## Children
 
-- Mention that a wrong password can look like a silent server, rather than naming only
-  a core-version mismatch.
-- Do not say administrator rights are needed in the wizard when the process already has
-  them.
-- Show a PowerShell-compatible pipe form for supplying a share link to `profile add
-  -link` and `profile set -link`.
+1. [Server-silence hint](01-server-silence-hint/plan.md) — mention that a wrong password
+   can look like a silent server, rather than naming only a core-version mismatch.
+2. [Wizard privilege note](02-wizard-privilege-note/plan.md) — do not say administrator
+   rights are needed in the wizard when the process already has them.
+3. [PowerShell link help](03-powershell-link-help/plan.md) — show a PowerShell-compatible
+   pipe form for supplying a share link to `profile add -link` and `profile set -link`.
+
+These are independent changes with separate acceptance checks. Their numeric order is
+the execution order; none requires another child's implementation.
 
 ## Done when
 
