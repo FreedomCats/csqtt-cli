@@ -1,6 +1,6 @@
 ---
 kind: task
-status: in-progress
+status: done
 detailed: true
 ---
 
@@ -77,3 +77,28 @@ termination behavior, not how a live server handles an incorrect password. Do no
 add a password probe, retry, timeout change, or secret value to the diagnostic. No
 live credentials, platform-specific runtime check, or external action is required
 for this shared CLI-text change.
+
+## Outcome
+
+`silenceHint` now lists an incorrect connection password as a possible cause and
+shows `csqtt-cli profile set <profile> -password` for the selected profile. The
+replaced hint and its comment are in English and explicitly state that silence
+alone does not identify the cause. Core/CLI version guidance, released/development/
+missing CLI-version handling, address/port inspection, and server availability
+guidance are preserved.
+
+`TestConnectServerSilent` verifies the revised guidance, checks both output streams
+with `noSecrets`, and retains the error exit, core-stop, and no-reconnect assertions.
+`TestSilenceHint` covers released, development, and missing versions, including
+synthetic non-`home` profiles in both diagnostic commands. Detection, timeouts,
+connection handling, profile persistence, and the sibling hints are unchanged.
+
+Focused regressions, the complete CLI suite, `go build ./...`, and `go vet ./...`
+passed. Independent review repeated those checks and also passed the complete Go
+suite. All Go tests used the required memory limits; the full suite also used Xvfb.
+Formatting and `git diff --check` passed. Review found no defects, required no
+revisions, and identified no incidental old problems or cost-based deferrals.
+
+No live server or credentials were used. Fake-core tests establish presentation and
+termination behavior, not the cause of silence from a live server. Rust, real-core,
+and container checks were not repeated for this CLI-only change.

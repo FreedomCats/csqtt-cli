@@ -10,6 +10,7 @@ import (
 	"time"
 
 	csqttcli "github.com/FreedomCats/csqtt-cli"
+	"github.com/FreedomCats/csqtt-cli/internal/app"
 	"github.com/FreedomCats/csqtt-cli/internal/config"
 )
 
@@ -223,32 +224,62 @@ func TestConnectRoutingServer(t *testing.T) {
 	}
 }
 
-// Сервер молчит на первом подключении: VK выдал креды, а ответа нет — connect
-// останавливает ядро и выходит с ошибкой, версией ядра и причинами, без
-// повторов.
+// Silence on the first connection after VK credentials stops the core without
+// reconnecting. The error includes the core version and possible causes.
 func TestConnectServerSilent(t *testing.T) {
 	te := newTestEnv(t)
 	socksHome(t, te)
 	te.core = "silent"
 	te.serverSilence = 100 * time.Millisecond
 	code, stdout, stderr := te.run("connect", "-v")
+	noSecrets(t, "stdout", stdout)
+	noSecrets(t, "stderr", stderr)
 	if code != exitError {
-		t.Fatalf("код %d:\n%s\n%s", code, stdout, stderr)
+		t.Fatalf("exit code %d, want %d:\n%s\n%s", code, exitError, stdout, stderr)
 	}
 	for _, want := range []string{
 		"сервер CSQTT не отвечает", "VK выдал креды TURN",
-		"ядро csqtt-cli 1.2.3 — CSQTT " + csqttcli.CoreVersion, "сервер нужен той же версии",
-		"неверный адрес или порт", "csqtt-cli profile show home", "выключен или недоступен",
+		"Server silence alone does not identify the cause", "A CSQTT version mismatch is possible",
+		app.Name + " 1.2.3 uses CSQTT core " + csqttcli.CoreVersion, "server must use the same version",
+		"if the server is newer, use " + app.Name + " with the matching core", "if it is older, update the server",
+		"other possible causes: an incorrect connection password", app.Name + " profile set home -password",
+		"wrong server address or port", app.Name + " profile show home", "off or unreachable",
 	} {
 		if !strings.Contains(stderr, want) {
-			t.Errorf("нет %q:\n%s", want, stderr)
+			t.Errorf("stderr missing %q:\n%s", want, stderr)
 		}
 	}
 	if strings.Contains(stdout, "переподключение") {
-		t.Errorf("молчание на первом подключении повторяли:\n%s", stdout)
+		t.Errorf("reconnected after silence on the first connection:\n%s", stdout)
 	}
 	if !strings.Contains(stdout, "ядро остановилось") {
-		t.Errorf("ядру не послали STOP:\n%s", stdout)
+		t.Errorf("core was not stopped:\n%s", stdout)
+	}
+}
+
+func TestSilenceHint(t *testing.T) {
+	cases := []struct {
+		name, version, profile, cli string
+	}{
+		{"released", "1.2.3", "home", app.Name + " 1.2.3"},
+		{"development", "dev", "sample-profile", "this " + app.Name},
+		{"missing-version", "", "sample-alt", "this " + app.Name},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := silenceHint(c.profile, Build{Version: c.version})
+			for _, want := range []string{
+				"Server silence alone does not identify the cause", "A CSQTT version mismatch is possible",
+				c.cli + " uses CSQTT core " + csqttcli.CoreVersion, "server must use the same version",
+				"if the server is newer, use " + app.Name + " with the matching core", "if it is older, update the server",
+				"other possible causes: an incorrect connection password", app.Name + " profile set " + c.profile + " -password",
+				"wrong server address or port", app.Name + " profile show " + c.profile, "off or unreachable",
+			} {
+				if !strings.Contains(got, want) {
+					t.Errorf("silenceHint missing %q:\n%s", want, got)
+				}
+			}
+		})
 	}
 }
 

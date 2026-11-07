@@ -626,20 +626,21 @@ func rejectHint(message, profile string) string {
 	}
 }
 
-// silenceHint — что делать, когда сервер молчит на первом подключении
-// (*supervisor.ServerSilentError). Метки версии протокола у ядра нет, и сервер
-// другой версии не отказывает, а молчит — так же, как выключенный или
-// по неверному адресу; чаще всего дело в версии: сервер обновляют из
-// Android-приложения одной кнопкой.
+// silenceHint lists possible causes of silence on the first connection
+// (*supervisor.ServerSilentError). A version mismatch, an incorrect connection
+// password, a wrong address/port, and an unavailable server can look the same;
+// silence alone does not identify the cause.
 func silenceHint(profile string, build Build) string {
 	cli := app.Name + " " + build.Version
 	if build.Version == "" || build.Version == "dev" {
-		cli = "этого " + app.Name
+		cli = "this " + app.Name
 	}
-	return fmt.Sprintf("чаще всего это значит, что у сервера другая версия CSQTT: ядро %s — CSQTT %s, "+
-		"а сервер нужен той же версии (сервер новее — нужен %s с его версией ядра, старше — обновите сервер);\n"+
-		"  ещё возможно: неверный адрес или порт сервера в профиле (%s profile show %s), сервер выключен или недоступен",
-		cli, csqttcli.CoreVersion, app.Name, app.Name, profile)
+	return fmt.Sprintf("Server silence alone does not identify the cause. A CSQTT version mismatch is possible: "+
+		"%s uses CSQTT core %s, and the server must use the same version "+
+		"(if the server is newer, use %s with the matching core; if it is older, update the server);\n"+
+		"  other possible causes: an incorrect connection password (update it: %s profile set %s -password), "+
+		"a wrong server address or port in the profile (%s profile show %s), or a server that is off or unreachable",
+		cli, csqttcli.CoreVersion, app.Name, app.Name, profile, app.Name, profile)
 }
 
 // hashNumbers — «№1, №3».
