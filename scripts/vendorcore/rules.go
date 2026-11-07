@@ -47,6 +47,118 @@ var excludedFiles = []excludedFile{
 	{"rust-client/build_so.bat", "сборка библиотеки под Android: ядро собирает scripts/buildcore"},
 }
 
+const outboundCompletionCode = `struct OutboundState {
+    closed: bool,
+    pending: usize,
+}
+
+impl Default for OutboundState {
+    fn default() -> Self {
+        Self {
+            closed: false,
+            pending: 0,
+        }
+    }
+}
+
+#[derive(Default)]
+struct OutboundCompletion {
+    state: Mutex<OutboundState>,
+    changed: Notify,
+}
+
+impl OutboundCompletion {
+    fn close(&self) {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .closed = true;
+    }
+
+    fn pending(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .pending
+    }
+
+    fn complete(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.pending = state
+            .pending
+            .checked_sub(1)
+            .expect("outbound completion underflow");
+        drop(state);
+        self.changed.notify_one();
+    }
+}
+
+struct OutboundPacket {
+    packet: Option<PacketBuf>,
+    completion: Option<Arc<OutboundCompletion>>,
+}
+
+impl std::ops::Deref for OutboundPacket {
+    type Target = PacketBuf;
+
+    fn deref(&self) -> &Self::Target {
+        self.packet.as_ref().expect("outbound packet missing")
+    }
+}
+
+impl std::ops::DerefMut for OutboundPacket {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.packet.as_mut().expect("outbound packet missing")
+    }
+}
+
+impl Drop for OutboundPacket {
+    fn drop(&mut self) {
+        drop(self.packet.take());
+        if let Some(completion) = self.completion.take() {
+            completion.complete();
+        }
+    }
+}
+
+impl OutboundQueue {
+    fn try_enqueue(&self, packet: PacketBuf) -> Result<(), PacketBuf> {
+        let mut state = self
+            .completion
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.closed {
+            return Err(packet);
+        }
+
+        state.pending += 1;
+        let outbound = OutboundPacket {
+            packet: Some(packet),
+            completion: Some(self.completion.clone()),
+        };
+        match self.queue.push(outbound) {
+            Ok(()) => Ok(()),
+            Err(mut returned) => {
+                returned.completion.take();
+                state.pending -= 1;
+                Err(returned.packet.take().expect("outbound packet missing"))
+            }
+        }
+    }
+
+    fn discard_queued(&self) {
+        while let Some(packet) = self.queue.pop() {
+            self.space.notify_one();
+            drop(packet);
+        }
+    }
+}
+`
+
 // rule — замена в файле апстрима.
 //
 // Count проверяется: если апстрим перепишет строку и шаблон перестанет
@@ -283,6 +395,99 @@ var rules = []rule{
 		Pattern: `(?m)^( +)let socket = Arc::new\(UdpSocket::bind\(bind\)\.await\.context\("TURN UDP bind"\)\?\);$`,
 		Replace: to("${1}let socket = Arc::new(\n" +
 			"${1}    crate::bind_if::udp_socket(bind)\n${1}        .await\n${1}        .context(\"TURN UDP bind\")?,\n${1});"),
+	},
+	// UDP outbound accounting covers both queued and writer-owned packets.
+	{
+		File: "rust-client/turn.rs", Count: 1,
+		Pattern: `(?m)^( +)queue: ArrayQueue<PacketBuf>,$`,
+		Replace: to("${1}queue: ArrayQueue<OutboundPacket>,"),
+	},
+	{
+		File: "rust-client/turn.rs", Count: 1,
+		Pattern:     `(?m)^( +)socket: Arc<UdpSocket>,$`,
+		InsertAfter: "completion: Arc<OutboundCompletion>,\n${1}#[cfg(test)]\n${1}test_writer_gate: Mutex<Option<Arc<outbound_tests::WriterGate>>>,",
+	},
+	{
+		File: "rust-client/turn.rs", Count: 1,
+		Pattern:      `(?m)^()async fn outbound_writer_loop\(queue: Arc<OutboundQueue>\) \{$`,
+		InsertBefore: outboundCompletionCode,
+	},
+	{
+		File: "rust-client/turn.rs", Count: 1,
+		Pattern:     `(?m)^( +)socket: socket\.clone\(\),$`,
+		InsertAfter: "completion: Arc::new(OutboundCompletion::default()),\n${1}#[cfg(test)]\n${1}test_writer_gate: Mutex::new(None),",
+	},
+	{
+		File: "rust-client/turn.rs", Count: 1,
+		Pattern: `(?m)^( +)while let Some\(mut packet\) = queue\.queue\.pop\(\) \{\n( +)queue\.space\.notify_one\(\);$`,
+		Replace: to("${1}while let Some(mut packet) = queue.queue.pop() {\n${2}queue.space.notify_one();\n${2}#[cfg(test)]\n${2}let test_writer_gate = {\n${2}    queue\n${2}        .test_writer_gate\n${2}        .lock()\n${2}        .unwrap_or_else(|poisoned| poisoned.into_inner())\n${2}        .clone()\n${2}};\n${2}#[cfg(test)]\n${2}if let Some(gate) = test_writer_gate {\n${2}    gate.pause_after_pop().await;\n${2}}"),
+	},
+	{
+		File: "rust-client/turn.rs", Count: 3,
+		Pattern: `(?m)^( +)match queue\.queue\.push\(packet\) \{$`,
+		Replace: to("${1}match queue.try_enqueue(packet) {"),
+	},
+	{
+		File: "rust-client/turn.rs", Count: 1,
+		Pattern: `(?m)^            while !queue\.queue\.is_empty\(\) && Instant::now\(\) < flush_deadline \{\n                let remaining = flush_deadline\.saturating_duration_since\(Instant::now\(\)\);\n                let space = queue\.space\.notified\(\);\n                if queue\.queue\.is_empty\(\) \{\n                    break;\n                \}\n                let _ = tokio::time::timeout\(remaining, space\)\.await;\n            \}$`,
+		Replace: to("            queue.completion.close();\n            while Instant::now() < flush_deadline {\n                let remaining = flush_deadline.saturating_duration_since(Instant::now());\n                let completed = queue.completion.changed.notified();\n                tokio::pin!(completed);\n                completed.as_mut().enable();\n                if queue.completion.pending() == 0 {\n                    break;\n                }\n                if tokio::time::timeout(remaining, completed).await.is_err() {\n                    break;\n                }\n            }"),
+	},
+	{
+		File: "rust-client/turn.rs", Count: 1,
+		Pattern: `(?m)^        if let Some\(mut outbound_writer\) = outbound_writer\n            && tokio::time::timeout\(Duration::from_secs\(1\), &mut outbound_writer\)\n                \.await\n                \.is_err\(\)\n        \{\n            outbound_writer\.abort\(\);\n            let _ = outbound_writer\.await;\n        \}$`,
+		Replace: to("        if let Some(mut outbound_writer) = outbound_writer\n            && tokio::time::timeout(Duration::from_secs(1), &mut outbound_writer)\n                .await\n                .is_err()\n        {\n            outbound_writer.abort();\n            let _ = outbound_writer.await;\n        }\n        if let Some(queue) = &self.outbound_queue {\n            queue.discard_queued();\n        }"),
+	},
+	{
+		File: "rust-client/turn.rs", Count: 1,
+		Pattern: `(?m)^()#\[cfg\(test\)\]\n#\[path = "turn_integration_tests\.rs"\]\nmod integration_tests;$`,
+		Replace: to("#[cfg(test)]\n#[path = \"turn_integration_tests.rs\"]\npub(super) mod integration_tests;\n#[cfg(test)]\n#[path = \"turn_outbound_tests.rs\"]\nmod outbound_tests;"),
+	},
+	{
+		File: "rust-client/turn_integration_tests.rs", Count: 1,
+		Pattern: `(?m)^async fn connect\($`,
+		Replace: to("pub(super) async fn connect("),
+	},
+	{
+		File: "rust-client/turn_integration_tests.rs", Count: 1,
+		Pattern: `(?m)^#\[tokio::test\(flavor = "multi_thread", worker_threads = 2\)\]\nasync fn data_packets_preserve_channel_order_and_release_idle_pool_leases\(\) \{$`,
+		InsertBefore: "pub(super) async fn serve_outbound_test_flow(\n" +
+			"    server: Arc<UdpSocket>,\n" +
+			"    peer: SocketAddr,\n" +
+			"    relay: SocketAddr,\n" +
+			") -> Vec<Vec<u8>> {\n" +
+			"    let client = receive_challenged_allocate(&server, relay).await;\n" +
+			"    receive_create_permission(&server, client, peer).await;\n" +
+			"    let (channel_wire, channel_client) = recv_datagram(&server).await;\n" +
+			"    assert_eq!(channel_client, client);\n" +
+			"    let channel_request = assert_authenticated_request(&channel_wire, CHANNEL_BIND_REQUEST);\n" +
+			"    let channel = channel_number(&channel_request);\n" +
+			"    server\n" +
+			"        .send_to(\n" +
+			"            &empty_authenticated_success(CHANNEL_BIND_SUCCESS, channel_request.transaction()),\n" +
+			"            client,\n" +
+			"        )\n" +
+			"        .await\n" +
+			"        .unwrap();\n" +
+			"\n" +
+			"    let mut outbound = Vec::new();\n" +
+			"    loop {\n" +
+			"        let (wire, outbound_client) = recv_datagram(&server).await;\n" +
+			"        assert_eq!(outbound_client, client);\n" +
+			"        if let Some((received_channel, payload_length)) = channel_data_header(&wire) {\n" +
+			"            assert_eq!(received_channel, channel);\n" +
+			"            outbound.push(wire[4..4 + payload_length].to_vec());\n" +
+			"            continue;\n" +
+			"        }\n" +
+			"\n" +
+			"        let refresh = assert_authenticated_request(&wire, REFRESH_REQUEST);\n" +
+			"        assert_eq!(attribute_u32(&refresh, ATTR_LIFETIME), 0);\n" +
+			"        server\n" +
+			"            .send_to(&refresh_zero_success(refresh.transaction()), client)\n" +
+			"            .await\n" +
+			"            .unwrap();\n" +
+			"        return outbound;\n" +
+			"    }\n" +
+			"}\n",
 	},
 	// Точка 3 — TURN по TCP и TLS: привязка до connect.
 	{

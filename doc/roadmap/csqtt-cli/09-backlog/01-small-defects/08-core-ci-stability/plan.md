@@ -1,6 +1,6 @@
 ---
 kind: task
-status: in-progress
+status: done
 detailed: true
 ---
 
@@ -148,10 +148,72 @@ UDP shutdown correction within the [Small defects](../plan.md) stage; resume
 - The 250 ms flush is best-effort and does not promise remote receipt. Keep its
   expiry behavior; extending the deadline or adding a mock-server acknowledgement
   wait to the original test would conceal the identified race.
-- The existing log and source support this narrow production correction, but the
-  controlled regression has not yet been run. If it does not confirm the mechanism,
-  or fixing it requires a wider TURN/transport redesign or a changed shutdown contract,
-  stop and return the evidence to lead for replanning.
+- The controlled regression confirms this narrow production correction. A wider
+  TURN/transport redesign or a changed shutdown contract would require a separate
+  task and replanning rather than extending this queue-lifecycle fix.
 - No credentials, live server, or user interaction are needed for local regressions.
   Hosted validation and native Windows checks remain subject to available execution
   and separately authorized external actions.
+
+## Outcome
+
+The controlled regression confirmed the shutdown race in the actual UDP writer.
+After the last queued packet was popped and held by a per-allocation test gate,
+the old flush began cleanup before the writer could send it. The regression failed
+at that assertion before the production correction and passed afterward: releasing
+the writer delivered the data to the loopback mock before the authenticated
+zero-lifetime Refresh, and all packet-pool leases returned.
+
+The outbound queue now accounts for accepted packets until their send attempt or
+drop has finished and their lease has returned, including writer-held packets.
+Deallocation closes admission before waiting for that accounting to drain. Queue-space
+and send completion notifications are separate, and waits register before rechecking
+their condition. Cleanup retains the existing 250 ms best-effort flush budget and releases
+queued packets after forced shutdown. FIFO order, fast-path ownership, protocol,
+dependencies, supported platforms, and the upstream pin remain unchanged; this does
+not promise remote delivery.
+
+The correction and test-module connection are authored as counted vendor rules.
+The added Rust module is copied from `scripts/vendorcore/files/`; its gates compile
+out of production builds. The generated integration-test changes only expose and
+extend shared mock helpers for the new tests. The original ordering test's body,
+immediate deallocation, all outbound/inbound comparisons, pool assertions, and
+Refresh authentication/lifetime checks are unchanged. Four focused regressions
+cover the held packet, queued/held FIFO with async and fast sends, full-queue
+ownership return, encoding failure, and forced cleanup with held and queued leases.
+Vendor-rule tests exercise the actual substitutions and reject missing or duplicate
+anchors.
+
+Local validation completed:
+
+- The original exact-filter test passed all 30 declared consecutive runs, stopping
+  on failure rather than retrying. The nearby authenticated-flow and TCP transport
+  integration tests passed. The full core suite passed with 403 tests and 13
+  existing ignores, and the core build passed.
+- Regeneration twice produced identical generated-file checksums, and
+  `vendorcore -check` passed against a clean checkout of the pinned upstream commit.
+  Focused vendor/build-script tests and real-core `coreproc`/`supervisor` tests passed.
+- The full Go suite, race suite with enforced D-Bus coverage, ordinary and
+  CGO-disabled builds, and vet passed. Test invocations used the required 4 GiB,
+  no-swap scope and timeout; browser/full-suite runs also used Xvfb with `-noreset`.
+- Local equivalents of the downstream license check, network-namespace container
+  checks, and real-core direct-route checks with and without interface binding passed.
+  The built core's highest required glibc symbol was `GLIBC_2.34`, below the
+  `GLIBC_2.35` ceiling. Initial container attempts without a default route failed
+  during setup; rerunning with the workflow's network configuration passed.
+
+Independent review found no correctness or regression defects in the correction,
+vendor rules, shared mock extension, or original-test preservation. It independently
+passed the focused tests, core build, real-core checks, license check, vendor check,
+full Go and race suites, builds, and vet. Its first full core-suite run reported
+402 passed, one failed, and 13 ignored: the pre-existing authenticated-flow test
+timed out waiting for a UDP datagram/inbound packet. One diagnostic repeat reported
+403 passed, none failed, and 13 ignored. The first failure remains recorded; no
+connection to this shutdown correction was found, and the existing test was not
+changed or suppressed. No review finding required a code revision or was deferred
+because of implementation cost.
+
+Hosted Linux and Windows validation on the correction remains pending, including
+the hosted downstream license, real-core, container, and glibc steps skipped after
+the original Linux failure. Local results do not establish hosted or native Windows
+success. No push, workflow rerun/dispatch, or other external write was performed.

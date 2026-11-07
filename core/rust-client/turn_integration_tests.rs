@@ -369,7 +369,7 @@ async fn receive_create_permission(server: &UdpSocket, client: SocketAddr, peer:
         .unwrap();
 }
 
-async fn connect(
+pub(super) async fn connect(
     server: SocketAddr,
     peer: SocketAddr,
     pool: Arc<PacketPool>,
@@ -591,6 +591,45 @@ async fn authenticated_flow_survives_pool_deficit_and_keeps_channel_data_zero_co
         .unwrap();
     assert!((0x4000..=0x7fff).contains(&channel));
     assert_eq!(pool.available(), 1);
+}
+
+pub(super) async fn serve_outbound_test_flow(
+    server: Arc<UdpSocket>,
+    peer: SocketAddr,
+    relay: SocketAddr,
+) -> Vec<Vec<u8>> {
+    let client = receive_challenged_allocate(&server, relay).await;
+    receive_create_permission(&server, client, peer).await;
+    let (channel_wire, channel_client) = recv_datagram(&server).await;
+    assert_eq!(channel_client, client);
+    let channel_request = assert_authenticated_request(&channel_wire, CHANNEL_BIND_REQUEST);
+    let channel = channel_number(&channel_request);
+    server
+        .send_to(
+            &empty_authenticated_success(CHANNEL_BIND_SUCCESS, channel_request.transaction()),
+            client,
+        )
+        .await
+        .unwrap();
+
+    let mut outbound = Vec::new();
+    loop {
+        let (wire, outbound_client) = recv_datagram(&server).await;
+        assert_eq!(outbound_client, client);
+        if let Some((received_channel, payload_length)) = channel_data_header(&wire) {
+            assert_eq!(received_channel, channel);
+            outbound.push(wire[4..4 + payload_length].to_vec());
+            continue;
+        }
+
+        let refresh = assert_authenticated_request(&wire, REFRESH_REQUEST);
+        assert_eq!(attribute_u32(&refresh, ATTR_LIFETIME), 0);
+        server
+            .send_to(&refresh_zero_success(refresh.transaction()), client)
+            .await
+            .unwrap();
+        return outbound;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

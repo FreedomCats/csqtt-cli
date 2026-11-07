@@ -219,17 +219,143 @@ enum TurnOutbound {
 }
 
 struct OutboundQueue {
-    queue: ArrayQueue<PacketBuf>,
+    queue: ArrayQueue<OutboundPacket>,
     waiter: Notify,
     space: Notify,
     shared: Arc<DriverShared>,
     socket: Arc<UdpSocket>,
+    completion: Arc<OutboundCompletion>,
+    #[cfg(test)]
+    test_writer_gate: Mutex<Option<Arc<outbound_tests::WriterGate>>>,
+}
+
+struct OutboundState {
+    closed: bool,
+    pending: usize,
+}
+
+impl Default for OutboundState {
+    fn default() -> Self {
+        Self {
+            closed: false,
+            pending: 0,
+        }
+    }
+}
+
+#[derive(Default)]
+struct OutboundCompletion {
+    state: Mutex<OutboundState>,
+    changed: Notify,
+}
+
+impl OutboundCompletion {
+    fn close(&self) {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .closed = true;
+    }
+
+    fn pending(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .pending
+    }
+
+    fn complete(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.pending = state
+            .pending
+            .checked_sub(1)
+            .expect("outbound completion underflow");
+        drop(state);
+        self.changed.notify_one();
+    }
+}
+
+struct OutboundPacket {
+    packet: Option<PacketBuf>,
+    completion: Option<Arc<OutboundCompletion>>,
+}
+
+impl std::ops::Deref for OutboundPacket {
+    type Target = PacketBuf;
+
+    fn deref(&self) -> &Self::Target {
+        self.packet.as_ref().expect("outbound packet missing")
+    }
+}
+
+impl std::ops::DerefMut for OutboundPacket {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.packet.as_mut().expect("outbound packet missing")
+    }
+}
+
+impl Drop for OutboundPacket {
+    fn drop(&mut self) {
+        drop(self.packet.take());
+        if let Some(completion) = self.completion.take() {
+            completion.complete();
+        }
+    }
+}
+
+impl OutboundQueue {
+    fn try_enqueue(&self, packet: PacketBuf) -> Result<(), PacketBuf> {
+        let mut state = self
+            .completion
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.closed {
+            return Err(packet);
+        }
+
+        state.pending += 1;
+        let outbound = OutboundPacket {
+            packet: Some(packet),
+            completion: Some(self.completion.clone()),
+        };
+        match self.queue.push(outbound) {
+            Ok(()) => Ok(()),
+            Err(mut returned) => {
+                returned.completion.take();
+                state.pending -= 1;
+                Err(returned.packet.take().expect("outbound packet missing"))
+            }
+        }
+    }
+
+    fn discard_queued(&self) {
+        while let Some(packet) = self.queue.pop() {
+            self.space.notify_one();
+            drop(packet);
+        }
+    }
 }
 
 async fn outbound_writer_loop(queue: Arc<OutboundQueue>) {
     loop {
         while let Some(mut packet) = queue.queue.pop() {
             queue.space.notify_one();
+            #[cfg(test)]
+            let test_writer_gate = {
+                queue
+                    .test_writer_gate
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clone()
+            };
+            #[cfg(test)]
+            if let Some(gate) = test_writer_gate {
+                gate.pause_after_pop().await;
+            }
             if queue.shared.closing.load(Ordering::Acquire) {
                 drop(packet);
                 continue;
@@ -397,6 +523,9 @@ impl TurnAllocation {
                     space: Notify::new(),
                     shared: shared.clone(),
                     socket: socket.clone(),
+                    completion: Arc::new(OutboundCompletion::default()),
+                    #[cfg(test)]
+                    test_writer_gate: Mutex::new(None),
                 });
                 let writer_task = tokio::spawn(outbound_writer_loop(queue.clone()));
                 (Some(queue), Some(writer_task))
@@ -541,7 +670,7 @@ impl TurnAllocation {
             return Some(packet);
         }
         let mut packet = packet;
-        match queue.queue.push(packet) {
+        match queue.try_enqueue(packet) {
             Ok(()) => {
                 queue.waiter.notify_one();
                 None
@@ -567,7 +696,7 @@ impl TurnAllocation {
                     .context("TURN UDP outbound queue missing")?;
                 let mut packet = packet;
                 loop {
-                    match queue.queue.push(packet) {
+                    match queue.try_enqueue(packet) {
                         Ok(()) => {
                             queue.waiter.notify_one();
                             return Ok(());
@@ -586,7 +715,7 @@ impl TurnAllocation {
                         return Ok(());
                     }
                     let space = queue.space.notified();
-                    match queue.queue.push(packet) {
+                    match queue.try_enqueue(packet) {
                         Ok(()) => {
                             queue.waiter.notify_one();
                             return Ok(());
@@ -613,13 +742,18 @@ impl TurnAllocation {
         if let Some(queue) = &self.outbound_queue {
             queue.waiter.notify_one();
             let flush_deadline = Instant::now() + OUTBOUND_FLUSH_WAIT;
-            while !queue.queue.is_empty() && Instant::now() < flush_deadline {
+            queue.completion.close();
+            while Instant::now() < flush_deadline {
                 let remaining = flush_deadline.saturating_duration_since(Instant::now());
-                let space = queue.space.notified();
-                if queue.queue.is_empty() {
+                let completed = queue.completion.changed.notified();
+                tokio::pin!(completed);
+                completed.as_mut().enable();
+                if queue.completion.pending() == 0 {
                     break;
                 }
-                let _ = tokio::time::timeout(remaining, space).await;
+                if tokio::time::timeout(remaining, completed).await.is_err() {
+                    break;
+                }
             }
         }
         self.shared.request_cleanup();
@@ -638,6 +772,9 @@ impl TurnAllocation {
         {
             outbound_writer.abort();
             let _ = outbound_writer.await;
+        }
+        if let Some(queue) = &self.outbound_queue {
+            queue.discard_queued();
         }
         let _ = self.core.graceful_shutdown();
         let driver = self
@@ -1714,4 +1851,7 @@ mod tests {
 
 #[cfg(test)]
 #[path = "turn_integration_tests.rs"]
-mod integration_tests;
+pub(super) mod integration_tests;
+#[cfg(test)]
+#[path = "turn_outbound_tests.rs"]
+mod outbound_tests;
