@@ -205,7 +205,11 @@ VK (` + app.Name + ` vk login). Хеши из ссылки всё равно з�
 
 Остальные флаги задают поля профиля. Профиль с таким именем уже есть —
 отказ: меняет профиль ` + app.Name + ` profile set, новую ссылку берёт
-` + app.Name + ` profile set <имя> -link.`,
+` + app.Name + ` profile set <имя> -link.
+
+PowerShell: link.txt is a placeholder for a file already containing the link.
+Do not paste the link itself into a command. Read the file instead:
+  Get-Content -LiteralPath 'link.txt' -Encoding UTF8 | ` + app.Name + ` profile add home -link`,
 		run: runProfileAdd,
 	}
 }
@@ -367,7 +371,11 @@ stdin — следующей строкой); хешей нет — остают
 применяются как обычно. -peer, -password и -hashes вместе с -link не ставятся.
 
 Файл настроек переписывается целиком: комментарии, если они там были,
-не сохранятся.`,
+не сохранятся.
+
+PowerShell: link.txt is a placeholder for a file already containing the link.
+Do not paste the link itself into a command. Read the file instead:
+  Get-Content -LiteralPath 'link.txt' -Encoding UTF8 | ` + app.Name + ` profile set home -link`,
 		run: runProfileSet,
 	}
 }

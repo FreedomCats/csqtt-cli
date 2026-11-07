@@ -102,6 +102,59 @@ func TestSubcommandHelp(t *testing.T) {
 	}
 }
 
+func TestProfileLinkHelp(t *testing.T) {
+	cases := []struct {
+		subcommand      string
+		hiddenInput     string
+		missingPassword string
+	}{
+		{
+			subcommand:      "add",
+			hiddenInput:     "ссылка csqtt:// из панели сервера CSQTT читается скрытым вводом",
+			missingPassword: "пароля\nнет — тоже (из stdin — следующей строкой)",
+		},
+		{
+			subcommand:      "set",
+			hiddenInput:     "Ссылка читается скрытым вводом",
+			missingPassword: "Пароля в ссылке нет — он спрашивается (из\nstdin — следующей строкой)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.subcommand, func(t *testing.T) {
+			var firstHelp string
+			for _, helpFlag := range []string{"-h", "-help", "--help"} {
+				t.Run(helpFlag, func(t *testing.T) {
+					code, stdout, stderr := runCLI("profile", tc.subcommand, helpFlag)
+					if code != exitOK {
+						t.Errorf("exit code = %d, want %d", code, exitOK)
+					}
+					if stderr != "" {
+						t.Errorf("help wrote to stderr: %q", stderr)
+					}
+					if helpFlag == "-h" {
+						firstHelp = stdout
+					} else if stdout != firstHelp {
+						t.Error("help output differs from -h")
+					}
+					for _, want := range []string{
+						"PowerShell",
+						"Get-Content -LiteralPath 'link.txt' -Encoding UTF8 | csqtt-cli profile " + tc.subcommand + " home -link",
+						"link.txt is a placeholder for a file already containing the link",
+						"Do not paste the link itself into a command",
+						"csqtt-cli profile " + tc.subcommand + " home -link < файл",
+						tc.hiddenInput,
+						tc.missingPassword,
+					} {
+						if !strings.Contains(stdout, want) {
+							t.Errorf("help is missing %q", want)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
 // csqtt-cli help <команда> печатает то же, что и csqtt-cli <команда> -h.
 func TestHelpCommandMatchesHelpFlag(t *testing.T) {
 	for _, cmd := range commands() {

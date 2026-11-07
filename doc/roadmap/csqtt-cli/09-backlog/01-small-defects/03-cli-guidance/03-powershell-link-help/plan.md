@@ -1,6 +1,6 @@
 ---
 kind: task
-status: in-progress
+status: done
 detailed: true
 ---
 
@@ -214,3 +214,53 @@ only synthetic data in checks, never an inline share-link literal, `echo` exampl
 transcript, or failure message containing its value. Treat unexpected follow-up input
 or encoding failures as evidence to investigate, not permission to change prompt,
 newline, BOM, parsing, or storage semantics in this task.
+
+## Outcome
+
+Both `profile add` and `profile set` descriptions now append the English
+PowerShell file-to-stdin example using `Get-Content -LiteralPath 'link.txt'
+-Encoding UTF8` and the corresponding command. The text identifies `link.txt`
+as a placeholder for a file already containing the link and warns against pasting
+the link itself into a command. All existing description text, including POSIX
+redirection, hidden input, missing-field handling, token/manual transitions, and
+retained settings, is preserved. Flags, input, parsing, persistence, and help
+routing are unchanged.
+
+`TestProfileLinkHelp` covers both commands through `-h`, `-help`, and `--help`
+without a profile or secret-store fixture. It requires success, empty stderr,
+identical stdout for each command's three flags, the PowerShell and POSIX examples,
+and the existing hidden-input and next-stdin-line explanations. Existing top-level
+help parity remains covered. Focused help tests, the complete CLI suite,
+`go build ./...`, `go vet ./...`, formatting, and `git diff --check` passed in
+implementation and independent review. The reviewer also passed the complete Go
+suite with Xvfb. All Go tests used the required memory limits.
+
+The actual checked runtime was official portable PowerShell 7.6.9 (Core), from
+stable release `v7.6.9`. Before extraction or execution,
+`powershell-7.6.9-linux-x64.tar.gz` matched the unique exact-filename entry in
+that release's official `hashes.sha256`:
+
+```text
+1da6d6d6035d651f20e70ddee7c4c15ac6ab8b9fb40ee92240d91263f28a884b
+```
+
+Both documented pipelines and both subsequent `profile show` commands returned
+zero using complete synthetic links and an isolated temporary configuration and
+file-secret store. The peer changed, hash count changed from one to two, secret
+references were readable, no follow-up input was needed, and device identity and
+unrelated settings were retained. Every captured stream passed the synthetic-secret
+check before diagnostics. PowerShell and all CLI children shared the required
+4 GiB/no-swap scope and 600-second timeout; child environment isolation preceded
+the first runtime launch. Cleanup succeeded: the runtime, archive, checksum,
+CLI, harness sources, fixtures, captures, configuration, secrets, and runtime state
+were removed after child processes stopped.
+
+Independent review accepted the implementation, harness, and runtime evidence
+without findings or revisions, and independently confirmed absence of the temporary
+area and remaining verification processes or scopes. No incidental old problems
+or cost-based deferrals were identified. The portable Linux runtime observation
+does not establish native Windows, Windows PowerShell
+5.1, or Windows console behavior; those remain unverified. No runtime dependency
+or additional library was installed, and no real profile, credentials, server, or
+core process was used. Rust/core, container, and native Windows suites were not
+repeated for this help-only correction.
