@@ -1,6 +1,6 @@
 ---
 kind: task
-status: todo
+status: blocked
 ---
 
 # Network switch: live measurement and decision (W6)
@@ -17,6 +17,14 @@ laptop; a restart tears the tunnel down for seconds and drops every connection,
 
 The measurement breaks the network of the machine during the run — it needs the
 user's consent and a machine with two networks.
+
+## Blocked
+
+The live measurement has not been authorized. It requires the user to be present
+at a machine with Wi-Fi and cable (or another pair of switchable networks) and to
+accept intentional temporary interruptions of network traffic. No code or
+architecture decision should be changed until that measurement is authorized and
+completed.
 
 ## Steps
 
