@@ -1,6 +1,6 @@
 ---
 kind: stage
-status: in-progress
+status: done
 base: 234c430
 ---
 
@@ -120,3 +120,16 @@ public publication. `lead` owns notes, commits, pushes, tagging, and publication
 - The public v0.8.0 release contains the verified assets and accurate release notes.
 - The roadmap records the release result and any remaining verification limits;
   local journals, secrets, environment details, and work timestamps are not published.
+
+## Outcome
+
+Published v0.8.0 with the current patched CSQTT 2.5.0 core. Both normal CI workflows
+and the tag-push release workflow passed on the exact release commit. All three
+platform archives and `SHA256SUMS.txt` were downloaded, checksum-verified, accepted
+by `distcheck`, inspected, and matched to same-run core artifacts. Linux amd64
+CLI/core and QEMU ARM64 CLI smokes passed locally. A local ARM64 core smoke was not
+run because a matching runtime was unavailable; hosted ARM64 QEMU/glibc evidence
+passed. The Windows ZIP was inspected but not run locally; hosted native Windows
+checks passed. No live server was used. The public release notes record the scoped
+profile-save guarantees, remaining platform limits, and licensing. No migration to
+csqttr 2.5.3 occurred; the separate assessment is next.

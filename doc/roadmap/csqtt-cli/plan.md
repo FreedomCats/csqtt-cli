@@ -93,13 +93,13 @@ Items waiting for the user or for an external event: sending
 `doc/upstream-proposals.md` to the upstream author, whether to report the LaLune and
 FOCSQ vulnerabilities. The former core-release wait is superseded by stage 12.
 
-### 11. [Release v0.8.0 on the current core](11-release-080/plan.md) — in-progress
+### 11. [Release v0.8.0 on the current core](11-release-080/plan.md) — done
 
 Current priority: verify and publish the accumulated changes with the existing
 vendored CSQTT 2.5.0 core. The release includes the existing supported platforms;
 it does not enable new core features or require completion of unrelated backlog.
 
-### 12. [Assess csqttr 2.5.3](12-core-253-assessment/plan.md) — todo
+### 12. [Assess csqttr 2.5.3](12-core-253-assessment/plan.md) — in-progress
 
 After stage 11, verify the upstream maintenance transition and inspect
 `Afteroid/csqttr` 2.5.3 against the pinned core and local patches. Report benefits,

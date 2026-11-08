@@ -1,6 +1,6 @@
 ---
 kind: task
-status: in-progress
+status: done
 detailed: true
 depends: [01-release-readiness]
 ---
@@ -313,6 +313,43 @@ required by this task.
    outcome facts to `lead`, who updates the roadmap and commits documentation.
    Outcome-only commits after publication do not move the release tag. Stage 12
    remains a separate subsequent assessment.
+
+## Outcome
+
+Published public release [v0.8.0](https://github.com/FreedomCats/csqtt-cli/releases/tag/v0.8.0)
+on the existing patched CSQTT 2.5.0 core. The release tag points to the reviewed
+commit; the existing tag-push workflow built and uploaded the Windows amd64, Linux
+amd64, and Linux arm64 archives plus `SHA256SUMS.txt`. The published English notes
+describe the accepted user-visible changes, server/core compatibility, licensing,
+known profile-save limits, and actual verification boundaries.
+
+The exact-SHA Linux and Windows workflows and all release-workflow jobs passed on
+attempt 1. Independent review accepted the release-range preflight and the draft
+assets. Downloaded assets matched the original checksum manifest and same-run
+distribution output; `distcheck` passed, and all packaged cores matched the
+corresponding core artifacts. Linux amd64 CLI/core smoke checks passed locally;
+the static Linux arm64 CLI passed under QEMU. The arm64 core was not run locally
+because a matching runtime was unavailable; its hosted QEMU/glibc checks passed.
+The Windows ZIP was inspected but not executed locally; its core identity and
+hosted native checks passed. No live connection or credentials were used.
+
+The public release was read back after publication, and a fresh download of all
+four public assets passed `sha256sum -c`; the public checksum manifest was
+byte-identical to the accepted draft. No failed product check, retry, or rerun
+occurred. An initial local smoke wrapper had a zsh reserved-variable naming error;
+the corrected wrapper passed and the shell issue is recorded in the ignored journal.
+
+The release includes scoped rollback for profile save failures; it does not solve
+cross-process write/rollback races, the Secret Service snapshot/`Put` race, or the
+pre-existing possibility that a keyring `Put` changes a value before metadata
+persistence fails. These limitations are described in the release notes. The
+separately known authenticated-flow flake was not observed in this run and is not
+claimed to be fixed. No implementation issue was left unresolved due to cost.
+
+All publication and asset checks are complete. The tag remains on the reviewed
+release commit; subsequent roadmap outcome commits do not move it. Stage 12's
+separate csqttr 2.5.3 assessment is next; no core migration is authorized by this
+release.
 
 ## Done when
 

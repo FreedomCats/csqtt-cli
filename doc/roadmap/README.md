@@ -6,7 +6,7 @@ Development roadmaps of this project. Each map is a tree of stages and tasks in
 
 | Slug | Status | What it is |
 |---|---|---|
-| [csqtt-cli](csqtt-cli/plan.md) | in-progress | The main roadmap of the project; current priority: release v0.8.0 on core 2.5.0, then assess csqttr 2.5.3. |
+| [csqtt-cli](csqtt-cli/plan.md) | in-progress | The main roadmap of the project; v0.8.0 is published on core 2.5.0, and the next stage assesses csqttr 2.5.3. |
 
 Layout: `plan.md` is the node itself; child nodes are nested directories with their
 own `plan.md`, ordered by numeric prefixes. `journal.md` holds the working log and
