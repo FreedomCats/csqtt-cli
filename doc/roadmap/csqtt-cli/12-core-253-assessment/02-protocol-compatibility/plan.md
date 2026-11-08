@@ -3,7 +3,7 @@ kind: task
 status: in-progress
 detailed: true
 depends: [01-upstream-provenance]
-base: 0f1af1095a80269fac64b18d5ff5682890076a5b
+base: e82826598b03cb291060b3510e2bc2753419be44
 ---
 
 # Assess technical delta and shell impact
