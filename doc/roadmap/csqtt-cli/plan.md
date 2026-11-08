@@ -73,10 +73,11 @@ VK login in a window, token in secret storage, the core creating the VK call.
 Move the project onto this scheme: roadmap in `doc/`, rules in `AGENTS.md`, a
 compact continuation note, links from `README.md` and the architecture.
 
-### 8. [Network switch — measurement and decision](08-network-switch/plan.md) — todo
+### 8. [Network switch — measurement and decision](08-network-switch/plan.md) — dropped
 
-W6: a live measurement of Wi-Fi ↔ Ethernet switching, then the choice between
-`BIND_IF` and a restart of the core, recorded in §06 of the architecture.
+W6 was dropped because the required two-network environment is unavailable. The
+current `restart` default and hidden `bindif` diagnostic behavior remain unchanged;
+the architecture decision is not inferred from an unperformed measurement.
 
 ### 9. [Backlog](09-backlog/plan.md) — in-progress
 

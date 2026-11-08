@@ -1,6 +1,6 @@
 ---
 kind: task
-status: blocked
+status: dropped
 ---
 
 # Network switch: live measurement and decision (W6)
@@ -17,14 +17,6 @@ laptop; a restart tears the tunnel down for seconds and drops every connection,
 
 The measurement breaks the network of the machine during the run — it needs the
 user's consent and a machine with two networks.
-
-## Blocked
-
-The live measurement has not been authorized. It requires the user to be present
-at a machine with Wi-Fi and cable (or another pair of switchable networks) and to
-accept intentional temporary interruptions of network traffic. No code or
-architecture decision should be changed until that measurement is authorized and
-completed.
 
 ## Steps
 
@@ -61,4 +53,9 @@ completed.
 
 ## Outcome
 
-(filled in by the coordinator)
+The W6 live measurement is dropped because the required two-network environment is
+unavailable and will not be provided. No network-switching behavior was changed:
+`restart` remains the default and `bindif` remains a hidden diagnostic flag. The
+architecture decision in §06 remains open and must not be inferred from this task.
+Do not reopen or ask about this measurement unless the user explicitly changes the
+constraint.
