@@ -15,10 +15,11 @@ starts moving only after the user answers or the outside condition changes.
 
 ## Items waiting
 
-**Core 2.5.2.** The user decided to wait for the release in `Afteroid/csqttr` and to
-stay on upstream `d02da9b` (2.5.0) until then. When it is out: pin the commit, run
-`vendorcore`, `-check`, `cargo test` and a short live run; if the protocol changed,
-`README.md` names the new compatible server version. Background: journal
+**Core update assessment.** The former wait for core 2.5.2 is superseded by
+[stage 12](../12-core-253-assessment/plan.md): assess `Afteroid/csqttr` 2.5.3 after
+publishing v0.8.0 on the current core. The assessment must verify compatibility and
+the maintenance transition before recommending an update. No migration is approved
+by the assessment request; the current pin remains unchanged. Background: journal
 `doc/local/plan-core.md`.
 
 **Sending `doc/upstream-proposals.md` to the upstream author.** The document is

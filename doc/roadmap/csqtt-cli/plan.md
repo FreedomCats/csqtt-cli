@@ -89,6 +89,19 @@ over the remaining small defects; the other groups still await the user's choice
 
 ### 10. [Open decisions](10-open-decisions/plan.md) — blocked
 
-Items waiting for the user or for an external event: core 2.5.2, sending
+Items waiting for the user or for an external event: sending
 `doc/upstream-proposals.md` to the upstream author, whether to report the LaLune and
-FOCSQ vulnerabilities.
+FOCSQ vulnerabilities. The former core-release wait is superseded by stage 12.
+
+### 11. [Release v0.8.0 on the current core](11-release-080/plan.md) — in-progress
+
+Current priority: verify and publish the accumulated changes with the existing
+vendored CSQTT 2.5.0 core. The release includes the existing supported platforms;
+it does not enable new core features or require completion of unrelated backlog.
+
+### 12. [Assess csqttr 2.5.3](12-core-253-assessment/plan.md) — todo
+
+After stage 11, verify the upstream maintenance transition and inspect
+`Afteroid/csqttr` 2.5.3 against the pinned core and local patches. Report benefits,
+compatibility, licensing, migration effort, and a recommendation. An actual core
+migration requires a subsequent user decision.
