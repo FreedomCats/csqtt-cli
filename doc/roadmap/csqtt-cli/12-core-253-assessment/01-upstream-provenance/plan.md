@@ -1,6 +1,6 @@
 ---
 kind: task
-status: in-progress
+status: done
 detailed: true
 base: 848abbad205d3ff6ebb6774792336001bf77dd15
 ---
@@ -95,3 +95,36 @@ and the raw `LICENSE`, `rust-client/Cargo.toml`, `rust-server/Cargo.toml`, and
 - No user input is needed for this read-only source check. Any later change to the
   project's licence, supported platforms, protocol, or core pin remains outside this
   task and requires a separate user decision.
+
+## Outcome
+
+Primary GitHub records confirm that `amurcanov/csqtt` is archived and that
+`Afteroid/csqttr` is not archived but is not marked as a formal GitHub fork. The
+repositories do share history: the current 2.5.0 pinned commit is an ancestor of
+the assessed source. Repository activity and release history show maintenance work
+but do not guarantee future support.
+
+The `v2.5.3` tag resolves to
+`84a2ce84dd4ac0716ceabd1b9a9ae455e6e86806`. The GitHub Release points to the same
+commit, is mutable, and that commit is unsigned. The Release describes server
+version 2.5.3 and `CSQTT-WIRE-3`; at that exact source the Rust server manifest
+declares 2.5.3 while the Rust client manifest still declares 2.5.0. Its server
+provenance manifest names the same server version and wire revision and contains
+build-input and artifact hashes. These records do not independently prove that a
+published binary is reproducibly built from the source.
+
+At the assessed ref, the root `LICENSE` is PolyForm Noncommercial 1.0.0 and both
+Rust Cargo manifests declare `Unlicense`. This is the same metadata conflict
+already recorded for the pinned 2.5.0 source in architecture decision Р2. The
+project's existing treatment remains based on the upstream root LICENSE; this
+assessment neither changes that boundary nor makes a legal determination about
+the conflicting manifest declaration. No new license decision is required to
+continue this read-only assessment. Any proposed license-boundary change remains
+out of scope and requires a separate user decision.
+
+The local core pin and crate pin are unchanged. Only repository metadata, release,
+tag, commit, license, Cargo manifests, and server-provenance metadata were examined;
+implementation code was not read, and no build, test, or live check was run. The
+next task may perform a role-appropriate read-only technical comparison while
+respecting the established licensing boundary; no code executor is to be given
+third-party implementation source.
