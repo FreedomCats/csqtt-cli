@@ -1,6 +1,6 @@
 ---
 kind: task
-status: in-progress
+status: done
 detailed: true
 base: 96158ac3ddeb1fae9c1ef35c7c45280c1e89ddd0
 depends: [01-process-and-loopback-guards, 02-linux-tun-safeguards, 03-socket-binding-p3, 04-captcha-patches]
@@ -219,3 +219,51 @@ root-LICENSE treatment.
   unresolved labels and evidence gaps are valid findings. Any later test authorization
   must retain `doc/local/resume.md`'s memory/no-swap limits and timeout, with Xvfb and
   `-noreset` for window tests; those requirements do not authorize test execution here.
+
+## Outcome
+
+The ignored reconciliation record `doc/local/core-253-vendor-review.md` covers all
+59 rule identities exactly once, with 61 required matches distinguished from raw
+counts and unexecuted effective application. Eleven TURN entries are deduplicated
+between the P3 and runtime inventories. The two raw-zero P3 anchors depend on
+earlier P1 insertions; their expected later counts are static inferences. The
+candidate's ordinary TURN TCP anchor still mismatches, blocking intact carry and
+the following import rule. Passing runtime raw counts does not establish successful
+generation. P1-P5, defensive P7 and the UDP completion correction retain their
+accepted necessity; P6 remains already upstream at the baseline, without a rule.
+
+All nine local additions have their purpose, module/test wiring and absence of
+B/C Git or archive collisions recorded. Both exact Android exclusions remain
+present. New candidate files, including examples, a WSL script and the Gooby
+package, would enter through existing copy roots. Input/output ownership, LF and
+binary handling, extra files, ignored build output, pipeline order and current
+metadata counts are reconciled. The upstream URL is hard-coded, while the candidate
+client manifest still declares 2.5.0; a source migration needs explicit provenance
+adaptation rather than inferring client version from the release label.
+
+Both original lockfiles select the same checksum-verified connector archive,
+`primp-hyper-util` 0.1.22. Its retained inputs, validation constraints, module and
+connector rules, direct exact dependency, feature, transitive package path, path
+patch and local lock rewrite are consistent at both refs. No connector archive,
+manifest, lock or rule adaptation was identified. This is static evidence for the
+intended single connector package, not Cargo resolution or build success.
+
+After earlier blockers are repaired, the unchanged socket guard would encounter
+seven new unlisted lexical detections across five candidate files, including the
+production loopback proxy connection, copied examples and Git-vendored Gooby
+sources. Its example exclusions cover the configured connector crate, not every
+copied example. Neither a new table entry nor a loopback address establishes the
+proxy's external route or authorizes an exemption. The assignment's local Gooby
+patch label remains unresolved in the prescribed search scope, separately from
+the accepted candidate proxy path and its unknown external route.
+
+An independent non-coding reviewer reconstructed identities and counts and checked
+the new input, crate, dependency and guard assertions. Three small documentation
+corrections clarified entry/match units, fixture coverage and P2 evidence links.
+Existing tests were inspected, not run. No code, test, script, configuration, pin
+or generated core changed; no rules, generator, dependency resolution, build,
+browser/live check, external write or legal conclusion was produced. The ordered
+hypothetical migration work is ready for parent-stage acceptance and task 04
+synthesis. Preserve the existing system-DNS wording caveat and captcha contract
+limits. No real current-product correction was deferred because of cost; the
+patched 2.5.0 pin and separate migration decision remain unchanged.
