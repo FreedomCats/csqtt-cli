@@ -36,9 +36,8 @@ work order 16 → 14 → 15.
    blocked rather than being treated as passed.
 3. [Routing follow-ups](03-routing-follow-ups/plan.md) — assess and deliver the three
    collected tunnel-bypass follow-ups. The user chose this group with work order 16 →
-   14 → 15. Done when each candidate has an outcome and any implemented behaviour
-   passes its build and tests.
+   14 → 15; it is `done` (see its Outcome). Done when each candidate has an outcome and
+   any implemented behaviour passes its build and tests.
 
 The live-verification group remains blocked until the user chooses to start it and is
-present for the selected checks. The routing follow-ups are selected, with work order
-16 → 14 → 15.
+present for the selected checks. The routing follow-ups are `done`.

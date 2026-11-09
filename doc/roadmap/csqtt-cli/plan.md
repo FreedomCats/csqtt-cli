@@ -86,8 +86,9 @@ follow-ups of tunnel bypass routing, grouped into three child stages. The user s
 small defects first and authorized continuing in map order while skipping Windows-only
 work until verification is available. The core CI failure is fixed; the remaining
 small-defect nodes are Windows-only and stay skipped. The user next selected the
-routing follow-ups with work order 16 → 14 → 15, and the live-verification group still
-awaits the user's choice and presence.
+routing follow-ups with work order 16 → 14 → 15; they are `done` (П8 counters, П9
+`-tun-uds`, П10 failed-direct fallback). The live-verification group still awaits the
+user's choice and presence.
 
 ### 10. [Open decisions](10-open-decisions/plan.md) — blocked
 
