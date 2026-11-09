@@ -1,6 +1,6 @@
 ---
 kind: task
-status: todo
+status: done
 depends: [01-dependency-and-licence, 02-platform-constraints, 03-security-and-privacy]
 ---
 
@@ -22,6 +22,28 @@ bounded migration estimate grouped by already identified work/dependencies and
 later verification, explicit uncertainty and the user choices needed before any
 change. The assessment's existing scope, licence treatment and supported platforms
 remain fixed.
+
+## Outcome
+
+Published the sanitized assessment at
+[`doc/csqttr-2.5.3-assessment.md`](../../../../../csqttr-2.5.3-assessment.md).
+The recommendation is to defer migration and retain the patched 2.5.0 core in
+v0.8.0. The candidate's optional Gooby integration and additional diagnostic detail
+are potential investigation benefits, not established user-visible improvements
+for the current shell.
+
+The report traces source-level protocol compatibility separately from the direct
+process-contract blockers, required local patches, vendor carry problems, dependency
+and licence metadata, unverified target builds, and the conditional no-auth local
+SOCKS5 trust risk. It gives a dependency-ordered migration sequence without
+authorizing migration or choosing a new licence, dependency, feature, protocol, or
+platform policy. It preserves source/binary and local-send/remote-receipt limits.
+
+All three research children and their independent reviews are accepted. This
+documentation-only handoff ran no builds, tests, Cargo or vendor commands, binaries,
+live checks, or external actions. The root-LICENSE treatment, supported targets, and
+current core pin remain unchanged. No current-product correction was deferred
+because of cost.
 
 ## Done when
 
