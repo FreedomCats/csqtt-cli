@@ -84,8 +84,10 @@ the architecture decision is not inferred from an unperformed measurement.
 Small defects found while working, the 2.5.0 features never verified live, and
 follow-ups of tunnel bypass routing, grouped into three child stages. The user selected
 small defects first and authorized continuing in map order while skipping Windows-only
-work until verification is available. The reported core CI failure takes precedence
-over the remaining small defects; the other groups still await the user's choice.
+work until verification is available. The core CI failure is fixed; the remaining
+small-defect nodes are Windows-only and stay skipped. The user next selected the
+routing follow-ups with work order 16 → 14 → 15, and the live-verification group still
+awaits the user's choice and presence.
 
 ### 10. [Open decisions](10-open-decisions/plan.md) — blocked
 

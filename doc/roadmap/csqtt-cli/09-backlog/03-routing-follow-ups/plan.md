@@ -1,26 +1,29 @@
 ---
 kind: stage
-status: blocked
+status: in-progress
+base: 2c3dfec
 ---
 
 # Tunnel bypass routing follow-ups
 
-## Waiting for the user
+## Execution order
 
-The user must choose whether to start this group and select the order of its three
-routing candidates. Until then, do not change routing behavior or expand the scope.
+The user chose this group and its work order before work started: proposal 16, then
+proposal 14, then proposal 15. The numbers are the numbers of the candidates in
+`doc/upstream-proposals.md`; the order is a work order, not a priority claim.
 
 ## Goal
 
 Assess and deliver the tunnel-bypass routing follow-ups collected from
-`doc/upstream-proposals.md`. Preserve all three candidates; the user chooses their
-execution order before work starts.
+`doc/upstream-proposals.md`. Preserve all three candidates; their execution order is
+recorded above.
 
 ## Candidates
 
-- Direct traffic in Linux `tun` without workers — the core drops it.
-- Fall back into the tunnel when a direct connection fails.
-- A separate counter of direct traffic.
+- Separate direct-traffic counters (16) — direct traffic is counted together with
+  tunnel traffic; split it into its own fields.
+- Direct traffic in Linux `tun` without workers (14) — the core drops it.
+- Fall back into the tunnel when a direct connection fails (15).
 
 ## Done when
 

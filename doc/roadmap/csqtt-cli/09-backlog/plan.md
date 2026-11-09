@@ -12,7 +12,9 @@ tunnel bypass routing. The candidates are preserved in the three child stages be
 using the categories in which they were collected. Their numbering is structural, not
 a priority order. The user selected small defects first and authorized continuing
 through that group in map order, skipping Windows-only work until its verification is
-available. The reported core CI failure is the current priority within that group.
+available. The core CI failure was fixed in `08-core-ci-stability`; the remaining
+small-defect nodes are Windows-only. The user then selected the routing follow-ups with
+work order 16 → 14 → 15.
 
 ## Done when
 
@@ -33,10 +35,10 @@ available. The reported core CI failure is the current priority within that grou
    candidate has a recorded outcome; checks that cannot be performed remain explicitly
    blocked rather than being treated as passed.
 3. [Routing follow-ups](03-routing-follow-ups/plan.md) — assess and deliver the three
-   collected tunnel-bypass follow-ups. Blocked until the user chooses this group and
-   its candidate order. Done when each candidate has an outcome and any implemented
-   behaviour passes its build and tests.
+   collected tunnel-bypass follow-ups. The user chose this group with work order 16 →
+   14 → 15. Done when each candidate has an outcome and any implemented behaviour
+   passes its build and tests.
 
-The live-verification and routing-follow-up groups remain blocked until the user
-chooses which group to start. Live checks also require the user to choose the checks
-and be present; routing follow-ups require an explicit candidate order.
+The live-verification group remains blocked until the user chooses to start it and is
+present for the selected checks. The routing follow-ups are selected, with work order
+16 → 14 → 15.

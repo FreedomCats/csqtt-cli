@@ -10,8 +10,9 @@ base: cc183a4
 
 Resolve the small defects collected while working on the project. The user selected
 this group and authorized continuing in map order, skipping Windows-only work until
-its verification is available. The newly reported core CI failure takes precedence
-over the remaining candidates. The Chromium export candidate requires a patch to the
+its verification is available. The core CI failure was fixed in
+[Core CI stability](08-core-ci-stability/plan.md); the remaining children are
+Windows-only and stay skipped. The Chromium export candidate requires a patch to the
 `go-webview2` fork that the user pushes.
 
 ## Children
