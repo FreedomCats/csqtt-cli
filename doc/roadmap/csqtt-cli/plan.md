@@ -82,13 +82,15 @@ the architecture decision is not inferred from an unperformed measurement.
 ### 9. [Backlog](09-backlog/plan.md) — in-progress
 
 Small defects found while working, the 2.5.0 features never verified live, and
-follow-ups of tunnel bypass routing, grouped into three child stages. The user selected
-small defects first and authorized continuing in map order while skipping Windows-only
-work until verification is available. The core CI failure is fixed; the remaining
+follow-ups of tunnel bypass routing, grouped into child nodes. The user selected small
+defects first and authorized continuing in map order while skipping Windows-only work
+until verification is available. The core CI failure is fixed; the remaining
 small-defect nodes are Windows-only and stay skipped. The user next selected the
 routing follow-ups with work order 16 → 14 → 15; they are `done` (П8 counters, П9
-`-tun-uds`, П10 failed-direct fallback). The live-verification group still awaits the
-user's choice and presence.
+`-tun-uds`, П10 failed-direct fallback). Their acceptance found a pre-existing upstream
+`sync_domain_routing` defect that breaks established direct sessions on
+`UPDATE_DOMAINS`; the user chose to fix it, and it is the fourth child. The
+live-verification group still awaits the user's choice and presence.
 
 ### 10. [Open decisions](10-open-decisions/plan.md) — blocked
 
