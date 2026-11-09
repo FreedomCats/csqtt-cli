@@ -1,6 +1,6 @@
 ---
 kind: stage
-status: in-progress
+status: done
 base: 425bcaf
 ---
 
@@ -74,3 +74,41 @@ tasks below so each can be implemented and reviewed separately.
   short in tests rather than sleeping for minutes.
 - No live check is available in this work; a test can prove the emitted packet and the
   routing decision, but not what a particular browser does with the RST.
+
+## Outcome
+
+A failed or timed-out outer direct TCP connect is now visible and sticky. The relay
+records the stack's SYN-ACK sequence per flow at the egress and sends an
+application-facing RST with sequence `S+1` (flags exactly `0x04`) through the existing
+inbound channel; without the record within the 500 ms bounded wait it closes the flow
+without inventing a sequence. The destination IP is remembered for five minutes at the
+failure-handler entry, before the SYN-ACK wait and the reset, so a failure is remembered
+even when no RST is sent. New TCP SYNs to a remembered IP are rejected by `try_handle`
+before `evaluate_route` and go to the tunnel; `active_tcp` flows stay direct; UDP, DNS
+and routing decisions are unchanged. Expiry is exact against an injected instant and
+pruned by the existing 30-second task; the memory clears only when the whole routing
+configuration is disabled.
+
+The change is eleven plus five counted vendor rules and one extended added test file;
+`CORE_VERSION` ends at 128 files, 110 rules, 12 added. §07 carries a single `П10` row,
+proposal 15 a single Russian note, and the Part 2 introduction states that items 14–16
+are patched locally.
+
+Integrated acceptance over `425bcaf..c1710c4` found one issue and fixed it in `f4a792b`:
+the П9 direct-SYN regression assumed the SYN-ACK was the first inbound frame, but a
+failed outer connect can now add a RST earlier; the test now skips an optional RST and
+waits for `direct_bytes_down` at least the SYN-ACK length while keeping the exact uplink
+assertions. One finding was rejected as the recorded project risk: on a multithreaded
+runtime the RST can be queued before the SYN-ACK; a queue-marker redesign is out of
+scope. Full checks passed: `buildcore -test` 417/0/13, Rust `failure_tests` 7/7 and
+`direct_stats_tests` 6/6, generation idempotence with `-check`, build, vet, and the full
+Go suite under Xvfb.
+
+Real limitations, recorded rather than fixed: the memory is keyed by IP, so other sites
+on that address use the tunnel for five minutes; connections opened during the
+five-second attempt still go direct; a successful direct connect has no deterministic
+recording test (its absence is pinned structurally by the Go rule test); a pre-existing
+upstream `sync_domain_routing` behavior clears `active_tcp`/`udp_sessions` on
+`UPDATE_DOMAINS` when only IP routing is enabled, which breaks established flows and
+needs a separate backlog task. Live provider filtering and browser behavior remain
+unverified.
