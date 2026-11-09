@@ -1,9 +1,9 @@
 ---
 kind: task
-status: in-progress
+status: done
 detailed: true
 depends: [01-upstream-provenance]
-base: e82826598b03cb291060b3510e2bc2753419be44
+base: c0ded0414f9dc891667122f0ffc2e68b77a89ebb
 ---
 
 # Assess technical delta and shell impact
@@ -111,3 +111,38 @@ outside this task and ask a coordinator/reviewer to investigate it separately.
 - The task is source analysis only: it cannot establish compatibility with a
   deployed server or prove a published binary was built from the assessed source.
   No additional user input or live access is needed for this task.
+
+## Outcome
+
+The read-only evidence matrix is preserved in the ignored local assessment record.
+At immutable source commit `84a2ce84dd4ac0716ceabd1b9a9ae455e6e86806`, the checked
+client/server handshake and control-wire formats are compatible with the 2.5.0
+source baseline: the client protocol and shared wire definitions match, and the
+server accepts the current request fields and response forms. This is source-level
+compatibility only; whether a published or deployed server binary corresponds to
+that source remains unknown.
+
+The assessed client is not a drop-in replacement for the existing Go shell. Its
+startup contract lacks the shell's secret-stdin and peer-listener arguments, reads
+the password from an environment variable rather than the current `SECRETS:` stdin
+record, and expects link hashes by command-line argument. It also lacks the local
+`LISTEN` event that supplies the ephemeral UDP port to the Link. Direct substitution
+therefore fails before connection setup; removing flags alone would neither preserve
+the secret-input contract nor start loopback forwarding.
+
+The exact source also lacks the current P2 peer restriction. Without that filter, a
+local process able to reach and probe the loopback UDP socket can retarget subsequent
+downlink delivery; this is a local-process risk for Link/UDP datapaths, not evidence
+of remote exploitation or a TUN-FD issue. The source does not expose the shell's
+bind-interface/mark arguments; socket-by-socket P3 consequences are left to task 03.
+Stats fields remain compatible, but unchanged snapshots are emitted less often, so
+idle display values can remain stale longer. Diagnostics add endpoint/reason detail
+to verbose logs; no new password/token output was found in the reviewed paths.
+
+An independent fresh reviewer confirmed the wire, startup/secret, P2, stats, and
+diagnostic findings. A prior reviewer reached the context threshold before full
+review and was not resumed. Existing Go contract tests were inspected, not run;
+no build, live server, migration, or external client project was used. These are
+candidate-migration blockers, not defects in the currently pinned 2.5.0 product.
+No code issue was left unresolved due to cost. Task 03 must complete the local patch
+and socket-level P3 mapping before the assessment can recommend a migration path.
