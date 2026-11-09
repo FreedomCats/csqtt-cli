@@ -1,6 +1,6 @@
 ---
 kind: stage
-status: in-progress
+status: done
 base: 2353a19
 ---
 
@@ -84,3 +84,27 @@ child changes the other's layer, so each diff can be reviewed with its own check
 - The core and shell children are sequential (`02-shell-consumption` depends on
   `01-core-counters`); the counter contract is fixed before the shell tests are
   rewritten.
+
+## Outcome
+
+The `STATS` event is split by path and both layers are accepted together. The core
+emits `active`, `bytes_up`, `bytes_down`, `direct_up` and `direct_down`; the tunnel
+counters count only the tunnel, the direct counters only the bypass path, and each
+packet is credited once by the path that accepted it. Uplink attribution comes from the
+`dispatch` outcome; downlink is credited at the packet origin, so queue eviction and
+device-write failures no longer change the counters. The shell parses the new fields,
+shows direct traffic separately, and uses tunnel-only `bytes_down` for the supervisor's
+`NETWORK_SUSPECT`; the old `direct`/`directRule` workaround is gone.
+
+The core changes exist as 33 counted vendor rules and two added files; regeneration from
+the pinned `d02da9b` is idempotent and `vendorcore -check` passes. `CORE_VERSION` now
+records 126 files, 92 rules and 10 added files. Architecture §04, §07 (`П8`) and §09 and
+the Russian notes to proposal 16 are updated.
+
+Integration acceptance over `2353a19..5d50703` found no findings: the event contract
+matches on both sides, the paired real-core tests pass, and the full Go suite under Xvfb
+and the memory scope, `buildcore -test` (409 passed, 0 failed, 13 ignored), the Rust
+regressions and `vendorcore -check` are green. Known limits, recorded rather than fixed:
+a fragment set lost to buffer exhaustion still counts as tunnel uplink (pre-existing);
+downlink counts queue-accepted, not device-delivered, bytes; mixed shell/core versions
+are not supported; live routing checks remain for the user-selected live verification.
