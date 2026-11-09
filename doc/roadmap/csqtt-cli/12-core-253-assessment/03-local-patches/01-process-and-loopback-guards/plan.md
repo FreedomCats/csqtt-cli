@@ -1,6 +1,6 @@
 ---
 kind: task
-status: in-progress
+status: done
 detailed: true
 base: 00c3e4849732b5fef0d240876a792d58ea48d67b
 ---
@@ -75,3 +75,27 @@ structure to an executor.
 - Do not conflate loopback sender filtering with Linux TUN-FD descriptor ownership.
 - The existing root-LICENSE treatment remains unchanged; this task does not determine
   legal compatibility or approve migration.
+
+## Outcome
+
+The ignored evidence matrix records all five P1 and twelve P2 vendor rules. Each
+rule requires one anchor match, and every anchor occurs once in both the pinned
+2.5.0 source and assessed 2.5.3 source. Anchor presence does not mean upstream
+implements the local behavior. The added secret-stdin and peer-gate modules are
+absent upstream at both refs; P1 hash validation also remains argument-based
+upstream while the shell's local contract supplies its hashes through the initial
+stdin record. Classification: P1 remains needed for password and hash input.
+
+P2's peer restriction and `LISTEN` port event also remain local requirements for
+Link/UDP. Without the peer gate, a local process able to reach the loopback socket
+can retarget subsequent downlink delivery; this does not apply to Linux TUN-FD and
+is not evidence of remote exploitation or unrelated traffic exposure. The shell
+uses `LISTEN` to set the Link destination port. Classification: P2 remains needed
+for Link/UDP; P6 remains excluded because its behavior is already upstream at the
+2.5.0 baseline and has no carried rule.
+
+Local consumers and existing contract tests were inspected but not run. No code,
+vendor command, build, live check, migration, or external write was performed.
+These are hypothetical migration blockers, not defects in the current pinned
+product. No current-product issue was left unresolved due to cost. The P4/P6 Linux
+TUN-FD assessment is separate and is next.
