@@ -439,17 +439,16 @@ func TestDegradedRecovers(t *testing.T) {
 	}
 }
 
-// С маршрутизацией мимо туннеля (профиль) подозрение на сеть принятым
-// трафиком не снимается: его растят и прямые соединения. Выводит из
-// деградации только новый воркер.
-func TestDegradedDirectRoutingNeedsReady(t *testing.T) {
+// С маршрутизацией мимо туннеля (профиль) подозрение на сеть снимает рост
+// принятого из туннеля: с П8 bytes_down считает только туннель, прямой
+// трафик ядро отдаёт отдельно (direct_down), и он подозрение не снимает.
+func TestDegradedDirectRoutingClearedByTunnelTraffic(t *testing.T) {
 	h := newHarness(t, Options{DegradedRestart: time.Hour, Config: coreproc.Config{TemplateDomains: true}},
 		join(recConnect, []string{
 			`__CSQTT_EVENT__|STATS|{"active":2,"bytes_down":500,"bytes_up":100}`,
 			`__CSQTT_EVENT__|NETWORK_SUSPECT|{}`,
-			`__CSQTT_EVENT__|STATS|{"active":2,"bytes_down":800,"bytes_up":900}`,
-			`__CSQTT_EVENT__|STATS|{"active":2,"bytes_down":9000,"bytes_up":1900}`,
-			`__CSQTT_EVENT__|READY|{"worker":5}`,
+			`__CSQTT_EVENT__|STATS|{"active":2,"bytes_down":500,"bytes_up":900,"direct_down":9000}`,
+			`__CSQTT_EVENT__|STATS|{"active":2,"bytes_down":800,"bytes_up":900,"direct_down":9000}`,
 			"wait never",
 		}))
 	done := h.run()
@@ -460,7 +459,10 @@ func TestDegradedDirectRoutingNeedsReady(t *testing.T) {
 	if err := h.result(done); err != nil {
 		t.Fatalf("Run() = %v", err)
 	}
-	wantUp := []coreproc.Message{coreproc.ReadyEvent{Worker: 1}, coreproc.ReadyEvent{Worker: 5}}
+	wantUp := []coreproc.Message{
+		coreproc.ReadyEvent{Worker: 1},
+		coreproc.StatsEvent{Active: 2, BytesUp: 900, BytesDown: 800, DirectDown: 9000},
+	}
 	if got := h.triggered(StateConnected); !slices.Equal(got, wantUp) {
 		t.Errorf("в «работает» вели %v, ожидались %v", got, wantUp)
 	}

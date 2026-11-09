@@ -85,7 +85,7 @@ func TestVerboseOnlyDetails(t *testing.T) {
 		coreproc.CaptchaRequest{Mode: "auto"},
 		coreproc.StoppedEvent{},
 		coreproc.ConfigEvent{Address: netip.MustParseAddr("192.0.2.2"), DNS: []netip.Addr{netip.MustParseAddr("198.51.100.53")}},
-		coreproc.StatsEvent{Active: 9, BytesUp: 10, BytesDown: 20},
+		coreproc.StatsEvent{Active: 9, BytesUp: 10, BytesDown: 20, DirectUp: 1024, DirectDown: 2048},
 		coreproc.WorkersEvent{Limit: 0},
 		coreproc.TunLostEvent{},
 		coreproc.DTLSEvent{Worker: 2, Message: "DTLS-хендшейк успешен (ECDSA P-256)"},
@@ -111,7 +111,7 @@ func TestVerboseOnlyDetails(t *testing.T) {
 		"ошибка turn: таймаут\n",
 		"капчу, режим auto\n",
 		"192.0.2.2, DNS 198.51.100.53\n",
-		"воркеров на линии 9, отправлено 10 Б, получено 20 Б\n",
+		"воркеров на линии 9, отправлено 10 Б, получено 20 Б, напрямую отправлено 1.0 КиБ, получено 2.0 КиБ\n",
 		"[SOCKS] CONNECT example.com:443: отказ\n",
 		"ядро: у сервера нет лимита воркеров для этого пароля\n",
 		"ядро: потерян дескриптор адаптера (TUN_LOST)\n",
@@ -484,6 +484,43 @@ func TestStatusModelRender(t *testing.T) {
 	m.stats(coreproc.StatsEvent{Active: 9, BytesUp: 1024}, clock.now())
 	if got := m.render(clock.now()); !strings.Contains(got, "↑ 5.0 КиБ ↓ 4.0 МиБ ·") {
 		t.Errorf("трафик сеанса: %q", got)
+	}
+}
+
+// Прямой трафик — отдельными счётчиками (П8): в строке состояния он виден,
+// только когда он есть, и копится по попыткам, как туннельный.
+func TestStatusDirectTraffic(t *testing.T) {
+	clock := newClock()
+	var m statusModel
+	m.moved(supervisor.Transition{From: supervisor.StateIdle, To: supervisor.StateStarting}, clock.now())
+	m.moved(supervisor.Transition{From: supervisor.StateStarting, To: supervisor.StateConnected}, clock.now())
+	m.stats(coreproc.StatsEvent{Active: 1, BytesUp: 100, BytesDown: 200}, clock.now())
+	if got := m.render(clock.now()); strings.Contains(got, "прямо") {
+		t.Errorf("нулевой прямой трафик показан: %q", got)
+	}
+	// Довольно и одного ненулевого счётчика.
+	m.stats(coreproc.StatsEvent{Active: 1, BytesUp: 100, BytesDown: 200, DirectDown: 512}, clock.now())
+	if got := m.render(clock.now()); !strings.Contains(got, "прямо ↑ 0 Б ↓ 512 Б") {
+		t.Errorf("только принятый прямой трафик: %q", got)
+	}
+	m.stats(coreproc.StatsEvent{Active: 1, BytesUp: 100, BytesDown: 200, DirectUp: 512}, clock.now())
+	if got := m.render(clock.now()); !strings.Contains(got, "прямо ↑ 512 Б ↓ 0 Б") {
+		t.Errorf("только отправленный прямой трафик: %q", got)
+	}
+	clock.advance(time.Second)
+	m.stats(coreproc.StatsEvent{Active: 1, BytesUp: 100, BytesDown: 200, DirectUp: 64, DirectDown: 512}, clock.now())
+	if got, want := m.render(clock.now()),
+		"туннель работает · 1с · воркеров 1 · ↑ 100 Б ↓ 200 Б · прямо ↑ 64 Б ↓ 512 Б"; got != want {
+		t.Errorf("прямой трафик: %q, ожидалось %q", got, want)
+	}
+
+	// Новая попытка: ядро считает заново, сеанс — нет.
+	m.moved(supervisor.Transition{From: supervisor.StateConnected, To: supervisor.StateReconnecting}, clock.now())
+	m.moved(supervisor.Transition{From: supervisor.StateReconnecting, To: supervisor.StateStarting}, clock.now())
+	m.moved(supervisor.Transition{From: supervisor.StateStarting, To: supervisor.StateConnected}, clock.now())
+	m.stats(coreproc.StatsEvent{Active: 1, BytesUp: 10, BytesDown: 20, DirectUp: 10, DirectDown: 20}, clock.now())
+	if got := m.render(clock.now()); !strings.Contains(got, "прямо ↑ 74 Б ↓ 532 Б") {
+		t.Errorf("прямой трафик прошлой попытки потерян: %q", got)
 	}
 }
 

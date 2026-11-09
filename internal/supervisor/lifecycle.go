@@ -416,7 +416,6 @@ func NewTunnel(opts Options) (*Tunnel, error) {
 	}
 	path := opts.CorePath
 	machine := New()
-	machine.direct = opts.Config.DirectRouting()
 	t := &Tunnel{
 		opts:    opts,
 		machine: machine,
@@ -1090,9 +1089,6 @@ func (a *attempt) routing(e coreproc.RoutingEvent) {
 		return
 	}
 	a.routingSent = update.Command
-	if update.Direct() {
-		a.tunnel.machine.RuleDirect()
-	}
 }
 
 // moved — побочные действия перехода: сброс задержек и таймер деградации.

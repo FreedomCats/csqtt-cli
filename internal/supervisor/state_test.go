@@ -140,68 +140,42 @@ func TestDrain(t *testing.T) {
 	}
 }
 
-// Подозрение на сеть снимает рост принятого трафика — без маршрутизации
-// мимо туннеля. С ней STATS считает и прямой трафик, и снять подозрение может
-// только новый воркер (READY).
+// Подозрение на сеть снимает рост принятого из туннеля — с маршрутизацией
+// мимо туннеля или без неё: STATS считает туннель и прямой трафик раздельно
+// (П8/§09).
 func TestSuspectClearedByTraffic(t *testing.T) {
-	for _, direct := range []bool{false, true} {
-		m := connected(t)
-		m.direct = direct
-		m.Observe(coreproc.StatsEvent{Active: 2, BytesDown: 500})
-		if tr, moved := m.Observe(coreproc.NetworkSuspectEvent{}); !moved || tr.Cause != ErrNetworkSuspect {
-			t.Fatalf("direct=%v: подозрение не увело в деградацию: %+v", direct, tr)
-		}
-		// Воркеры числятся, отправленное растёт, принятое — нет.
-		if _, moved := m.Observe(coreproc.StatsEvent{Active: 2, BytesUp: 900, BytesDown: 500}); moved {
-			t.Errorf("direct=%v: подозрение сняла отправка", direct)
-		}
-		tr, moved := m.Observe(coreproc.StatsEvent{Active: 2, BytesUp: 900, BytesDown: 800})
-		if direct {
-			if moved || m.State() != StateDegraded {
-				t.Errorf("direct: подозрение снял рост принятого (%+v), состояние %s", tr, m.State())
-			}
-			if tr, moved := m.Observe(coreproc.ReadyEvent{Worker: 5}); !moved || tr.To != StateConnected {
-				t.Errorf("direct: READY не вывел из деградации: %+v", tr)
-			}
-			continue
-		}
-		if !moved || tr.To != StateConnected {
-			t.Errorf("рост принятого не вывел из деградации: %+v", tr)
-		}
+	m := connected(t)
+	m.Observe(coreproc.StatsEvent{Active: 2, BytesDown: 500})
+	if tr, moved := m.Observe(coreproc.NetworkSuspectEvent{}); !moved || tr.Cause != ErrNetworkSuspect {
+		t.Fatalf("подозрение не увело в деградацию: %+v", tr)
+	}
+	// Воркеры числятся, отправленное и прямой трафик растут, туннельное
+	// принятое — нет.
+	if _, moved := m.Observe(coreproc.StatsEvent{Active: 2, BytesUp: 900, BytesDown: 500,
+		DirectUp: 100, DirectDown: 9000}); moved {
+		t.Error("подозрение сняли отправка или прямой трафик")
+	}
+	if tr, moved := m.Observe(coreproc.StatsEvent{Active: 2, BytesUp: 900, BytesDown: 800,
+		DirectDown: 9000}); !moved || tr.To != StateConnected {
+		t.Errorf("рост принятого из туннеля не вывел из деградации: %+v", tr)
+	}
+
+	// READY снимает подозрение, как и раньше: упавших воркеров ядро
+	// переподключает само.
+	m.Observe(coreproc.NetworkSuspectEvent{})
+	if tr, moved := m.Observe(coreproc.ReadyEvent{Worker: 5}); !moved || tr.To != StateConnected {
+		t.Errorf("READY не вывел из деградации: %+v", tr)
 	}
 }
 
-// Правило сервера (RuleDirect) действует, как direct, до конца попытки: новое
-// ядро начинает с настроек профиля, и рост принятого снова снимает
-// подозрение.
-func TestRuleDirectEndsWithAttempt(t *testing.T) {
+// Живых воркеров нет — STATS с воркерами по-прежнему знак, что они
+// вернулись; раздельные счётчики прямого трафика на это не влияют (П8).
+func TestNoWorkersRecoversByStats(t *testing.T) {
 	m := connected(t)
-	m.RuleDirect()
-	m.Observe(coreproc.NetworkSuspectEvent{})
-	if _, moved := m.Observe(coreproc.StatsEvent{Active: 2, BytesDown: 800}); moved {
-		t.Fatal("при правиле сервера подозрение снял рост принятого")
-	}
-	m.Reconnect(nil, 0)
-	m.BeginAttempt()
-	m.Observe(evCredentials)
-	m.Observe(evConfig)
-	m.Observe(evReady)
-	m.DatapathUp()
-	m.Observe(coreproc.NetworkSuspectEvent{})
-	if tr, moved := m.Observe(coreproc.StatsEvent{Active: 2, BytesDown: 800}); !moved || tr.To != StateConnected {
-		t.Errorf("в новой попытке рост принятого не снял подозрение: %+v", tr)
-	}
-}
-
-// Маршрутизация мимо туннеля не мешает выйти из деградации без воркеров:
-// STATS с воркерами — по-прежнему знак, что они вернулись.
-func TestDirectNoWorkersRecoversByStats(t *testing.T) {
-	m := connected(t)
-	m.direct = true
 	if tr, moved := m.Observe(coreproc.ActiveZeroEvent{}); !moved || tr.Cause != ErrNoWorkers {
 		t.Fatalf("ACTIVE_ZERO: %+v", tr)
 	}
-	if tr, moved := m.Observe(coreproc.StatsEvent{Active: 1}); !moved || tr.To != StateConnected {
+	if tr, moved := m.Observe(coreproc.StatsEvent{Active: 1, DirectDown: 9000}); !moved || tr.To != StateConnected {
 		t.Errorf("STATS с воркером: %+v", tr)
 	}
 }

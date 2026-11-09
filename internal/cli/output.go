@@ -422,8 +422,9 @@ func (p *printer) message(m coreproc.Message) {
 	case coreproc.StatsEvent:
 		p.model.stats(m, p.now())
 		if p.verbose {
-			p.lineLocked(fmt.Sprintf("воркеров на линии %d, отправлено %s, получено %s",
-				m.Active, formatBytes(m.BytesUp), formatBytes(m.BytesDown)))
+			p.lineLocked(fmt.Sprintf("воркеров на линии %d, отправлено %s, получено %s, напрямую отправлено %s, получено %s",
+				m.Active, formatBytes(m.BytesUp), formatBytes(m.BytesDown),
+				formatBytes(m.DirectUp), formatBytes(m.DirectDown)))
 		} else if p.status != nil && !p.status.paused {
 			p.drawStatus()
 		}
@@ -748,11 +749,14 @@ type statusModel struct {
 	workers      int
 	workersTotal int
 
-	// up и down — счётчики текущей попытки: ядро считает с запуска, а
-	// запуск у каждой попытки свой, поэтому прошлые попытки копятся в
-	// upBefore и downBefore.
-	up, down             int64
-	upBefore, downBefore int64
+	// up и down — счётчики туннеля текущей попытки: ядро считает с запуска,
+	// а запуск у каждой попытки свой, поэтому прошлые попытки копятся в
+	// upBefore и downBefore. directUp и directDown — прямой трафик, отдельно
+	// от туннельного (П8), копятся так же.
+	up, down                         int64
+	upBefore, downBefore             int64
+	directUp, directDown             int64
+	directUpBefore, directDownBefore int64
 	// statsAt — когда пришёл последний STATS; rateUp и rateDown — скорость
 	// между двумя последними, байт в секунду.
 	statsAt          time.Time
@@ -774,6 +778,9 @@ func (m *statusModel) moved(tr supervisor.Transition, now time.Time) {
 		m.upBefore += m.up
 		m.downBefore += m.down
 		m.up, m.down = 0, 0
+		m.directUpBefore += m.directUp
+		m.directDownBefore += m.directDown
+		m.directUp, m.directDown = 0, 0
 		m.statsAt = time.Time{}
 		m.rateUp, m.rateDown = 0, 0
 	case supervisor.StateConnected:
@@ -798,6 +805,7 @@ func (m *statusModel) stats(e coreproc.StatsEvent, now time.Time) {
 	m.statsAt = now
 	m.workers = e.Active
 	m.up, m.down = e.BytesUp, e.BytesDown
+	m.directUp, m.directDown = e.DirectUp, e.DirectDown
 }
 
 func rate(delta int64, seconds float64) float64 {
@@ -832,6 +840,12 @@ func (m *statusModel) render(now time.Time) string {
 		parts = append(parts, fmt.Sprintf("↑ %s%s ↓ %s%s",
 			formatBytes(m.upBefore+m.up), formatRate(m.rateUp),
 			formatBytes(m.downBefore+m.down), formatRate(m.rateDown)))
+		// Прямой трафик — только когда он есть: без маршрутизации мимо
+		// туннеля его нет, и лишняя часть в строке не нужна.
+		if m.directUpBefore+m.directUp > 0 || m.directDownBefore+m.directDown > 0 {
+			parts = append(parts, fmt.Sprintf("прямо ↑ %s ↓ %s",
+				formatBytes(m.directUpBefore+m.directUp), formatBytes(m.directDownBefore+m.directDown)))
+		}
 	default:
 		if !m.since.IsZero() {
 			parts = append(parts, formatDuration(now.Sub(m.since)))

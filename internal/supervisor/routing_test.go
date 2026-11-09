@@ -131,10 +131,11 @@ func TestServerRoutingRevertsToProfile(t *testing.T) {
 	}
 }
 
-// Правило, пускающее трафик мимо туннеля, — как маршрутизация из профиля:
-// подозрение на сеть снимает только READY, не рост принятого. Правило без
-// прямого трафика этого не меняет.
-func TestServerRoutingDirectNeedsReady(t *testing.T) {
+// Правило, пускающее трафик мимо туннеля, подозрение на сеть не удерживает:
+// с П8 bytes_down считает только туннель, и его рост снимает подозрение, а
+// рост только прямого трафика (direct_down) — нет. Правило без прямого
+// трафика ведёт себя так же.
+func TestServerRoutingDirectClearedByTunnelTraffic(t *testing.T) {
 	for _, tc := range []struct {
 		rule   string
 		direct bool
@@ -149,11 +150,18 @@ func TestServerRoutingDirectNeedsReady(t *testing.T) {
 		script = append(script,
 			`__CSQTT_EVENT__|STATS|{"active":2,"bytes_down":500,"bytes_up":100}`,
 			`__CSQTT_EVENT__|NETWORK_SUSPECT|{}`,
-			`__CSQTT_EVENT__|STATS|{"active":2,"bytes_down":9000,"bytes_up":900}`,
+			// Растёт только прямой трафик — подозрение остаётся.
+			`__CSQTT_EVENT__|STATS|{"active":2,"bytes_down":500,"bytes_up":900,"direct_down":9000}`,
+			`__CSQTT_EVENT__|STATS|{"active":2,"bytes_down":9000,"bytes_up":900,"direct_down":9000}`,
+			// И новый воркер снимает подозрение, как раньше.
+			`__CSQTT_EVENT__|NETWORK_SUSPECT|{}`,
+			`__CSQTT_EVENT__|STATS|{"active":2,"bytes_down":9000,"bytes_up":900,"direct_down":90000}`,
 			`__CSQTT_EVENT__|READY|{"worker":5}`,
 			"wait never")
 		h := newHarness(t, Options{DegradedRestart: 3600e9, Config: coreproc.Config{ServerRouting: true}}, script)
 		done := h.run()
+		h.waitState(StateConnected)
+		h.waitState(StateDegraded)
 		h.waitState(StateConnected)
 		h.waitState(StateDegraded)
 		h.waitState(StateConnected)
@@ -162,9 +170,10 @@ func TestServerRoutingDirectNeedsReady(t *testing.T) {
 			t.Fatalf("Run() = %v", err)
 		}
 		got := h.triggered(StateConnected)
-		want := []coreproc.Message{coreproc.ReadyEvent{Worker: 1}, coreproc.StatsEvent{Active: 2, BytesUp: 900, BytesDown: 9000}}
-		if tc.direct {
-			want[1] = coreproc.ReadyEvent{Worker: 5}
+		want := []coreproc.Message{
+			coreproc.ReadyEvent{Worker: 1},
+			coreproc.StatsEvent{Active: 2, BytesUp: 900, BytesDown: 9000, DirectDown: 9000},
+			coreproc.ReadyEvent{Worker: 5},
 		}
 		if !slices.Equal(got, want) {
 			t.Errorf("правило %s: в «работает» вели %v, ожидались %v", tc.rule, got, want)

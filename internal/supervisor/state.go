@@ -38,8 +38,9 @@ const (
 	// StateDegraded — туннель был поднят, но живых воркеров нет или ядро
 	// заподозрило сеть (ACTIVE_ZERO, NETWORK_SUSPECT). Воркеров ядро
 	// переподключает само; затянется — цикл перезапустит ядро. Подозрение на
-	// сеть снимает новый воркер или, без маршрутизации мимо туннеля, рост
-	// принятого трафика.
+	// сеть снимает новый воркер или рост принятого из туннеля трафика:
+	// bytes_down считает только туннель, прямой трафик ядро отдаёт отдельно
+	// (direct_up/direct_down, П8/§09).
 	StateDegraded State = "degraded"
 	// StateReconnecting — попытка кончилась, ядро вышло, следующая попытка
 	// ждёт своей задержки.
@@ -113,20 +114,11 @@ type Machine struct {
 	mu    sync.Mutex
 	state State
 
-	// direct — ядро пускает часть трафика мимо туннеля
-	// (coreproc.Config.DirectRouting), и принятое напрямую STATS считает
-	// вместе с принятым из туннеля. Задаёт NewTunnel, на весь Run.
-	direct bool
-	// directRule — то же по правилу сервера, посланному ядру этой попытки
-	// (RuleDirect); BeginAttempt снимает: новое ядро начинает с настроек
-	// профиля.
-	directRule bool
-
 	// Что известно о текущей попытке; BeginAttempt обнуляет.
 	datapathUp bool  // datapath поднят по первому TUNCONF
 	workers    int   // живых воркеров: READY прибавляет, STATS и ACTIVE_ZERO уточняют
 	suspect    bool  // NETWORK_SUSPECT, и с тех пор ни нового воркера, ни трафика
-	bytesDown  int64 // принято ядром, по последнему STATS; при direct — и напрямую
+	bytesDown  int64 // принято из туннеля, по последнему STATS (direct_down — отдельно)
 	suspectAt  int64 // bytesDown на момент NETWORK_SUSPECT
 	draining   bool  // ядру послан Stop: попытка доживает (Drain)
 }
@@ -163,19 +155,8 @@ func (m *Machine) BeginAttempt() (Transition, bool) {
 		return Transition{}, false
 	}
 	m.datapathUp, m.workers, m.suspect, m.bytesDown, m.suspectAt = false, 0, false, 0, 0
-	m.draining, m.directRule = false, false
+	m.draining = false
 	return m.set(StateStarting, nil)
-}
-
-// RuleDirect отмечает, что ядру этой попытки послано правило сервера,
-// пускающее часть трафика мимо туннеля: подозрение на сеть с этих пор, как
-// при direct, снимает только READY. До конца попытки, даже если следующее
-// правило маршрутизацию выключит: ответы уже открытых прямых соединений
-// могут ещё идти.
-func (m *Machine) RuleDirect() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.directRule = true
 }
 
 // Drain отмечает, что ядру послан Stop и попытка доживает: ядро закрывает
@@ -219,11 +200,11 @@ func (m *Machine) Observe(msg coreproc.Message) (Transition, bool) {
 	case coreproc.StatsEvent:
 		m.workers = e.Active
 		m.bytesDown = e.BytesDown
-		// Трафик после подозрения — знак, что сеть вернулась. Но не при
-		// direct: ответы прямых соединений ядро считает туда же, и они
-		// идут, когда туннель мёртв. Тогда подозрение снимает только
-		// READY — воркеры, упавшие по таймаутам, ядро переподключает само.
-		if m.suspect && !m.direct && !m.directRule && e.Active > 0 && e.BytesDown > m.suspectAt {
+		// Трафик после подозрения — знак, что сеть вернулась. bytes_down
+		// считает только туннель, прямой трафик ядро отдаёт отдельно
+		// (direct_up/direct_down, П8/§09): рост мимо туннеля о том, жив ли
+		// туннель, ничего не говорит.
+		if m.suspect && e.Active > 0 && e.BytesDown > m.suspectAt {
 			m.suspect = false
 		}
 	case coreproc.ActiveZeroEvent:

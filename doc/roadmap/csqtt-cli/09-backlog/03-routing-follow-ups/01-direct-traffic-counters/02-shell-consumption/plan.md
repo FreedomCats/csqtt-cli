@@ -1,6 +1,6 @@
 ---
 kind: task
-status: todo
+status: done
 detailed: true
 depends: [01-core-counters]
 ---
@@ -53,8 +53,10 @@ while growth of only direct traffic cannot.
 5. Record the shell-side behavior in §09 of `doc/architecture.md` (Russian): remove
    the statement that `bytes_down` counts direct replies and that accepted traffic
    cannot end `Degraded` under routing bypass; say that tunnel downlink growth clears
-   the suspicion and direct traffic does not. Keep the §04/§07 changes in the core
-   task.
+   the suspicion and direct traffic does not. Also correct the sentence in item 16 of
+   `doc/upstream-proposals.md` that says a suspicion is cleared only by `READY`; after
+   this task the shell uses tunnel downlink growth. Keep the §04/§07 changes in the
+   core task.
 
 6. Validate. Every Go test and test binary runs in the mandatory scope; window tests
    additionally use Xvfb with `-noreset`. From the repository root:
@@ -85,7 +87,8 @@ while growth of only direct traffic cannot.
   routing bypass is active; growth of only `DirectDown` does not clear it. The
   supervisor state, lifecycle and routing test sets pass.
 - §09 of `doc/architecture.md` no longer says that `bytes_down` includes direct
-  replies or that accepted traffic is ignored under routing bypass.
+  replies or that accepted traffic is ignored under routing bypass, and item 16 of
+  `doc/upstream-proposals.md` no longer says a suspicion is cleared only by `READY`.
 - `go build ./...`, `go vet ./...`, the focused coreproc/CLI/supervisor tests, the
   real-core `coreproc`/`supervisor` tests and the full Go suite with Xvfb pass under
   the mandatory 4 GiB/no-swap scope. No core file or vendor rule is edited.
@@ -105,3 +108,49 @@ while growth of only direct traffic cannot.
   make the quiet path print an empty or zero direct section.
 - The §09 text is edited in Russian because that document is Russian; do not
   retranslate the document.
+
+## Outcome
+
+The shell consumes the split `STATS` counters. `coreproc.StatsEvent` parses
+`direct_up`/`direct_down`; an event from an older core leaves them zero. The status line
+adds a `прямо ↑ … ↓ …` part only when the session's direct total is non-zero, so the
+quiet path is unchanged; the verbose `STATS` line carries both paths
+(`…, отправлено … получено …, напрямую отправлено … получено …`). Direct counters roll
+into the previous-attempt totals in `moved` exactly like the tunnel ones.
+
+The supervisor no longer needs the routing-bypass workaround: the `direct`/`directRule`
+fields, `RuleDirect` and the guard are gone, and a growing tunnel `BytesDown` with
+workers present clears `NETWORK_SUSPECT` again. Growth of only `DirectDown` does not
+clear it; `READY` still does. `MayRouteDirect`, `ErrDirectUnbound` and the bind-if
+requirement are unchanged.
+
+§09 of `doc/architecture.md` now says that tunnel downlink growth clears a suspicion
+under routing bypass and direct traffic does not; item 16 of
+`doc/upstream-proposals.md` puts the old only-`READY` behavior in the past and records
+that the shell consumes the fields.
+
+Tests: the parser covers both new keys and the old-core shape; the display covers the
+zero/quiet path, only `DirectUp`, only `DirectDown`, both counters and the per-attempt
+carry-over; the supervisor state, lifecycle and routing tests assert tunnel growth
+versus direct-only growth versus `READY`. `go build ./...`, `go vet ./...`, the focused
+coreproc/CLI/supervisor tests, the real-core tests (11 pass) and the full suite under
+Xvfb pass in the mandatory scope. One full-suite run failed in `internal/captcha`
+(`TestBrowserLoginNetFilter`, no browser connections under Xvfb); the isolated rerun
+and a second full run passed, so it is recorded as an incidental Xvfb browser flake,
+not a defect of this change. No core file or vendor rule is edited.
+
+Decisions taken while working, which the diff alone does not show:
+
+- the verbose line extends the existing `отправлено`/`получено` wording with
+  `напрямую отправлено … получено …` instead of introducing new vocabulary;
+- `coreproc.RoutingUpdate.Direct()` stays: it no longer has a caller in the supervisor,
+  but its removal is outside this task and its own tests still cover it;
+- `TestRuleDirectEndsWithAttempt` was removed together with the machine's rule flag;
+  its server-rule equivalent is exercised through the lifecycle harness in
+  `routing_test.go`.
+
+Deferred: mixed core and shell versions remain unsupported (a new shell with an old
+core still sees mixed `bytes_down`), and there is no live routing verification in this
+task — both are planned limits of the stage. The next tasks of the group — direct
+traffic in `-tun-uds` without workers and the failed-direct fallback — follow in map
+order and are not started here.

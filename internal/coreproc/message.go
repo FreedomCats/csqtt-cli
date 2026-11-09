@@ -34,10 +34,15 @@ type (
 	ReadyEvent struct {
 		Worker int `json:"worker"`
 	}
+	// StatsEvent — счётчики ядра (STATS). Туннельные bytes_up/bytes_down и
+	// прямые direct_up/direct_down считаются раздельно (правка П8); ядро до
+	// неё прямых полей не шлёт, и они остаются нулями.
 	StatsEvent struct {
-		Active    int   `json:"active"`
-		BytesUp   int64 `json:"bytes_up"`
-		BytesDown int64 `json:"bytes_down"`
+		Active     int   `json:"active"`
+		BytesUp    int64 `json:"bytes_up"`
+		BytesDown  int64 `json:"bytes_down"`
+		DirectUp   int64 `json:"direct_up"`
+		DirectDown int64 `json:"direct_down"`
 	}
 	// ActiveZeroEvent — живых воркеров не осталось.
 	ActiveZeroEvent struct{}

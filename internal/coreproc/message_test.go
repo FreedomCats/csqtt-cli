@@ -21,7 +21,12 @@ var sampleOutput = []struct {
 		DNS:     []netip.Addr{netip.MustParseAddr("198.51.100.53"), netip.MustParseAddr("198.51.100.54")},
 	}},
 	{`__CSQTT_EVENT__|READY|{"worker":3}`, ReadyEvent{Worker: 3}},
-	{`__CSQTT_EVENT__|STATS|{"active":18,"bytes_down":2048,"bytes_up":1024}`, StatsEvent{Active: 18, BytesUp: 1024, BytesDown: 2048}},
+	// Новое ядро: прямой трафик отдельными счётчиками (правка П8).
+	{`__CSQTT_EVENT__|STATS|{"active":18,"bytes_down":2048,"bytes_up":1024,"direct_down":512,"direct_up":64}`,
+		StatsEvent{Active: 18, BytesUp: 1024, BytesDown: 2048, DirectUp: 64, DirectDown: 512}},
+	// Ядро до П8: прямых полей нет — нули.
+	{`__CSQTT_EVENT__|STATS|{"active":18,"bytes_down":2048,"bytes_up":1024}`,
+		StatsEvent{Active: 18, BytesUp: 1024, BytesDown: 2048}},
 	{`__CSQTT_EVENT__|PROGRESS|{"kind":"credentials"}`, ProgressEvent{Kind: "credentials"}},
 	{`__CSQTT_EVENT__|ACTIVE_ZERO|{}`, ActiveZeroEvent{}},
 	{`__CSQTT_EVENT__|NETWORK_SUSPECT|{}`, NetworkSuspectEvent{}},
