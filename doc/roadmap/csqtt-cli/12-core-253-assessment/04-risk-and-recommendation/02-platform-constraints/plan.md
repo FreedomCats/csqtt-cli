@@ -1,6 +1,6 @@
 ---
 kind: task
-status: in-progress
+status: done
 detailed: true
 base: dbc2805885d326a8a19f0ada71a00911005f216a
 depends: [01-dependency-and-licence]
@@ -58,3 +58,24 @@ of the result.
 - The parent's read-only boundary and future-only test constraints are preserved;
   no build, test, resolver/vendor/notice command, binary execution, download,
   platform decision or external write is performed.
+
+## Outcome
+
+The ignored source-based matrix at `doc/local/core-253-platform-review.md` compares
+all three current release targets against exact baseline B and candidate C metadata
+and the separately patched 2.5.0 product. Candidate C adds unconditional vendored
+LuaJIT and bundled SQLite build inputs. Existing target mappings and build workflows
+provide bounded feasibility context, not candidate support evidence. No candidate
+blocker was demonstrated from the permitted metadata; successful native compilation,
+arm64 cross-build compatibility, CRT/runtime linkage, GLIBC ceiling, and final
+packaged native composition remain unknown pending separately authorized target
+verification.
+
+Independent non-coding review reconstructed the three rows. It corrected the arm64
+`AR_<target>` classification to cross-ar, narrowed the README citation, and required
+the current Rust minimum and wrapper preflight limits to be explicit; all findings
+were incorporated. The assessment reused the accepted dependency/licence inventory
+and did not repeat it. No build, Cargo command, test, source acquisition, tool
+installation, vendor/notice action, binary inspection, migration, platform decision,
+or external write was performed. Any later Go tests retain the 4 GiB, no-swap,
+600-second limit; window tests additionally require Xvfb with `-noreset`.
