@@ -790,8 +790,8 @@ var rules = []rule{
 			"${12}}"),
 	},
 	{
-		// The early "no workers" exit in read_tun stays (candidate 14); only
-		// the accounting moves after dispatch.
+		// П9 later removes the early "no workers" exit in read_tun; the
+		// accounting moves after dispatch.
 		File: "rust-client/dispatcher.rs", Count: 1,
 		Pattern: `(?m)^( +)stats\n( +)\.total_bytes_up\n( +)\.fetch_add\(length as i64, Ordering::Relaxed\);\n( +)self\.dispatch\(packet\)\.await;$`,
 		Replace: to("${4}let outcome = self.dispatch(packet).await;\n" +
@@ -921,9 +921,24 @@ var rules = []rule{
 			"}\n",
 	},
 	{
+		// П9: the direct path needs no worker, so read_tun must not drop the
+		// packet before dispatch. dispatch drops tunnel-bound packets itself.
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern: `(?m)^( +)if self\.workers\.load\(\)\.is_empty\(\) \{\n( +)continue;\n( +)\}\n( +)let outcome = self\.dispatch\(packet\)\.await;`,
+		Replace: to("${1}// П9: the direct path needs no worker; dispatch drops tunnel-bound packets itself.\n" +
+			"${4}let outcome = self.dispatch(packet).await;"),
+	},
+	{
 		File: "rust-client/dispatcher.rs", Count: 1,
 		Pattern:      `(?m)^()#\[cfg\(test\)\]\nmod tests \{$`,
 		InsertBefore: "#[cfg(test)]\n#[path = \"direct_stats_tests.rs\"]\nmod direct_stats_tests;\n",
+	},
+	{
+		// The TUN direct regression is a child module of dispatcher, like the
+		// P8 stats tests. It is Unix-only: read_tun is Unix-only.
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern:     `(?m)^#\[cfg\(test\)\]\n#\[path = "direct_stats_tests\.rs"\]\nmod direct_stats_tests;\n`,
+		InsertAfter: "#[cfg(all(test, unix))]\n#[path = \"tun_direct_tests.rs\"]\nmod tun_direct_tests;\n",
 	},
 }
 

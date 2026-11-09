@@ -1,6 +1,6 @@
 ---
 kind: task
-status: in-progress
+status: done
 detailed: true
 depends: [01-direct-traffic-counters]
 ---
@@ -232,3 +232,43 @@ UDS); `start_test_tun` cannot be reused because it builds no direct relay.
 - The two documents are Russian; edit them in Russian and do not retranslate the rest.
   The “Проверено” paragraph in item 14 stays historical; the new note records the
   implementation.
+
+## Outcome
+
+The early `workers.load().is_empty()` exit is gone from `read_tun`: with `-tun-uds`
+and zero registered workers a direct SYN reaches the direct stack and its SYN-ACK is
+written back, while a tunnel-bound packet still returns `Dropped` at the worker check
+inside `dispatch` and credits no counter. `read_udp`, `-listen`, `is_forwardable_packet`,
+the read/retry/EOF handling and every Windows path are unchanged.
+
+`tun_direct_tests.rs` proves the behavior on the production path:
+`Dispatcher::start_with_domain_routing` with `worker_count = 0`, a test TUN made of a
+Unix datagram pair whose dispatcher end is passed by `SCM_RIGHTS` into the abstract
+UDS, the `FdReceiver` ack checked separately, then the tunnel-bound SYN followed by the
+direct SYN and a bounded wait for the SYN-ACK. It asserts the addresses, ports and
+`0x12` flags, `direct_up`/`direct_down` equal to the direct SYN and SYN-ACK lengths,
+and zero tunnel counters. Before the behavior rule it failed with
+`no SYN-ACK within 5s`; after it passes. Only documentation addresses are used; the
+outer direct `connect` is never awaited and no network is involved.
+
+The behavior and the module connection are two counted vendor rules; the regression is
+one added file. Regeneration from the pinned `d02da9b` is idempotent and
+`vendorcore -check` passes; `CORE_VERSION` now records 127 files, 94 rules and 11 added
+files. `tun_direct_test.go` selects the rules by their anchors and fails closed on
+drift or a duplicated anchor; the 26-rule selection of `direct_stats_test.go` is
+untouched. Architecture §07 gained the `П9` row, proposal 14 the Russian
+“Как сделано у нас” note, the false sentence in item 16 and the stale comment in
+`internal/datapath/direct_netns_linux_test.go` were corrected; the netns test keeps its
+`-listen` path.
+
+Checks passed under the mandatory scope: the vendorcore/buildcore tests, two
+generations plus `-check`, focused `tun_direct_tests` and `direct_stats_tests`, the
+core build and suite (410 passed, 0 failed, 13 ignored), `go build ./...`,
+`go vet ./...` and the full Go suite under Xvfb; the known upstream turn flake did not
+appear. Review found no findings.
+
+Limits: no live `-tun-uds` run with a real application is claimed, the container netns
+direct test was not run and keeps its behavior, and the Windows core build is not
+available here (the change is Unix-only). With the early check gone, DNS/SNI learning
+from TUN packets now happens without workers exactly as it already did in `-listen`;
+the direct-relay limits still apply.

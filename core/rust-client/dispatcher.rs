@@ -1121,9 +1121,7 @@ impl Dispatcher {
                         if !Self::is_forwardable_packet(packet.as_slice()) {
                             continue;
                         }
-                        if self.workers.load().is_empty() {
-                            continue;
-                        }
+                        // П9: the direct path needs no worker; dispatch drops tunnel-bound packets itself.
                         let outcome = self.dispatch(packet).await;
                         credit_uplink(&stats, outcome, length);
                     }
@@ -1827,6 +1825,10 @@ async fn bind_udp(address: &str) -> Result<UdpSocket> {
 #[cfg(test)]
 #[path = "direct_stats_tests.rs"]
 mod direct_stats_tests;
+
+#[cfg(all(test, unix))]
+#[path = "tun_direct_tests.rs"]
+mod tun_direct_tests;
 
 #[cfg(test)]
 mod tests {
