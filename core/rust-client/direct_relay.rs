@@ -16,6 +16,12 @@ const MAX_UDP_SESSIONS: usize = 4096;
 /// shared packet pool.
 pub const DIRECT_RELAY_INBOUND_CAPACITY: usize = 128;
 
+/// П10: how long the failure path waits for the SYN-ACK record of a flow. The
+/// stack emits the SYN-ACK before the outer connect starts, so this covers
+/// only the accept-versus-egress task-start race: the stack's frame normally
+/// arrives first.
+const SYN_ACK_RECORD_WAIT: Duration = Duration::from_millis(500);
+
 fn dns_query_slots() -> &'static Arc<Semaphore> {
     static SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
     SLOTS.get_or_init(|| Arc::new(Semaphore::new(MAX_CONCURRENT_DNS_QUERIES)))
@@ -219,6 +225,11 @@ pub struct DirectRelay {
     pool: Arc<PacketPool>,
     inbound_tx: mpsc::Sender<PacketBuf>,
     direct_pkt_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
+    /// П10: the server-side sequence of the SYN-ACK the stack sent to the
+    /// application, keyed like active_tcp. An application-facing reset
+    /// refers to it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    syn_ack_seqs: Arc<RwLock<HashMap<(SocketAddr, SocketAddr), u32>>>,
     active_tcp: Arc<RwLock<HashMap<(SocketAddr, SocketAddr), std::time::Instant>>>,
     udp_sessions: Arc<RwLock<HashMap<SocketAddr, Arc<tokio::net::UdpSocket>>>>,
     preresolve_generation: Arc<std::sync::atomic::AtomicU64>,
@@ -314,6 +325,10 @@ impl DirectRelay {
             }
         });
 
+        // П10: the SYN-ACK record of a flow, created before the egress task
+        // reads the first frame and before the listener accepts a connection.
+        let syn_ack_seqs = Arc::new(RwLock::new(HashMap::new()));
+        let syn_ack_seqs_egress = syn_ack_seqs.clone();
         let pool_egress = pool.clone();
         let inbound_tx_egress = inbound_tx.clone();
         let shutdown_egress = shutdown.clone();
@@ -334,6 +349,8 @@ impl DirectRelay {
                         continue;
                     }
                 };
+                // П10: record the SYN-ACK sequence before the pool check.
+                record_syn_ack(&syn_ack_seqs_egress, &frame);
                 let Some(mut pkt) = pool_egress.try_acquire() else {
                     continue;
                 };
@@ -349,6 +366,11 @@ impl DirectRelay {
         let active_tcp = Arc::new(RwLock::new(HashMap::new()));
         let active_tcp_c = active_tcp.clone();
 
+        // П10: the failure path of an accepted flow needs the pool, the inbound
+        // channel and the SYN-ACK records of direct flows.
+        let abort_pool = pool.clone();
+        let abort_inbound_tx = inbound_tx.clone();
+        let abort_syn_ack_seqs = syn_ack_seqs.clone();
         if let Some(mut listener) = tcp_listener {
             let shutdown_listener = shutdown.clone();
             tokio::spawn(async move {
@@ -366,6 +388,9 @@ impl DirectRelay {
                         guard.insert(key, std::time::Instant::now());
                     }
                     let active_tcp_conn = active_tcp_c.clone();
+                    let abort_pool_conn = abort_pool.clone();
+                    let abort_inbound_tx_conn = abort_inbound_tx.clone();
+                    let abort_syn_ack_seqs_conn = abort_syn_ack_seqs.clone();
 
                     tokio::spawn(async move {
                         let connect_res = tokio::time::timeout(
@@ -404,10 +429,25 @@ impl DirectRelay {
                             )
                             .await;
                             drop(server_stream);
+                        } else {
+                            // П10: the application already saw the stack's SYN-ACK, so a
+                            // failed outer connect closes it with a reset built from the
+                            // recorded sequence.
+                            abort_failed_direct_tcp(
+                                &abort_pool_conn,
+                                &abort_inbound_tx_conn,
+                                &abort_syn_ack_seqs_conn,
+                                key,
+                                SYN_ACK_RECORD_WAIT,
+                            )
+                            .await;
                         }
 
                         drop(client_stream);
                         if let Ok(mut guard) = active_tcp_conn.write() {
+                            guard.remove(&key);
+                        }
+                        if let Ok(mut guard) = abort_syn_ack_seqs_conn.write() {
                             guard.remove(&key);
                         }
                     });
@@ -441,6 +481,7 @@ impl DirectRelay {
             inbound_tx,
             direct_pkt_tx,
             active_tcp,
+            syn_ack_seqs,
             udp_sessions: Arc::new(RwLock::new(HashMap::new())),
             preresolve_generation,
             shutdown,
@@ -940,6 +981,102 @@ impl DirectRelay {
     }
 }
 
+/// П10: the flow and the SYN-ACK sequence of a frame leaving the direct
+/// stack. Only a TCP SYN+ACK is accepted: it is the frame that establishes the
+/// application's flow, and its sequence is what an application-facing reset
+/// must refer to. A data frame, a plain ACK, a SYN without ACK, a truncated or
+/// a non-TCP frame returns None.
+fn syn_ack_flow(frame: &[u8]) -> Option<((SocketAddr, SocketAddr), u32)> {
+    let src = crate::sni::extract_src_addr(frame)?;
+    let dst = crate::sni::extract_dst_addr(frame)?;
+    let (ip_header_len, protocol) = match *frame.first()? >> 4 {
+        4 => {
+            let ihl = (*frame.get(0)? & 0x0f) as usize * 4;
+            if ihl < 20 {
+                return None;
+            }
+            (ihl, *frame.get(9)?)
+        }
+        6 => (40, *frame.get(6)?),
+        _ => return None,
+    };
+    if protocol != 6 {
+        return None;
+    }
+    let tcp = frame.get(ip_header_len..)?;
+    if tcp.len() < 20 || (tcp[13] & 0x12) != 0x12 {
+        return None;
+    }
+    let seq = u32::from_be_bytes([tcp[4], tcp[5], tcp[6], tcp[7]]);
+    // П10: a SYN-ACK travels from the destination to the application.
+    Some(((dst, src), seq))
+}
+
+/// П10: records the SYN-ACK sequence of a direct TCP flow under the same key
+/// as active_tcp: the application address first, the destination second.
+fn record_syn_ack(map: &RwLock<HashMap<(SocketAddr, SocketAddr), u32>>, frame: &[u8]) {
+    let Some((key, seq)) = syn_ack_flow(frame) else {
+        return;
+    };
+    if let Ok(mut guard) = map.write() {
+        guard.insert(key, seq);
+    }
+}
+
+/// П10: waits a bounded time for the SYN-ACK record of a flow: one check, then
+/// a poll every 10 ms. The wait is a parameter so tests inject a short one.
+async fn wait_for_syn_ack_seq(
+    map: &RwLock<HashMap<(SocketAddr, SocketAddr), u32>>,
+    key: (SocketAddr, SocketAddr),
+    wait: Duration,
+) -> Option<u32> {
+    if let Ok(guard) = map.read()
+        && let Some(&seq) = guard.get(&key)
+    {
+        return Some(seq);
+    }
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        if let Ok(guard) = map.read()
+            && let Some(&seq) = guard.get(&key)
+        {
+            return Some(seq);
+        }
+    }
+}
+
+/// П10: turns a failed outer direct connect into an application-facing reset.
+/// The stack answered the application's SYN with SYN-ACK, so the application's
+/// next expected sequence is the recorded one plus one: a reset at the
+/// recorded value would be outside its receive window. Without a record the
+/// flow is closed silently and no sequence is invented.
+async fn abort_failed_direct_tcp(
+    pool: &Arc<PacketPool>,
+    inbound_tx: &mpsc::Sender<PacketBuf>,
+    map: &RwLock<HashMap<(SocketAddr, SocketAddr), u32>>,
+    key: (SocketAddr, SocketAddr),
+    wait: Duration,
+) {
+    let seq = wait_for_syn_ack_seq(map, key, wait).await;
+    if let Some(seq) = seq
+        && let Some(packet) = build_tcp_packet(key.1, key.0, seq.wrapping_add(1), 0, 0x04, &[])
+        && let Some(mut pkt) = pool.try_acquire()
+        && let Ok(dest) = pkt.extend_tail(packet.len())
+    {
+        dest.copy_from_slice(&packet);
+        let _ = inbound_tx.send(pkt).await;
+    }
+    // The record goes whether or not a packet was sent, so a second caller
+    // cannot reuse the same sequence.
+    if let Ok(mut guard) = map.write() {
+        guard.remove(&key);
+    }
+}
+
 pub fn craft_tcp_packet_into(
     src: SocketAddr,
     dst: SocketAddr,
@@ -1242,6 +1379,10 @@ pub fn udp_checksum_v6(src_ip: Ipv6Addr, dst_ip: Ipv6Addr, udp_segment: &[u8]) -
 #[cfg(all(test, target_os = "linux"))]
 #[path = "direct_relay_bind_if_tests.rs"]
 mod bind_if_tests;
+
+#[cfg(test)]
+#[path = "direct_relay_failure_tests.rs"]
+mod failure_tests;
 
 #[cfg(test)]
 mod tests {

@@ -181,6 +181,107 @@ type rule struct {
 // to — Replace правила: строка, в том числе пустая.
 func to(s string) *string { return &s }
 
+// synAckRecordCode — the П10 free functions: the SYN-ACK record of a direct
+// TCP flow and the failure path that turns a failed outer connect into an
+// application-facing reset. They sit beside the packet builders, so the egress
+// task and the listener share one code path.
+const synAckRecordCode = `/// П10: the flow and the SYN-ACK sequence of a frame leaving the direct
+/// stack. Only a TCP SYN+ACK is accepted: it is the frame that establishes the
+/// application's flow, and its sequence is what an application-facing reset
+/// must refer to. A data frame, a plain ACK, a SYN without ACK, a truncated or
+/// a non-TCP frame returns None.
+fn syn_ack_flow(frame: &[u8]) -> Option<((SocketAddr, SocketAddr), u32)> {
+    let src = crate::sni::extract_src_addr(frame)?;
+    let dst = crate::sni::extract_dst_addr(frame)?;
+    let (ip_header_len, protocol) = match *frame.first()? >> 4 {
+        4 => {
+            let ihl = (*frame.get(0)? & 0x0f) as usize * 4;
+            if ihl < 20 {
+                return None;
+            }
+            (ihl, *frame.get(9)?)
+        }
+        6 => (40, *frame.get(6)?),
+        _ => return None,
+    };
+    if protocol != 6 {
+        return None;
+    }
+    let tcp = frame.get(ip_header_len..)?;
+    if tcp.len() < 20 || (tcp[13] & 0x12) != 0x12 {
+        return None;
+    }
+    let seq = u32::from_be_bytes([tcp[4], tcp[5], tcp[6], tcp[7]]);
+    // П10: a SYN-ACK travels from the destination to the application.
+    Some(((dst, src), seq))
+}
+
+/// П10: records the SYN-ACK sequence of a direct TCP flow under the same key
+/// as active_tcp: the application address first, the destination second.
+fn record_syn_ack(map: &RwLock<HashMap<(SocketAddr, SocketAddr), u32>>, frame: &[u8]) {
+    let Some((key, seq)) = syn_ack_flow(frame) else {
+        return;
+    };
+    if let Ok(mut guard) = map.write() {
+        guard.insert(key, seq);
+    }
+}
+
+/// П10: waits a bounded time for the SYN-ACK record of a flow: one check, then
+/// a poll every 10 ms. The wait is a parameter so tests inject a short one.
+async fn wait_for_syn_ack_seq(
+    map: &RwLock<HashMap<(SocketAddr, SocketAddr), u32>>,
+    key: (SocketAddr, SocketAddr),
+    wait: Duration,
+) -> Option<u32> {
+    if let Ok(guard) = map.read()
+        && let Some(&seq) = guard.get(&key)
+    {
+        return Some(seq);
+    }
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        if let Ok(guard) = map.read()
+            && let Some(&seq) = guard.get(&key)
+        {
+            return Some(seq);
+        }
+    }
+}
+
+/// П10: turns a failed outer direct connect into an application-facing reset.
+/// The stack answered the application's SYN with SYN-ACK, so the application's
+/// next expected sequence is the recorded one plus one: a reset at the
+/// recorded value would be outside its receive window. Without a record the
+/// flow is closed silently and no sequence is invented.
+async fn abort_failed_direct_tcp(
+    pool: &Arc<PacketPool>,
+    inbound_tx: &mpsc::Sender<PacketBuf>,
+    map: &RwLock<HashMap<(SocketAddr, SocketAddr), u32>>,
+    key: (SocketAddr, SocketAddr),
+    wait: Duration,
+) {
+    let seq = wait_for_syn_ack_seq(map, key, wait).await;
+    if let Some(seq) = seq
+        && let Some(packet) = build_tcp_packet(key.1, key.0, seq.wrapping_add(1), 0, 0x04, &[])
+        && let Some(mut pkt) = pool.try_acquire()
+        && let Ok(dest) = pkt.extend_tail(packet.len())
+    {
+        dest.copy_from_slice(&packet);
+        let _ = inbound_tx.send(pkt).await;
+    }
+    // The record goes whether or not a packet was sent, so a second caller
+    // cannot reuse the same sequence.
+    if let Ok(mut guard) = map.write() {
+        guard.remove(&key);
+    }
+}
+`
+
 // rules — правки П1–П5. Набор пополнялся задачами C3, C4, W2, L1; П6 (отброс
 // пакета, который ОС не приняла в TUN) с ядра 2.5.0 делает сам апстрим.
 var rules = []rule{
@@ -939,6 +1040,121 @@ var rules = []rule{
 		File: "rust-client/dispatcher.rs", Count: 1,
 		Pattern:     `(?m)^#\[cfg\(test\)\]\n#\[path = "direct_stats_tests\.rs"\]\nmod direct_stats_tests;\n`,
 		InsertAfter: "#[cfg(all(test, unix))]\n#[path = \"tun_direct_tests.rs\"]\nmod tun_direct_tests;\n",
+	},
+
+	// П10: a failed direct TCP connect must reach the application as a reset,
+	// not as a silent close. The stack answers the application's SYN with
+	// SYN-ACK before the outer connect starts, so the server-side sequence is
+	// recorded per flow from the frames leaving the direct stack, keyed like
+	// active_tcp. On a connect error or the five-second timeout the listener
+	// sends an RST with the recorded sequence plus one. The regression is
+	// files/rust-client/direct_relay_failure_tests.rs.
+	{
+		// The bounded wait for the record; production passes it to the handler.
+		File: "rust-client/direct_relay.rs", Count: 1,
+		Pattern: `(?m)^()pub const DIRECT_RELAY_INBOUND_CAPACITY: usize = 128;$`,
+		InsertAfter: `
+/// П10: how long the failure path waits for the SYN-ACK record of a flow. The
+/// stack emits the SYN-ACK before the outer connect starts, so this covers
+/// only the accept-versus-egress task-start race: the stack's frame normally
+/// arrives first.
+const SYN_ACK_RECORD_WAIT: Duration = Duration::from_millis(500);`,
+	},
+	{
+		File: "rust-client/direct_relay.rs", Count: 1,
+		Pattern: `(?m)^( +)active_tcp: Arc<RwLock<HashMap<\(SocketAddr, SocketAddr\), std::time::Instant>>>,$`,
+		InsertBefore: "/// П10: the server-side sequence of the SYN-ACK the stack sent to the\n" +
+			"${1}/// application, keyed like active_tcp. An application-facing reset\n" +
+			"${1}/// refers to it.\n" +
+			"${1}#[cfg_attr(not(test), allow(dead_code))]\n" +
+			"${1}syn_ack_seqs: Arc<RwLock<HashMap<(SocketAddr, SocketAddr), u32>>>,",
+	},
+	{
+		File: "rust-client/direct_relay.rs", Count: 1,
+		Pattern:     `(?m)^( +)active_tcp,$`,
+		InsertAfter: "syn_ack_seqs,",
+	},
+	{
+		// The map must exist before the egress task reads the first frame and
+		// before the listener accepts a connection.
+		File: "rust-client/direct_relay.rs", Count: 1,
+		Pattern: `(?m)^( +)let pool_egress = pool\.clone\(\);$`,
+		InsertBefore: "// П10: the SYN-ACK record of a flow, created before the egress task\n" +
+			"${1}// reads the first frame and before the listener accepts a connection.\n" +
+			"${1}let syn_ack_seqs = Arc::new(RwLock::new(HashMap::new()));\n" +
+			"${1}let syn_ack_seqs_egress = syn_ack_seqs.clone();",
+	},
+	{
+		// The record must not depend on pool availability and must exist before
+		// the SYN-ACK can reach the pump.
+		File: "rust-client/direct_relay.rs", Count: 1,
+		Pattern: `(?m)^( +)let Some\(mut pkt\) = pool_egress\.try_acquire\(\) else \{$`,
+		InsertBefore: "// П10: record the SYN-ACK sequence before the pool check.\n" +
+			"${1}record_syn_ack(&syn_ack_seqs_egress, &frame);",
+	},
+	{
+		// Clones shared by the per-connection tasks of the listener.
+		File: "rust-client/direct_relay.rs", Count: 1,
+		Pattern: `(?m)^( +)if let Some\(mut listener\) = tcp_listener \{$`,
+		InsertBefore: "// П10: the failure path of an accepted flow needs the pool, the inbound\n" +
+			"${1}// channel and the SYN-ACK records of direct flows.\n" +
+			"${1}let abort_pool = pool.clone();\n" +
+			"${1}let abort_inbound_tx = inbound_tx.clone();\n" +
+			"${1}let abort_syn_ack_seqs = syn_ack_seqs.clone();",
+	},
+	{
+		File: "rust-client/direct_relay.rs", Count: 1,
+		Pattern: `(?m)^( +)let active_tcp_conn = active_tcp_c\.clone\(\);$`,
+		InsertAfter: "let abort_pool_conn = abort_pool.clone();\n" +
+			"${1}let abort_inbound_tx_conn = abort_inbound_tx.clone();\n" +
+			"${1}let abort_syn_ack_seqs_conn = abort_syn_ack_seqs.clone();",
+	},
+	{
+		// A successful connect and a later broken copy loop do not reset: only
+		// the unsuccessful outcome of the five-second attempt takes the else.
+		// The anchor includes the success branch tail, so it cannot match
+		// another block.
+		File: "rust-client/direct_relay.rs", Count: 1,
+		Pattern: `(?m)^( +)drop\(server_stream\);\n( +)\}\n\n( +)drop\(client_stream\);$`,
+		Replace: to("${1}drop(server_stream);\n" +
+			"${2}} else {\n" +
+			"${2}    // П10: the application already saw the stack's SYN-ACK, so a\n" +
+			"${2}    // failed outer connect closes it with a reset built from the\n" +
+			"${2}    // recorded sequence.\n" +
+			"${2}    abort_failed_direct_tcp(\n" +
+			"${2}        &abort_pool_conn,\n" +
+			"${2}        &abort_inbound_tx_conn,\n" +
+			"${2}        &abort_syn_ack_seqs_conn,\n" +
+			"${2}        key,\n" +
+			"${2}        SYN_ACK_RECORD_WAIT,\n" +
+			"${2}    )\n" +
+			"${2}    .await;\n" +
+			"${2}}\n" +
+			"\n" +
+			"${3}drop(client_stream);"),
+	},
+	{
+		// A long successful flow and a failed one both leave no stale record.
+		File: "rust-client/direct_relay.rs", Count: 1,
+		Pattern: `(?m)^( +)if let Ok\(mut guard\) = active_tcp_conn\.write\(\) \{\n( +)guard\.remove\(&key\);\n( +)\}$`,
+		InsertAfter: "if let Ok(mut guard) = abort_syn_ack_seqs_conn.write() {\n" +
+			"${1}    guard.remove(&key);\n${1}}",
+	},
+	{
+		// The record and the handler are free functions beside the packet
+		// builders, so the egress task and the listener share one code path.
+		File: "rust-client/direct_relay.rs", Count: 1,
+		Pattern:      `(?m)^()pub fn craft_tcp_packet_into\($`,
+		InsertBefore: synAckRecordCode,
+	},
+	{
+		// A child of direct_relay, like the file's own tests: the private
+		// fields and the handler are reachable. The rule goes after the П3
+		// bind_if_tests insertion and anchors on its generated block: mod tests
+		// is already used by another rule.
+		File: "rust-client/direct_relay.rs", Count: 1,
+		Pattern:     `(?m)^#\[cfg\(all\(test, target_os = "linux"\)\)\]\n#\[path = "direct_relay_bind_if_tests\.rs"\]\nmod bind_if_tests;\n`,
+		InsertAfter: "#[cfg(test)]\n#[path = \"direct_relay_failure_tests.rs\"]\nmod failure_tests;\n",
 	},
 }
 

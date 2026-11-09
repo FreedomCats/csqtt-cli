@@ -1,6 +1,6 @@
 ---
 kind: task
-status: in-progress
+status: done
 detailed: true
 ---
 
@@ -308,3 +308,58 @@ belongs to the next task; do not add it here beyond what is needed to report a f
 - `doc/architecture.md` and `doc/upstream-proposals.md` are Russian; edit them in
   Russian, keep one `П10` row for the whole fallback, and do not add environment or
   personal data.
+
+## Outcome
+
+A direct TCP flow whose outer `TcpStream::connect` returns an error or reaches its
+five-second timeout now reaches the application as a reset instead of a silent close.
+The egress task of `DirectRelay::new` records the sequence of every TCP SYN+ACK frame
+(IPv4 and IPv6) under the same `(application, destination)` key as `active_tcp`, after
+the frame is read and before the packet pool is asked for a buffer, so the record does
+not depend on pool availability. On failure the listener's `else` branch
+(`Ok(Err(_))` and `Err(_)`) calls `abort_failed_direct_tcp`: it waits up to
+`SYN_ACK_RECORD_WAIT` (500 ms in production, polled every 10 ms) for the record, sends
+`build_tcp_packet(key.1, key.0, S.wrapping_add(1), 0, 0x04, &[])` through the existing
+`inbound_tx`, and removes the record; without a record the flow closes with no packet
+and no invented sequence. The reset enters the same channel as every stack frame, so
+`Dispatcher::push_direct_inbound` credits it as `direct_down` under the П8 contract; no
+counter code was added. A successful connect, its socket options and copy loop, a
+broken copy loop after a successful connect, `active_tcp`, UDP, DNS,
+`sync_domain_routing`, `evaluate_route` and `try_handle` are unchanged.
+
+The change is eleven counted rules for `rust-client/direct_relay.rs` plus one added test
+file; `core/` and `CORE_VERSION` were produced only by generation from the pinned
+`d02da9b`: 128 files, 105 rules, 12 added files. Two generations gave an identical
+`core/` tree and `vendorcore -check` passes. Three implementation details differ from
+the plan's wording: the handler takes `&Arc<PacketPool>` because `try_acquire` is a
+method on `&Arc<Self>`; the struct-field rule anchors on the `active_tcp` field because
+`inbound_tx` appears twice in the file; the field is
+`#[cfg_attr(not(test), allow(dead_code))]` because in non-test builds only the clone
+made before construction is read. `syn_ack_flow` takes the IPv4 header length from the
+IHL, as `extract_src_addr`/`extract_dst_addr` do.
+
+`direct_relay_failure_tests.rs` proves the behaviour deterministically on documentation
+addresses and no live service: the full path records the SYN-ACK and delivers the reset
+with `S+1`, flags `0x04`, acknowledgement 0 and valid checksums; the handler alone
+produces the same reset for IPv4 and IPv6; an empty record closes silently within the
+injected wait; only SYN+ACK frames are accepted. The full-path test never awaits the
+outer connect and lets it expire with the test runtime. `direct_fallback_test.go` pins
+each of the eleven rules by a unique anchor and applies the `else`, egress-record and
+module rules to representative snippets, failing closed on a missing or duplicated
+anchor; the П8 (26 rules) and П9 selections are untouched. Architecture §07 gained the
+single `П10` row (the reset part; the address memory extends it in the next task) and
+proposal 15 the Russian “Как сделано у нас (правка П10)” note, both without
+retranslating the documents.
+
+Checks passed under the mandatory scope: `go test ./scripts/vendorcore
+./scripts/buildcore`, two generations plus `-check`, `buildcore`, the focused Rust
+`failure_tests` (4) and `direct_stats_tests` (6), `buildcore -test` (414 passed, 0
+failed, 13 ignored), `go build ./...`, `go vet ./...` and the full Go suite under Xvfb
+`-noreset`; the known upstream turn flake did not appear. Review found no findings and
+nothing was left unfixed because of cost.
+
+Limits: no live browser/application or provider check is claimed — whether a particular
+application turns the reset into a useful error or retries another address stays
+unverified; the Windows core build is not available here and the change is
+platform-neutral Rust, so no Windows behaviour is claimed; the address memory is the
+next task.
