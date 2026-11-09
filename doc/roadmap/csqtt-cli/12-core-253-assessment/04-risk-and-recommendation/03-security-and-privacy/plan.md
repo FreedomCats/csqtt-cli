@@ -1,7 +1,7 @@
 ---
 kind: task
 detailed: true
-status: in-progress
+status: done
 base: 7bda03700cd307f8b4316efa45b5c67a6bb18a5b
 depends: [01-dependency-and-licence]
 ---
@@ -108,3 +108,65 @@ the parent's future-only Go test limits (4 GiB, no swap, 600 seconds; Xvfb
   no programmer, implementation change, full external proxy audit, dependency
   download, executable/build/test/resolver/vendor command, live check, external
   write or new security-policy decision is part of the task.
+
+## Outcome
+
+The ignored evidence matrix is recorded in
+`doc/local/core-253-security-review.md`. It fixes the exact B/C client inventory
+at 37 changed paths and limits runtime review to the assigned integration and
+diagnostic boundary. The patched 2.5.0/v0.8.0 product remains distinct from both
+unpatched source refs.
+
+Candidate C adds an opt-in Gooby integration and two diagnostic layers. Gooby is
+off by default, is not activated by the current Go shell argument builder, and is
+connected only to the selected TURN TCP/TLS path at the inspected boundary. The
+candidate source validates an explicitly configured proxy as loopback with a
+nonzero port and uses a no-auth SOCKS5 exchange. An independent reviewer confirmed
+the resulting conditional local-listener trust risk: a process controlling that
+port can observe, alter, or interrupt the proxied stream. This is a migration gate,
+not a current-product regression; its full treatment would require an authorized
+proxy/security contract decision. The external route and opaque Gooby behavior
+remain unknown.
+
+Stream diagnostics add endpoint and formatted reason detail to the candidate log
+stream when the shell's existing `CSQTT_EVENTS=1` setting enables the event path.
+The local shell receives these records as stderr-derived `Log` messages, masks the
+known secret classes, and normally displays them only with `-v`. Gooby setup
+messages can precede `PROCESS`; session diagnostics are emitted after that event,
+but stdout and stderr are consumed on separate goroutines, so their startup-error
+capture cannot be ruled out from emission order alone. No explicit password, VK token, or
+captcha token field was found in the assigned new payloads, but generic reason
+text is not a universal redaction guarantee. Traffic diagnostics require the
+separate exact environment value `CSQTT_TRAFFIC_DIAGNOSTICS=1`, which the current
+shell does not set; they add passive counters and byte/active summaries without a
+new network destination or process interface. C's stats cadence change is a low
+impact operational delta and does not establish a security property.
+
+The assessment preserves the accepted P1-P5/P7 and TURN migration requirements,
+P6 baseline status, loopback/peer and TUN-FD safeguards, route/proxy unknowns,
+stale DNS wording, captcha timer/request-ID/deadline limits, bounded local UDP
+completion, dependency/native gaps, platform gaps, and source/binary identity
+distinction. Benefit is bounded: the candidate offers an optional integration and
+diagnostic visibility that may help a later migration investigation. Exposure and
+uncertainty outweigh adoption evidence until the later recommendation has, at
+minimum, preserved the accepted shell safeguards, decided the explicit local proxy
+trust contract, verified endpoint/reason log handling, resolved the Gooby/native
+and route boundaries, and separately validated the candidate binary and targets.
+No migration, logging policy, permission decision, route decision, or security
+contract was selected here.
+
+The independent non-coding review completed without source corrections after the
+conditional no-auth proxy finding was accepted. No user question was needed.
+Only read-only source/document/status/privacy/whitespace checks were performed;
+no build, test, Cargo, vendor, notice, acquisition, live, browser, proxy, or
+external check was run. Future Go tests remain subject to the parent's 4 GiB,
+no-swap, 600-second limit, with Xvfb `-noreset` for window tests.
+
+### Real problems not fully corrected because of cost
+
+None. The no-auth local SOCKS5 trust finding above is a genuine conditional
+candidate risk, but it is left open because this assessment does not authorize a
+migration or a local-proxy trust/security contract decision, not because a repair
+was rejected on cost grounds. It remains a recommendation gate. A later authorized
+treatment would first decide the trust model and could affect `main.rs`, `gooby.rs`,
+`turn_stream.rs`, shell argument/configuration mapping, and focused verification.
