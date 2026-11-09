@@ -3,6 +3,13 @@
 // starts the production TUN UDS path, passes one end of a Unix datagram pair
 // through the abstract socket, and waits for the SYN-ACK written back to the
 // same pair.
+//
+// The production listener answers the direct SYN with a SYN-ACK and then starts
+// the outer connect. When that connect fails at once (no route, a reject), the
+// П10 failure handler closes the flow with a reset written to the same TUN, in
+// addition to the SYN-ACK. The test reads the TUN until it sees the SYN-ACK, so
+// the reset does not matter whichever way the two are delivered, and it only
+// requires `direct_bytes_down` to be at least the SYN-ACK length.
 
 use super::*;
 use std::io::IoSlice;
@@ -55,6 +62,17 @@ fn send_fd_and_wait_ack(name: &str, file: &File) -> OwnedFd {
     socket
 }
 
+/// True when the datagram is an IPv4/TCP packet whose flags byte (at
+/// `ihl + 13`) is exactly SYN-ACK (`0x12`). Bounds are checked, so a malformed
+/// or non-TCP datagram is simply not a SYN-ACK.
+fn is_syn_ack(datagram: &[u8]) -> bool {
+    if datagram.len() < 20 || datagram[0] >> 4 != 4 || datagram[9] != 6 {
+        return false;
+    }
+    let ihl = (datagram[0] & 0x0f) as usize * 4;
+    datagram.len() > ihl + 13 && datagram[ihl + 13] == 0x12
+}
+
 /// Asserts the datagram is an IPv4/TCP SYN-ACK from `192.0.2.10:80` to
 /// `10.0.0.2:54321`.
 fn assert_syn_ack(datagram: &[u8]) {
@@ -90,6 +108,23 @@ async fn wait_for_counter(counter: &AtomicI64, expected: i64) {
         assert!(
             tokio::time::Instant::now() < deadline,
             "counter did not reach {expected} within 2s"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// Same as `wait_for_counter`, but accepts any value at or above `minimum`.
+/// A failed outer connect may add a reset to `direct_bytes_down` before the
+/// read loop credits the SYN-ACK, so an exact match would be missed.
+async fn wait_for_counter_at_least(counter: &AtomicI64, minimum: i64) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        if counter.load(Ordering::Relaxed) >= minimum {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "counter did not reach at least {minimum} within 2s"
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
@@ -171,16 +206,27 @@ async fn direct_syn_is_answered_with_zero_workers() {
         .expect("send tunnel-bound SYN");
     test_tun.send(&direct_syn).await.expect("send direct SYN");
 
+    // The failed outer connect may write an application-facing reset to the
+    // same TUN, so read past anything that is not the SYN-ACK. The whole loop
+    // stays under one 5 s deadline.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let mut buf = [0u8; 2048];
-    let received = tokio::time::timeout(Duration::from_secs(5), test_tun.recv(&mut buf))
-        .await
-        .expect("no SYN-ACK within 5s")
-        .expect("read test TUN");
+    let received = loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let received = match tokio::time::timeout(remaining, test_tun.recv(&mut buf)).await {
+            Ok(Ok(received)) => received,
+            Ok(Err(error)) => panic!("read test TUN: {error}"),
+            Err(_) => panic!("no SYN-ACK on the test TUN within 5s"),
+        };
+        if is_syn_ack(&buf[..received]) {
+            break received;
+        }
+    };
     assert_syn_ack(&buf[..received]);
 
     wait_for_counter(&stats.direct_bytes_up, direct_syn.len() as i64).await;
     assert_eq!(stats.total_bytes_up.load(Ordering::Relaxed), 0);
-    wait_for_counter(&stats.direct_bytes_down, received as i64).await;
+    wait_for_counter_at_least(&stats.direct_bytes_down, received as i64).await;
     assert_eq!(stats.total_bytes_down.load(Ordering::Relaxed), 0);
 
     dispatcher.shutdown().await;
