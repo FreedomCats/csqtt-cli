@@ -101,7 +101,6 @@ it does not enable new core features or require completion of unrelated backlog.
 
 ### 12. [Assess csqttr 2.5.3](12-core-253-assessment/plan.md) — in-progress
 
-After stage 11, verify the upstream maintenance transition and inspect
-`Afteroid/csqttr` 2.5.3 against the pinned core and local patches. Report benefits,
-compatibility, licensing, migration effort, and a recommendation. An actual core
-migration requires a subsequent user decision.
+The source assessment is complete and recommends deferring migration, retaining the
+patched 2.5.0 core in v0.8.0. A core migration requires separate user authorization
+and a decision on whether to include Gooby and accept its local trust boundary.

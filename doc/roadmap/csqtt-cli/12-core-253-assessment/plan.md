@@ -29,9 +29,9 @@ Preserve the current core while gathering evidence.
    `coreproc` integration.
 3. [Map local patches and migration impact](03-local-patches/plan.md) — classify the
    existing core patches and identify their vendor and shell consequences.
-4. [Assess risks and recommend a path](04-risk-and-recommendation/plan.md) — compare
-   dependencies, licensing, platforms, security and privacy, then hand the evidence
-   and recommendation to `lead` for the user.
+4. [Assess risks and recommend a path](04-risk-and-recommendation/plan.md) — completed
+   source assessment; recommends deferring migration and retaining the patched 2.5.0
+   core. Any migration requires a separate user decision.
 
 ## Done when
 

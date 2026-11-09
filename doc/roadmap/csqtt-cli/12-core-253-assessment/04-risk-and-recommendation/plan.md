@@ -1,6 +1,6 @@
 ---
 kind: stage
-status: in-progress
+status: done
 base: 366d87ae618b81cb7733e4ee6a5747b6c09f4e53
 depends: [01-upstream-provenance, 02-protocol-compatibility, 03-local-patches]
 ---
@@ -97,3 +97,34 @@ systemd-run --user --scope -q -p MemoryMax=4G -p MemorySwapMax=0 \
   constraints, and evidence gaps, and names the user decisions still required before
   any migration. The handoff contains sanitized public evidence; no migration,
   code/config change, build/test, or release action is performed.
+
+## Outcome
+
+The completed source assessment recommends deferring migration and retaining the
+patched CSQTT 2.5.0 core in v0.8.0. The candidate's optional Gooby integration and
+additional diagnostics offer limited investigation value but do not outweigh the
+direct shell-contract incompatibilities and integration work. Source-level wire
+compatibility is not binary provenance, deployed compatibility or build support.
+
+The dependency inventory records 26 new lock identities and 73 additive edges,
+including an unconditional Gooby build dependency; native LuaJIT/SQLite attribution,
+SQLite source, shipped composition and notice completeness remain unknown. No
+candidate blocker was demonstrated from permitted platform metadata, but builds,
+cross-compilation, runtime linkage and packaged native contents remain unverified.
+The existing root-LICENSE treatment is retained without legal conclusion.
+
+The conditional no-auth SOCKS5 loopback-listener risk applies only if Gooby is
+explicitly enabled; the current shell does not enable it. The public assessment
+orders hypothetical provenance/dependency, shell and patch, vendor/guard, and later
+target-validation work. Any migration first requires separate user authorization
+and a decision on Gooby scope and its local-listener trust boundary. It does not
+select new dependency, licence, protocol, feature or platform policy.
+
+Independent integration review accepted all four criteria over
+`366d87ae618b81cb7733e4ee6a5747b6c09f4e53..4752be1c4ffaa638e4aab3897c473853f0320bd3`
+without correction-required findings. The acceptance record is ignored at
+`doc/local/core-253-risk-acceptance.md`; the sanitized public report is
+[`doc/csqttr-2.5.3-assessment.md`](../../../csqttr-2.5.3-assessment.md). No code,
+tests, Cargo/vendor commands, builds, binaries, live checks, migration or external
+actions were performed. The pin, release, supported targets and licence treatment
+remain unchanged. No current-product correction was deferred because of cost.
