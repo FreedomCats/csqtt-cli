@@ -1,6 +1,6 @@
 ---
 kind: task
-status: in-progress
+status: done
 detailed: true
 base: 366d87ae618b81cb7733e4ee6a5747b6c09f4e53
 ---
@@ -128,3 +128,46 @@ external implementation source is unnecessary and must not be opened for it.
   future-only Go constraints (4 GiB, no swap, `timeout 600`; browser/window tests under
   Xvfb with `-noreset`) must be relayed to the reviewer and any later task. They give
   no permission to run tests here.
+
+## Outcome
+
+Exact-ref metadata comparison confirms 284 baseline and 310 candidate client lock
+records: 26 additions (25 registry packages and the Git-copied path package
+`csqtt-gooby`), no removals, and no version/source/checksum changes to existing
+identities. The three edited existing records are `csqtt-client`, `indexmap` and
+`tracing`; indexmap's hashbrown spelling is disambiguation only. Normalizing lock
+dependency strings to package identities gives 660 to 733 edges, all 73 changes
+additive. The sole client-manifest delta is the unconditional Gooby path dependency;
+its opt-in runtime use does not make its declared build graph optional.
+
+The inventory separates copied source/vendor inputs, ordinary/build/dev/conditional
+dependencies and possible binary use. The existing local connector 0.1.22 path
+patch/direct dependency/lock rewrite is unchanged local treatment. Server and
+Android/iOS metadata are recorded only to establish their exclusion from the
+desktop client inventory; neither copied examples nor lock membership establish
+release use or a new supported platform.
+
+Exact-version licence declarations, checksums, available texts and source origins
+cover every new package and changed edge. Gooby's Apache-2.0 LICENSE and NOTICE
+match its declared upstream revision, but its independent-implementation claim
+and full source lineage remain unverified. LuaJIT and SQLite add native-source and
+attribution questions distinct from their Rust wrappers. The inventory records
+the missing published root text for mlua-sys 0.6.8, same-revision upstream licence
+evidence, LuaJIT's nested notices and precise native-version/text/applicability
+gaps. The existing normal-edge/root-file notice collector cannot alone establish
+complete native attribution. The root PolyForm NC versus Cargo Unlicense conflict
+and root-LICENSE treatment remain unchanged; no permission or legal conclusion
+is inferred.
+
+Independent non-coding review reconstructed the complete package/edge delta and
+verified the new metadata/licence claims against primary records. Its sole
+remaining finding, an incorrect SQLite README line reference, was corrected.
+The ignored evidence record `doc/local/core-253-dependency-review.md` supplies
+exact-ref and version-specific primary references, package/edge reconciliation,
+confidence limits and handoffs to the platform and security children. Previous
+assessment evidence is preserved. Only read-only metadata/document, integrity,
+privacy and whitespace checks are part of this result. No external implementation
+review, Cargo command, acquisition, generation, build, test, live check or external
+write occurred. Resolved features, candidate build/runtime, actual shipped native
+components and final notice completeness remain unverified; migration and any
+dependency, licence or platform choice still require a separate decision.
