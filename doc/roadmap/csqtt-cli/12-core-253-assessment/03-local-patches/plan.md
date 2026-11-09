@@ -1,6 +1,6 @@
 ---
 kind: stage
-status: in-progress
+status: done
 depends: [01-upstream-provenance, 02-protocol-compatibility]
 base: c0ded0414f9dc891667122f0ffc2e68b77a89ebb
 ---
@@ -69,3 +69,45 @@ investigation. Estimate migration work without applying patches, regenerating
 - Migration work and unresolved items are grouped by dependency/order and handed to
   `lead` as assessment findings. No migration, vendor generation, code/test/config
   edit, build, or external write is performed.
+
+## Outcome
+
+All five children and the independent integration review cover the complete local
+patch and vendor inventory at the two fixed source refs. P1-P5, defensive P7 and
+the TURN UDP completion correction remain needed; P6 was already upstream at the
+pinned baseline and has no carried rule. Concrete consumers are mapped through
+`internal/coreproc`, the supervisor, Link and Linux TUN-FD datapaths, routing and
+platform guards, and the captcha bridge.
+
+The reconciled inventory has 59 unique rule entries requiring 61 matches and nine
+added files without upstream/archive collisions. Eleven TURN entries are counted
+once across the P3 and runtime evidence. P1-created P3 anchors are static order
+dependencies. The candidate ordinary TURN TCP anchor and following import require
+adaptation. Once earlier blockers are repaired, the unchanged socket guard would
+encounter seven new lexical detections across five copied candidate files. The
+verified connector archive remains `primp-hyper-util` 0.1.22; no archive or runtime
+helper adaptation was identified. Source URL and client-version provenance also
+need explicit migration treatment.
+
+The ordered hypothetical work preserves the process/secret, peer, platform binding,
+captcha and UDP completion contracts before considering generated-output and
+platform validation. The local Gooby patch label remains unresolved separately
+from the candidate proxy path; its external route is unknown. Raw anchors and a
+static dependency graph are not successful rule application, Cargo resolution,
+generation, build or runtime evidence. Source-wire compatibility does not establish
+the identity or behavior of published/deployed binaries.
+
+Independent integrated review accepted the complete range
+`c0ded0414f9dc891667122f0ffc2e68b77a89ebb..366d87ae618b81cb7733e4ee6a5747b6c09f4e53`
+against all four original criteria without correction-required findings. Detailed
+evidence remains in the ignored local assessment records, including
+`doc/local/core-253-patch-acceptance.md`. All public child Outcomes retain the
+findings and limits. The stale system-DNS wording, independent captcha timers and
+missing request IDs, and bounded local UDP completion without remote-delivery
+guarantee remain explicit synthesis caveats.
+
+No code, test, configuration, generated core or pin changed. No rule execution,
+vendor command, build, test run, live check, migration or external write occurred.
+No current-product correction was narrowed or deferred because of cost. The patched
+2.5.0 core remains in place; final cross-cutting risk assessment and the user's
+separate migration decision are still required.
