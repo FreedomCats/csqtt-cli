@@ -2,7 +2,7 @@
 kind: task
 status: in-progress
 detailed: true
-base: 8ac5c235424c685484a5d43e272f8b4dea42c86a
+base: 8e2e0cd84f0bc976e35609a9228260d00054ae1c
 ---
 
 # Assess socket binding (P3)
