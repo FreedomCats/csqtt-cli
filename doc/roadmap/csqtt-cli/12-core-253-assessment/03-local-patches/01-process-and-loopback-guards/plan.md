@@ -2,7 +2,7 @@
 kind: task
 status: in-progress
 detailed: true
-base: c0ded0414f9dc891667122f0ffc2e68b77a89ebb
+base: 00c3e4849732b5fef0d240876a792d58ea48d67b
 ---
 
 # Assess process and loopback safeguards
