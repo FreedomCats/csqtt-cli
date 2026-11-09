@@ -525,14 +525,16 @@ impl DirectRelay {
                 if let Ok(mut guard) = self.failed_direct_ips.write() {
                     guard.clear();
                 }
+                // П11: domain routing off alone leaves the direct IP path on, so an
+                // update must not break established direct TCP flows or UDP sessions.
+                if let Ok(mut guard) = self.active_tcp.write() {
+                    guard.clear();
+                }
+                if let Ok(mut guard) = self.udp_sessions.write() {
+                    guard.clear();
+                }
             }
             self.dns_domain_map.clear();
-            if let Ok(mut guard) = self.active_tcp.write() {
-                guard.clear();
-            }
-            if let Ok(mut guard) = self.udp_sessions.write() {
-                guard.clear();
-            }
             return;
         }
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -1449,6 +1451,10 @@ mod bind_if_tests;
 #[cfg(test)]
 #[path = "direct_relay_failure_tests.rs"]
 mod failure_tests;
+
+#[cfg(test)]
+#[path = "direct_relay_routing_tests.rs"]
+mod routing_tests;
 
 #[cfg(test)]
 mod tests {

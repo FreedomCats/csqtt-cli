@@ -1,6 +1,6 @@
 ---
 kind: task
-status: in-progress
+status: done
 detailed: true
 depends: [03-routing-follow-ups]
 ---
@@ -334,3 +334,53 @@ decisions, the direct verdict, the DNS path or the П8 counters.
   generation. If the split needs another number of rules or files, amend the plan.
 - The Windows core build is unavailable on this host; the change is
   platform-neutral Rust and no Windows behaviour is claimed.
+
+## Outcome
+
+`UPDATE_DOMAINS` no longer tears down the live state of the direct path when domain
+routing is off and IP routing is on. In `sync_domain_routing` the `active_tcp` and
+`udp_sessions` clears moved from the outer `!config.enabled` branch into the nested
+`if !config.ip_routing_enabled` block, after the `direct_ips` store and the П10
+failed-address clear; `dns_domain_map` keeps its old clearing in the outer branch, and
+the `config.enabled` path is untouched. In the IP-only configuration an established
+direct TCP flow keeps its `active_tcp` entry and a non-SYN packet still returns `true`
+from `try_handle`, and a direct UDP session keeps the same socket; with the whole
+routing configuration off all five collections are cleared as before. Direct routing
+decisions, the direct verdict, the DNS path and the П8 counters do not change.
+
+The change is three counted vendor rules (remove, insert, test module) and one added
+Rust test file. Regeneration from the pinned `d02da9b` is idempotent and
+`vendorcore -check` passes; `CORE_VERSION` moved to 129 files, 113 rules and 13 added
+files; `commit`, `version` and `crate` are unchanged, and no other generated file
+changed.
+
+`direct_relay_routing_tests.rs` covers both modes deterministically on documentation
+addresses, with a loopback UDP socket that sends no datagram and a non-SYN packet that
+is only forwarded to the egress channel: the IP-only update keeps the TCP flow, the
+same `Arc` in the UDP map, the П10 memory and the learned direct address while the
+domain map is cleared; the full disable clears everything and the same packet then
+returns `false`. A mutation run in a copy confirmed each rule is pinned by its own
+test: without the insert the full-disable test fails, without both the IP-only test
+fails. `routing_cleanup_test.go` selects both П11 rules by unique anchors, rejects a
+pattern carrying the П10 `if !config.ip_routing_enabled` anchor, applies remove then
+insert to a representative snippet, pins the placement and the outer
+`dns_domain_map.clear()`/`return;`, fails closed on missing or duplicated anchors and
+pins the rule order with the П10 memory clear; the П10 sixteen-rule, П8 and П9
+selections are untouched.
+
+Architecture §07 has one `П11` row, §04 has the precise `UPDATE_DOMAINS` wording, and
+item 17 of `doc/upstream-proposals.md` has the single Russian П11 note; both documents
+stay Russian. Checks passed under the mandatory 4 GiB/no-swap scope: vendorcore and
+buildcore Go tests, two generations plus `-check`, the core build, focused Rust
+`routing_tests` (2), `failure_tests` (7) and `direct_stats_tests` (6), `buildcore
+-test` (419 passed, 0 failed, 13 ignored), `go build ./...`, `go vet ./...` and the
+full Go suite under Xvfb `-noreset`; the known upstream turn flake did not appear.
+Review found no defects.
+
+Limits: no live check is claimed and live verification remains blocked; the Windows
+core build is unavailable here, and the change is platform-neutral Rust, so no Windows
+behaviour is claimed. As before, clearing `udp_sessions` only forgets the map entry —
+the session task holds its own `Arc` and the socket lives until its idle timeout — and
+an established direct flow survives a rule update even if the new rule would route its
+destination differently, ending by its own idle timeout. No real problem was deferred
+because of cost.

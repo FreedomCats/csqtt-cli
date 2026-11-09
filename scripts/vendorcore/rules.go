@@ -1208,6 +1208,39 @@ const FAILED_DIRECT_MEMORY_TTL: Duration = Duration::from_secs(300);`,
 			"${1}    return false;\n" +
 			"${1}}",
 	},
+	// П11: a routing update with domain routing off must not tear down the
+	// established direct TCP flows and UDP sessions while IP routing stays on.
+	// The two live-state clears move from the outer !enabled branch into the
+	// nested whole-configuration block, where the direct addresses and the П10
+	// memory are already cleared. The remove rule runs first: after the insert
+	// the same two blocks exist twice and Count 1 would fail.
+	{
+		// The two consecutive clears of the outer !enabled branch. The trailing
+		// newline goes with them, so no blank line is left before return.
+		File: "rust-client/direct_relay.rs", Count: 1,
+		Pattern: `(?m)^( +)if let Ok\(mut guard\) = self\.active_tcp\.write\(\) \{\n( +)guard\.clear\(\);\n( +)\}\n( +)if let Ok\(mut guard\) = self\.udp_sessions\.write\(\) \{\n( +)guard\.clear\(\);\n( +)\}\n`,
+		Replace: to(""),
+	},
+	{
+		// The same two clears go inside the nested !ip_routing_enabled block,
+		// right after the direct-address clear. The pattern deliberately has no
+		// "if !config.ip_routing_enabled": the П10 memory-clear rule is selected
+		// by that anchor and must stay unique. ${1} is the statement
+		// indentation inside the block, ${3} the nested closing brace.
+		File: "rust-client/direct_relay.rs", Count: 1,
+		Pattern: `(?m)^( +)self\.direct_ips\n( +)\.store\(Arc::new\(std::collections::HashSet::new\(\)\)\);\n( +)\}$`,
+		Replace: to("${1}self.direct_ips\n" +
+			"${2}.store(Arc::new(std::collections::HashSet::new()));\n" +
+			"${1}// П11: domain routing off alone leaves the direct IP path on, so an\n" +
+			"${1}// update must not break established direct TCP flows or UDP sessions.\n" +
+			"${1}if let Ok(mut guard) = self.active_tcp.write() {\n" +
+			"${1}    guard.clear();\n" +
+			"${1}}\n" +
+			"${1}if let Ok(mut guard) = self.udp_sessions.write() {\n" +
+			"${1}    guard.clear();\n" +
+			"${1}}\n" +
+			"${3}}"),
+	},
 	{
 		// The memory is cleared only when the whole routing configuration is
 		// off: with IP routing alone the direct path can still be chosen.
@@ -1253,6 +1286,15 @@ const FAILED_DIRECT_MEMORY_TTL: Duration = Duration::from_secs(300);`,
 		File: "rust-client/direct_relay.rs", Count: 1,
 		Pattern:     `(?m)^#\[cfg\(all\(test, target_os = "linux"\)\)\]\n#\[path = "direct_relay_bind_if_tests\.rs"\]\nmod bind_if_tests;\n`,
 		InsertAfter: "#[cfg(test)]\n#[path = \"direct_relay_failure_tests.rs\"]\nmod failure_tests;\n",
+	},
+	{
+		// П11: the routing-update regression is a child of direct_relay, like
+		// the П10 failure tests. The rule goes after the П10 module rule and
+		// anchors on its generated block: mod tests is already used by another
+		// rule.
+		File: "rust-client/direct_relay.rs", Count: 1,
+		Pattern:     `(?m)^#\[cfg\(test\)\]\n#\[path = "direct_relay_failure_tests\.rs"\]\nmod failure_tests;\n`,
+		InsertAfter: "#[cfg(test)]\n#[path = \"direct_relay_routing_tests.rs\"]\nmod routing_tests;\n",
 	},
 }
 
