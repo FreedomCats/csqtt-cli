@@ -89,8 +89,9 @@ small-defect nodes are Windows-only and stay skipped. The user next selected the
 routing follow-ups with work order 16 → 14 → 15; they are `done` (П8 counters, П9
 `-tun-uds`, П10 failed-direct fallback). Their acceptance found a pre-existing upstream
 `sync_domain_routing` defect that breaks established direct sessions on
-`UPDATE_DOMAINS`; the user chose to fix it, and it is the fourth child. The
-live-verification group still awaits the user's choice and presence.
+`UPDATE_DOMAINS`; the user chose to fix it, and it is the fourth child, done in
+`efbe28a` (П11). The live-verification group still awaits the user's choice and
+presence.
 
 ### 10. [Open decisions](10-open-decisions/plan.md) — blocked
 

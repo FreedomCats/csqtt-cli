@@ -44,10 +44,10 @@ backlog and fix it; it is the fourth child.
 4. [Routing update sessions](04-routing-update-sessions/plan.md) — fix the pre-existing
    `sync_domain_routing` behaviour: with domain routing off and IP routing on, an
    `UPDATE_DOMAINS` must not clear established direct TCP flows or UDP sessions; the
-   learned live state clears only when the whole routing configuration is off. Done
-   when the deterministic Rust and Go regressions pass and the regenerated core is
-   idempotent.
+   learned live state clears only when the whole routing configuration is off. It is
+   `done` in `efbe28a` (П11). Done when the deterministic Rust and Go regressions pass
+   and the regenerated core is idempotent.
 
 The live-verification group remains blocked until the user chooses to start it and is
 present for the selected checks. The routing follow-ups are `done`; the defect found
-by their acceptance is the fourth child and is `todo`.
+by their acceptance is the fourth child and is `done` in `efbe28a`.
