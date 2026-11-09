@@ -1,8 +1,8 @@
 ---
 kind: task
-status: in-progress
+status: done
 detailed: true
-base: bc743c8bf133c06cee03421bd04513291a76876f
+base: 8ac5c235424c685484a5d43e272f8b4dea42c86a
 ---
 
 # Assess Linux TUN safeguards
@@ -83,3 +83,32 @@ change Linux support or approve migration.
   name confidence and gaps, and avoid legal conclusions or live validation.
 - No code, test, configuration, pin, generated core, build, vendor command, live
   check, or external write is performed.
+
+## Outcome
+
+The ignored local evidence matrix contains the P4 anchor inventory, shell handoff
+mapping, P6 comparison, and test-coverage limits. All four P4 anchors target
+`rust-client/tun.rs`, require one match, and occur once at both exact refs. The
+added `rust-client/tun_peer.rs` target is absent from both upstream trees. The
+candidate TUN-FD receiver accepts the descriptor without checking the connecting
+process's uid; the local P4 guard checks peer credentials, fails closed on lookup
+errors, rejects before receiving the descriptor, and continues accepting a later
+valid connection. Classification: P4 remains necessary for Linux TUN-FD.
+
+The shell also independently checks listener pid/uid before sending an FD and
+resends after `TUN_LOST`; those checks protect the opposite descriptor-handoff
+direction and do not replace the core's sender-credential guard. Local TUN-FD,
+supervisor, and real-core tests were inspected but not run. The real-core handoff
+test uses same-uid socket peers and does not cover a foreign-uid sender.
+
+P6 drop-and-continue behavior for zero-byte and non-transient OS write failures,
+and filtering of non-IP packets before writes, are already present at the pinned
+2.5.0 baseline. The candidate adds write-error/drop metrics, but no P6 rule is
+carried locally. Classification: no migration patch is needed for the established
+drop-and-continue behavior; do not attribute it to 2.5.3. Focused external write-
+drop tests were not found in the inspected files.
+
+No build, test, vendor command, live check, migration, pin change, or legal
+determination was made. These findings concern migration assessment, not a defect
+in the current pinned product. No current-product issue was left unresolved due to
+cost. Next is the socket-by-socket P3 binding assessment.
