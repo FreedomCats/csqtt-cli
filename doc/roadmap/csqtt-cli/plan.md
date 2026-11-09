@@ -14,7 +14,7 @@ The main roadmap of the project. Architecture and its decisions (Р1–Р8, core
 work: what is done, what is left, and in which order.
 
 Scope: a console client to CSQTT for Windows and Linux — a Go shell plus the vendored
-Rust core running as a separate process. Releases up to `v0.7.0` are published.
+Rust core running as a separate process. Releases up to `v0.8.0` are published.
 
 The map was started when the project moved to the roadmap scheme. Stages 01–06 cover
 work that was already finished and are kept as one node each, with a short outcome and
@@ -95,8 +95,8 @@ FOCSQ vulnerabilities. The former core-release wait is superseded by stage 12.
 
 ### 11. [Release v0.8.0 on the current core](11-release-080/plan.md) — done
 
-Current priority: verify and publish the accumulated changes with the existing
-vendored CSQTT 2.5.0 core. The release includes the existing supported platforms;
+Published the accumulated changes with the existing vendored CSQTT 2.5.0 core.
+The release includes the existing supported platforms;
 it does not enable new core features or require completion of unrelated backlog.
 
 ### 12. [Assess csqttr 2.5.3](12-core-253-assessment/plan.md) — in-progress
