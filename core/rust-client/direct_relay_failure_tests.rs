@@ -1,9 +1,11 @@
 // П10 regression: a failed direct TCP connect resets the application's flow
-// instead of closing it silently. The sequence is taken from the SYN-ACK the
-// direct stack already sent to the application, and the reset refers to the
-// next expected sequence. Only documentation addresses are used; no live
-// service is contacted, and the production connect to 192.0.2.10 stays pending
-// for its own timeout and is dropped with the test runtime.
+// instead of closing it silently, and the destination address is remembered so
+// new TCP connections use the tunnel for a bounded period. The reset sequence
+// is taken from the SYN-ACK the direct stack already sent to the application,
+// and the reset refers to the next expected sequence. Only documentation
+// addresses are used; no live service is contacted, and the production connect
+// to 192.0.2.10 stays pending for its own timeout and is dropped with the test
+// runtime.
 
 use super::*;
 
@@ -116,6 +118,8 @@ async fn syn_ack_record_reaches_the_failure_path() {
                     &relay.syn_ack_seqs,
                     key,
                     Duration::from_millis(100),
+                    &relay.failed_direct_ips,
+                    Duration::from_secs(300),
                 )
                 .await;
             }
@@ -143,6 +147,14 @@ async fn syn_ack_record_reaches_the_failure_path() {
         relay.syn_ack_seqs.read().unwrap().is_empty(),
         "the SYN-ACK record must be gone"
     );
+    assert!(
+        relay
+            .failed_direct_ips
+            .read()
+            .unwrap()
+            .contains_key(&dst.ip()),
+        "the failed destination must be remembered"
+    );
 }
 
 /// The handler sends an RST built from the recorded sequence: the destination
@@ -154,11 +166,21 @@ async fn failed_connect_emits_reset_with_recorded_sequence() {
     let pool = PacketPool::new(16);
     let (tx, mut rx) = mpsc::channel(64);
     let map = RwLock::new(HashMap::new());
+    let failed = RwLock::new(HashMap::new());
 
     let src = app(54321);
     let dst = destination("192.0.2.10", 80);
     map.write().unwrap().insert((src, dst), 0x1122_3344);
-    abort_failed_direct_tcp(&pool, &tx, &map, (src, dst), Duration::from_millis(10)).await;
+    abort_failed_direct_tcp(
+        &pool,
+        &tx,
+        &map,
+        (src, dst),
+        Duration::from_millis(10),
+        &failed,
+        Duration::from_secs(300),
+    )
+    .await;
 
     let packet = rx.try_recv().expect("the handler sent no reset");
     let frame = packet.as_slice();
@@ -173,11 +195,24 @@ async fn failed_connect_emits_reset_with_recorded_sequence() {
     assert_eq!(flags, 0x04, "reset flags");
     assert_ipv4_checksums(frame, dst, src);
     assert!(map.read().unwrap().is_empty(), "the record must be removed");
+    assert!(
+        failed.read().unwrap().contains_key(&dst.ip()),
+        "the IPv4 destination must be remembered"
+    );
 
     let src = destination("2001:db8::2", 12345);
     let dst = destination("2001:db8::1", 443);
     map.write().unwrap().insert((src, dst), 0x1122_3344);
-    abort_failed_direct_tcp(&pool, &tx, &map, (src, dst), Duration::from_millis(10)).await;
+    abort_failed_direct_tcp(
+        &pool,
+        &tx,
+        &map,
+        (src, dst),
+        Duration::from_millis(10),
+        &failed,
+        Duration::from_secs(300),
+    )
+    .await;
 
     let packet = rx.try_recv().expect("the handler sent no IPv6 reset");
     let frame = packet.as_slice();
@@ -202,22 +237,40 @@ async fn failed_connect_emits_reset_with_recorded_sequence() {
         map.read().unwrap().is_empty(),
         "the IPv6 record must be removed"
     );
+    assert!(
+        failed.read().unwrap().contains_key(&dst.ip()),
+        "the IPv6 destination must be remembered"
+    );
 }
 
 /// Without a record the handler returns within its bounded wait and sends
-/// nothing: no sequence is invented.
+/// nothing: no sequence is invented. The address is remembered anyway: the
+/// failure does not depend on the SYN-ACK record.
 #[tokio::test]
 async fn missing_record_closes_without_reset() {
     let pool = PacketPool::new(16);
     let (tx, mut rx) = mpsc::channel(64);
     let map = RwLock::new(HashMap::new());
+    let failed = RwLock::new(HashMap::new());
     let key = (app(54321), destination("192.0.2.10", 80));
     tokio::time::timeout(
         Duration::from_secs(1),
-        abort_failed_direct_tcp(&pool, &tx, &map, key, Duration::from_millis(10)),
+        abort_failed_direct_tcp(
+            &pool,
+            &tx,
+            &map,
+            key,
+            Duration::from_millis(10),
+            &failed,
+            Duration::from_secs(300),
+        ),
     )
     .await
     .expect("the handler hung without a record");
+    assert!(
+        failed.read().unwrap().contains_key(&key.1.ip()),
+        "the address must be remembered even without a SYN-ACK record"
+    );
     assert!(
         tokio::time::timeout(Duration::from_millis(50), rx.recv())
             .await
@@ -248,4 +301,177 @@ fn syn_ack_flow_accepts_only_syn_ack() {
     assert_eq!(syn_ack_flow(&syn_ack4[..30]), None, "a truncated frame");
     let udp = build_udp_packet(dst4, app4, b"x").unwrap();
     assert_eq!(syn_ack_flow(&udp), None, "a UDP frame");
+}
+
+/// A new TCP SYN to a remembered address takes the tunnel, a non-SYN packet of
+/// an established direct flow stays direct, and an expired entry allows a
+/// direct attempt again. Only documentation addresses are used; the outer
+/// connects started for the direct verdicts stay pending and are dropped with
+/// the test runtime.
+#[tokio::test]
+async fn failed_direct_memory_routes_new_syns_to_the_tunnel() {
+    let domain_routing = Arc::new(ArcSwap::from_pointee(
+        crate::dispatcher::DomainRoutingConfig {
+            enabled: false,
+            ip_routing_enabled: true,
+            ip_is_whitelist: false,
+            ip_rules: Arc::new(vec![crate::sni::IpRule::Cidr(
+                Ipv4Addr::new(192, 0, 2, 0),
+                24,
+            )]),
+            ..Default::default()
+        },
+    ));
+    let direct_ips = Arc::new(ArcSwap::from_pointee(std::collections::HashSet::new()));
+    let dns_domain_map = Arc::new(crate::sni::DnsDomainMap::default());
+    let pool = PacketPool::new(16);
+    let (inbound_tx, _inbound_rx) = mpsc::channel(DIRECT_RELAY_INBOUND_CAPACITY);
+    let relay = DirectRelay::new(
+        domain_routing,
+        direct_ips,
+        dns_domain_map,
+        pool.clone(),
+        inbound_tx,
+    )
+    .expect("the direct stack must initialize");
+
+    let direct_dst = destination("192.0.2.10", 80);
+    let syn = build_tcp_packet(app(54321), direct_dst, 1000, 0, 0x02, &[]).unwrap();
+    let mut packet = pool.try_acquire().unwrap();
+    packet
+        .extend_tail(syn.len())
+        .unwrap()
+        .copy_from_slice(&syn);
+    assert!(
+        relay.try_handle(&packet).await,
+        "an address without a remembered failure must be tried directly"
+    );
+
+    let failed_dst = destination("192.0.2.11", 443);
+    remember_failed_direct(
+        &relay.failed_direct_ips,
+        failed_dst.ip(),
+        std::time::Instant::now(),
+        FAILED_DIRECT_MEMORY_TTL,
+    );
+    let syn = build_tcp_packet(app(54322), failed_dst, 2000, 0, 0x02, &[]).unwrap();
+    let mut packet = pool.try_acquire().unwrap();
+    packet
+        .extend_tail(syn.len())
+        .unwrap()
+        .copy_from_slice(&syn);
+    assert!(
+        !relay.try_handle(&packet).await,
+        "a new SYN to a remembered address must take the tunnel"
+    );
+
+    let key = (app(54322), failed_dst);
+    relay
+        .active_tcp
+        .write()
+        .unwrap()
+        .insert(key, std::time::Instant::now());
+    let ack = build_tcp_packet(key.0, key.1, 2001, 0, 0x10, &[]).unwrap();
+    let mut packet = pool.try_acquire().unwrap();
+    packet
+        .extend_tail(ack.len())
+        .unwrap()
+        .copy_from_slice(&ack);
+    assert!(
+        relay.try_handle(&packet).await,
+        "an established direct flow must stay direct"
+    );
+
+    relay.failed_direct_ips.write().unwrap().insert(
+        failed_dst.ip(),
+        std::time::Instant::now() - Duration::from_secs(1),
+    );
+    let syn = build_tcp_packet(app(54323), failed_dst, 3000, 0, 0x02, &[]).unwrap();
+    let mut packet = pool.try_acquire().unwrap();
+    packet
+        .extend_tail(syn.len())
+        .unwrap()
+        .copy_from_slice(&syn);
+    assert!(
+        relay.try_handle(&packet).await,
+        "an expired memory entry must allow a direct attempt again"
+    );
+}
+
+/// The memory expires exactly at its deadline when the time is injected; no
+/// test waits for the production five minutes.
+#[test]
+fn failed_direct_memory_expires_with_injected_time() {
+    let map = RwLock::new(HashMap::new());
+    let ip: IpAddr = "192.0.2.10".parse().unwrap();
+    let now = std::time::Instant::now();
+    let ttl = Duration::from_secs(300);
+    remember_failed_direct(&map, ip, now, ttl);
+    assert!(
+        failed_direct_active(&map, ip, now),
+        "active at the recording instant"
+    );
+    assert!(
+        failed_direct_active(&map, ip, now + ttl - Duration::from_millis(1)),
+        "active just before the deadline"
+    );
+    assert!(
+        !failed_direct_active(&map, ip, now + ttl),
+        "absent at the deadline"
+    );
+    assert!(
+        !failed_direct_active(&map, ip, now + ttl + Duration::from_millis(1)),
+        "absent after the deadline"
+    );
+    assert!(
+        !failed_direct_active(&map, "192.0.2.11".parse().unwrap(), now),
+        "another address is not remembered"
+    );
+}
+
+/// Turning domain routing off alone keeps the memory; disabling the whole
+/// routing configuration clears it.
+#[tokio::test]
+async fn disabling_routing_clears_the_failed_address_memory() {
+    let domain_routing = Arc::new(ArcSwap::from_pointee(
+        crate::dispatcher::DomainRoutingConfig {
+            enabled: false,
+            ip_routing_enabled: true,
+            ..Default::default()
+        },
+    ));
+    let direct_ips = Arc::new(ArcSwap::from_pointee(std::collections::HashSet::new()));
+    let dns_domain_map = Arc::new(crate::sni::DnsDomainMap::default());
+    let pool = PacketPool::new(16);
+    let (inbound_tx, _inbound_rx) = mpsc::channel(DIRECT_RELAY_INBOUND_CAPACITY);
+    let relay = DirectRelay::new(domain_routing, direct_ips, dns_domain_map, pool, inbound_tx)
+        .expect("the direct stack must initialize");
+
+    let ip: IpAddr = "192.0.2.10".parse().unwrap();
+    remember_failed_direct(
+        &relay.failed_direct_ips,
+        ip,
+        std::time::Instant::now(),
+        FAILED_DIRECT_MEMORY_TTL,
+    );
+
+    relay.sync_domain_routing(&crate::dispatcher::DomainRoutingConfig {
+        enabled: false,
+        ip_routing_enabled: true,
+        ..Default::default()
+    });
+    assert!(
+        failed_direct_active(&relay.failed_direct_ips, ip, std::time::Instant::now()),
+        "turning domain routing off alone keeps the memory"
+    );
+
+    relay.sync_domain_routing(&crate::dispatcher::DomainRoutingConfig {
+        enabled: false,
+        ip_routing_enabled: false,
+        ..Default::default()
+    });
+    assert!(
+        relay.failed_direct_ips.read().unwrap().is_empty(),
+        "disabling the whole routing configuration clears the memory"
+    );
 }

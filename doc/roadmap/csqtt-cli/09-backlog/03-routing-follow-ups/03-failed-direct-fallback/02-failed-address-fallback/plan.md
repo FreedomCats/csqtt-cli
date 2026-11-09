@@ -1,6 +1,6 @@
 ---
 kind: task
-status: in-progress
+status: done
 detailed: true
 depends: [01-failed-connection-reset]
 ---
@@ -363,3 +363,60 @@ under the П8 contract and needs no counter code.
 - `doc/architecture.md` and `doc/upstream-proposals.md` are Russian; edit them in
   Russian, keep one `П10` row and one note for the whole fallback, and do not add
   environment or personal data.
+
+## Outcome
+
+A failed direct TCP connect — the `Ok(Err(_))` outcome and the five-second `Err(_)`
+timeout alike — now remembers the destination IP in `DirectRelay::failed_direct_ips` for
+`FAILED_DIRECT_MEMORY_TTL` (five minutes in production). The record is written at the
+very start of `abort_failed_direct_tcp`, before `wait_for_syn_ack_seq` and before the RST
+is built, so a failure whose SYN-ACK record is missing (no reset sent) still remembers
+the address. The key is the destination IP alone: another port or another application
+address to the same IP is affected too.
+
+In `try_handle`, after the DNS handling and the TCP SYN parsing and immediately before
+the domain lookup, a `protocol == 6` check of the memory returns false while the entry is
+valid; `dispatch` then sends the SYN to the tunnel (with workers `bytes_up` grows, without
+workers the packet is `Dropped`), and no counter code was added. Non-SYN packets of an
+established flow return through the existing `active_tcp` branch before the check, so
+open direct flows stay direct; UDP, DNS, `evaluate_route`, `is_candidate_direct`,
+`is_direct_ip` and the direct verdict are unchanged. The lookup treats an entry as absent
+at and after its deadline; the existing 30-second cleanup task prunes expired entries
+with the same `Instant`. `sync_domain_routing` clears the memory only inside the nested
+`!config.ip_routing_enabled` block of the `!config.enabled` branch, i.e. when the whole
+routing configuration is disabled; turning domain routing off alone keeps it. A
+successful outer connect is not recorded: the only `remember_failed_direct` call is at
+the failure handler entry, and the handler is called only from the listener's failure
+`else`; the Go rule test pins both.
+
+The change is five new counted rules plus the extended `П10` entries on
+`rust-client/direct_relay.rs` and the extended added test file; `core/` and
+`CORE_VERSION` were produced only by generation from the pinned `d02da9b`: 128 files,
+110 rules, 12 added files. Two generations gave an identical `core/` tree and
+`vendorcore -check` passes. `direct_relay_failure_tests.rs` adds deterministic tests on
+documentation addresses and no live service: new SYNs to a remembered IP from another
+source port take the tunnel, a non-SYN packet of an existing `active_tcp` flow stays
+direct, an expired entry restores the direct verdict, injected time expires exactly at
+the deadline, and disabling the whole routing configuration clears the memory.
+`direct_fallback_test.go` pins all sixteen `П10` rules by unique anchors (distinct count
+11→16), applies the new memory-check, memory-clear, cleanup and handler-code rules to
+representative snippets, and fails closed on a missing or duplicated anchor; the `П8`
+(26 rules) and `П9` selections are untouched.
+
+Architecture §07 extends the single `П10` row with the memory, and proposal 15 extends
+its single Russian note; the Part 2 introduction now says items 14–16 are patched locally
+(`П9`, `П10`, `П8`). Both documents stay Russian. Checks: the vendor and build-script Go
+tests, two generations and `-check`, the core build, focused Rust `failure_tests` (7
+passed) and `direct_stats_tests` (6 passed), `buildcore -test` (the first run hit the
+known upstream turn flake at `turn_integration_tests.rs:291`/`:571`; a rerun passed
+417/0/13), `go build ./...`, `go vet ./...` and the full Go suite under Xvfb `-noreset`
+all passed under the mandatory scope. Hosted checks, push and live browser/provider
+checks remain pending; the Windows core build is unavailable on this host, the change is
+platform-neutral Rust, and no Windows behaviour is claimed.
+
+Observed in passing: the pre-existing `sync_domain_routing` branch with domain routing
+disabled and IP routing enabled still clears `active_tcp` and `udp_sessions` on every
+update. This task does not change it, and the new memory deliberately does not repeat it.
+The memory is keyed by IP, so other sites on the same address use the tunnel for the
+period (the proposal's trade-off), and connections opened during the five-second attempt
+still go direct.

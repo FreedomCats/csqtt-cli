@@ -22,6 +22,10 @@ pub const DIRECT_RELAY_INBOUND_CAPACITY: usize = 128;
 /// arrives first.
 const SYN_ACK_RECORD_WAIT: Duration = Duration::from_millis(500);
 
+/// П10: how long a destination whose direct connect failed is not tried
+/// directly. Production uses five minutes; tests inject a shorter period.
+const FAILED_DIRECT_MEMORY_TTL: Duration = Duration::from_secs(300);
+
 fn dns_query_slots() -> &'static Arc<Semaphore> {
     static SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
     SLOTS.get_or_init(|| Arc::new(Semaphore::new(MAX_CONCURRENT_DNS_QUERIES)))
@@ -230,6 +234,10 @@ pub struct DirectRelay {
     /// refers to it.
     #[cfg_attr(not(test), allow(dead_code))]
     syn_ack_seqs: Arc<RwLock<HashMap<(SocketAddr, SocketAddr), u32>>>,
+    /// П10: destination addresses whose direct connect failed, with the
+    /// instant after which a direct attempt is allowed again. The lookup
+    /// ignores an expired entry; the cleanup task prunes it.
+    failed_direct_ips: Arc<RwLock<HashMap<IpAddr, std::time::Instant>>>,
     active_tcp: Arc<RwLock<HashMap<(SocketAddr, SocketAddr), std::time::Instant>>>,
     udp_sessions: Arc<RwLock<HashMap<SocketAddr, Arc<tokio::net::UdpSocket>>>>,
     preresolve_generation: Arc<std::sync::atomic::AtomicU64>,
@@ -364,13 +372,17 @@ impl DirectRelay {
         });
 
         let active_tcp = Arc::new(RwLock::new(HashMap::new()));
+        // П10: destinations whose direct connect failed, created before the
+        // listener accepts a connection and before the cleanup task starts.
+        let failed_direct_ips = Arc::new(RwLock::new(HashMap::new()));
         let active_tcp_c = active_tcp.clone();
 
         // П10: the failure path of an accepted flow needs the pool, the inbound
-        // channel and the SYN-ACK records of direct flows.
+        // channel, the SYN-ACK records and the failed-address memory.
         let abort_pool = pool.clone();
         let abort_inbound_tx = inbound_tx.clone();
         let abort_syn_ack_seqs = syn_ack_seqs.clone();
+        let abort_failed_direct_ips = failed_direct_ips.clone();
         if let Some(mut listener) = tcp_listener {
             let shutdown_listener = shutdown.clone();
             tokio::spawn(async move {
@@ -391,6 +403,7 @@ impl DirectRelay {
                     let abort_pool_conn = abort_pool.clone();
                     let abort_inbound_tx_conn = abort_inbound_tx.clone();
                     let abort_syn_ack_seqs_conn = abort_syn_ack_seqs.clone();
+                    let abort_failed_direct_ips_conn = abort_failed_direct_ips.clone();
 
                     tokio::spawn(async move {
                         let connect_res = tokio::time::timeout(
@@ -439,6 +452,8 @@ impl DirectRelay {
                                 &abort_syn_ack_seqs_conn,
                                 key,
                                 SYN_ACK_RECORD_WAIT,
+                                &abort_failed_direct_ips_conn,
+                                FAILED_DIRECT_MEMORY_TTL,
                             )
                             .await;
                         }
@@ -456,6 +471,8 @@ impl DirectRelay {
         }
 
         let active_tcp_cleanup = active_tcp.clone();
+        // П10: the failed-address memory is pruned by the same task.
+        let failed_direct_cleanup = failed_direct_ips.clone();
         let shutdown_cleanup = shutdown.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(30));
@@ -470,6 +487,11 @@ impl DirectRelay {
                         now.duration_since(*last_seen) < Duration::from_secs(120)
                     });
                 }
+                // П10: keep the failed-address memory small; the lookup already
+                // ignores an expired entry.
+                if let Ok(mut guard) = failed_direct_cleanup.write() {
+                    guard.retain(|_, deadline| *deadline > now);
+                }
             }
         });
 
@@ -482,6 +504,7 @@ impl DirectRelay {
             direct_pkt_tx,
             active_tcp,
             syn_ack_seqs,
+            failed_direct_ips,
             udp_sessions: Arc::new(RwLock::new(HashMap::new())),
             preresolve_generation,
             shutdown,
@@ -497,6 +520,11 @@ impl DirectRelay {
             if !config.ip_routing_enabled {
                 self.direct_ips
                     .store(Arc::new(std::collections::HashSet::new()));
+                // П10: the whole routing configuration is off, so the failed-address
+                // memory goes with the direct addresses.
+                if let Ok(mut guard) = self.failed_direct_ips.write() {
+                    guard.clear();
+                }
             }
             self.dns_domain_map.clear();
             if let Ok(mut guard) = self.active_tcp.write() {
@@ -704,6 +732,13 @@ impl DirectRelay {
             }
         }
 
+        // П10: a destination whose direct connect failed is not tried directly
+        // again while the memory entry is valid; the SYN takes the tunnel.
+        if protocol == 6
+            && failed_direct_active(&self.failed_direct_ips, dst_ip, std::time::Instant::now())
+        {
+            return false;
+        }
         let domain = self.dns_domain_map.get(&dst_ip);
         let verdict = crate::sni::evaluate_route(
             &dst_ip,
@@ -1049,6 +1084,32 @@ async fn wait_for_syn_ack_seq(
     }
 }
 
+/// П10: remembers that a destination's direct connect failed. The entry is
+/// valid until now + ttl; a lookup ignores it at and after the deadline.
+fn remember_failed_direct(
+    map: &RwLock<HashMap<IpAddr, std::time::Instant>>,
+    ip: IpAddr,
+    now: std::time::Instant,
+    ttl: Duration,
+) {
+    if let Ok(mut guard) = map.write() {
+        guard.insert(ip, now + ttl);
+    }
+}
+
+/// П10: true while a destination's failed direct connect is remembered, so a
+/// new TCP connection must use the tunnel instead of a direct attempt.
+fn failed_direct_active(
+    map: &RwLock<HashMap<IpAddr, std::time::Instant>>,
+    ip: IpAddr,
+    now: std::time::Instant,
+) -> bool {
+    map.read()
+        .ok()
+        .and_then(|guard| guard.get(&ip).copied())
+        .is_some_and(|deadline| deadline > now)
+}
+
 /// П10: turns a failed outer direct connect into an application-facing reset.
 /// The stack answered the application's SYN with SYN-ACK, so the application's
 /// next expected sequence is the recorded one plus one: a reset at the
@@ -1060,7 +1121,12 @@ async fn abort_failed_direct_tcp(
     map: &RwLock<HashMap<(SocketAddr, SocketAddr), u32>>,
     key: (SocketAddr, SocketAddr),
     wait: Duration,
+    failed: &RwLock<HashMap<IpAddr, std::time::Instant>>,
+    ttl: Duration,
 ) {
+    // П10: the address is remembered even when no SYN-ACK record exists and
+    // no reset is sent: a failure is independent of the record.
+    remember_failed_direct(failed, key.1.ip(), std::time::Instant::now(), ttl);
     let seq = wait_for_syn_ack_seq(map, key, wait).await;
     if let Some(seq) = seq
         && let Some(packet) = build_tcp_packet(key.1, key.0, seq.wrapping_add(1), 0, 0x04, &[])

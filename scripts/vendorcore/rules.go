@@ -253,6 +253,32 @@ async fn wait_for_syn_ack_seq(
     }
 }
 
+/// П10: remembers that a destination's direct connect failed. The entry is
+/// valid until now + ttl; a lookup ignores it at and after the deadline.
+fn remember_failed_direct(
+    map: &RwLock<HashMap<IpAddr, std::time::Instant>>,
+    ip: IpAddr,
+    now: std::time::Instant,
+    ttl: Duration,
+) {
+    if let Ok(mut guard) = map.write() {
+        guard.insert(ip, now + ttl);
+    }
+}
+
+/// П10: true while a destination's failed direct connect is remembered, so a
+/// new TCP connection must use the tunnel instead of a direct attempt.
+fn failed_direct_active(
+    map: &RwLock<HashMap<IpAddr, std::time::Instant>>,
+    ip: IpAddr,
+    now: std::time::Instant,
+) -> bool {
+    map.read()
+        .ok()
+        .and_then(|guard| guard.get(&ip).copied())
+        .is_some_and(|deadline| deadline > now)
+}
+
 /// П10: turns a failed outer direct connect into an application-facing reset.
 /// The stack answered the application's SYN with SYN-ACK, so the application's
 /// next expected sequence is the recorded one plus one: a reset at the
@@ -264,7 +290,12 @@ async fn abort_failed_direct_tcp(
     map: &RwLock<HashMap<(SocketAddr, SocketAddr), u32>>,
     key: (SocketAddr, SocketAddr),
     wait: Duration,
+    failed: &RwLock<HashMap<IpAddr, std::time::Instant>>,
+    ttl: Duration,
 ) {
+    // П10: the address is remembered even when no SYN-ACK record exists and
+    // no reset is sent: a failure is independent of the record.
+    remember_failed_direct(failed, key.1.ip(), std::time::Instant::now(), ttl);
     let seq = wait_for_syn_ack_seq(map, key, wait).await;
     if let Some(seq) = seq
         && let Some(packet) = build_tcp_packet(key.1, key.0, seq.wrapping_add(1), 0, 0x04, &[])
@@ -1047,7 +1078,9 @@ var rules = []rule{
 	// SYN-ACK before the outer connect starts, so the server-side sequence is
 	// recorded per flow from the frames leaving the direct stack, keyed like
 	// active_tcp. On a connect error or the five-second timeout the listener
-	// sends an RST with the recorded sequence plus one. The regression is
+	// sends an RST with the recorded sequence plus one. The destination address
+	// is remembered for a bounded period, so new TCP connections to it take the
+	// tunnel instead of another direct attempt. The regression is
 	// files/rust-client/direct_relay_failure_tests.rs.
 	{
 		// The bounded wait for the record; production passes it to the handler.
@@ -1058,7 +1091,11 @@ var rules = []rule{
 /// stack emits the SYN-ACK before the outer connect starts, so this covers
 /// only the accept-versus-egress task-start race: the stack's frame normally
 /// arrives first.
-const SYN_ACK_RECORD_WAIT: Duration = Duration::from_millis(500);`,
+const SYN_ACK_RECORD_WAIT: Duration = Duration::from_millis(500);
+
+/// П10: how long a destination whose direct connect failed is not tried
+/// directly. Production uses five minutes; tests inject a shorter period.
+const FAILED_DIRECT_MEMORY_TTL: Duration = Duration::from_secs(300);`,
 	},
 	{
 		File: "rust-client/direct_relay.rs", Count: 1,
@@ -1067,12 +1104,16 @@ const SYN_ACK_RECORD_WAIT: Duration = Duration::from_millis(500);`,
 			"${1}/// application, keyed like active_tcp. An application-facing reset\n" +
 			"${1}/// refers to it.\n" +
 			"${1}#[cfg_attr(not(test), allow(dead_code))]\n" +
-			"${1}syn_ack_seqs: Arc<RwLock<HashMap<(SocketAddr, SocketAddr), u32>>>,",
+			"${1}syn_ack_seqs: Arc<RwLock<HashMap<(SocketAddr, SocketAddr), u32>>>,\n" +
+			"${1}/// П10: destination addresses whose direct connect failed, with the\n" +
+			"${1}/// instant after which a direct attempt is allowed again. The lookup\n" +
+			"${1}/// ignores an expired entry; the cleanup task prunes it.\n" +
+			"${1}failed_direct_ips: Arc<RwLock<HashMap<IpAddr, std::time::Instant>>>,",
 	},
 	{
 		File: "rust-client/direct_relay.rs", Count: 1,
 		Pattern:     `(?m)^( +)active_tcp,$`,
-		InsertAfter: "syn_ack_seqs,",
+		InsertAfter: "syn_ack_seqs,\n${1}failed_direct_ips,",
 	},
 	{
 		// The map must exist before the egress task reads the first frame and
@@ -1083,6 +1124,15 @@ const SYN_ACK_RECORD_WAIT: Duration = Duration::from_millis(500);`,
 			"${1}// reads the first frame and before the listener accepts a connection.\n" +
 			"${1}let syn_ack_seqs = Arc::new(RwLock::new(HashMap::new()));\n" +
 			"${1}let syn_ack_seqs_egress = syn_ack_seqs.clone();",
+	},
+	{
+		// The failed-address memory must exist before the listener accepts a
+		// connection and before the cleanup task starts.
+		File: "rust-client/direct_relay.rs", Count: 1,
+		Pattern: `(?m)^( +)let active_tcp = Arc::new\(RwLock::new\(HashMap::new\(\)\)\);$`,
+		InsertAfter: "// П10: destinations whose direct connect failed, created before the\n" +
+			"${1}// listener accepts a connection and before the cleanup task starts.\n" +
+			"${1}let failed_direct_ips = Arc::new(RwLock::new(HashMap::new()));",
 	},
 	{
 		// The record must not depend on pool availability and must exist before
@@ -1097,17 +1147,19 @@ const SYN_ACK_RECORD_WAIT: Duration = Duration::from_millis(500);`,
 		File: "rust-client/direct_relay.rs", Count: 1,
 		Pattern: `(?m)^( +)if let Some\(mut listener\) = tcp_listener \{$`,
 		InsertBefore: "// П10: the failure path of an accepted flow needs the pool, the inbound\n" +
-			"${1}// channel and the SYN-ACK records of direct flows.\n" +
+			"${1}// channel, the SYN-ACK records and the failed-address memory.\n" +
 			"${1}let abort_pool = pool.clone();\n" +
 			"${1}let abort_inbound_tx = inbound_tx.clone();\n" +
-			"${1}let abort_syn_ack_seqs = syn_ack_seqs.clone();",
+			"${1}let abort_syn_ack_seqs = syn_ack_seqs.clone();\n" +
+			"${1}let abort_failed_direct_ips = failed_direct_ips.clone();",
 	},
 	{
 		File: "rust-client/direct_relay.rs", Count: 1,
 		Pattern: `(?m)^( +)let active_tcp_conn = active_tcp_c\.clone\(\);$`,
 		InsertAfter: "let abort_pool_conn = abort_pool.clone();\n" +
 			"${1}let abort_inbound_tx_conn = abort_inbound_tx.clone();\n" +
-			"${1}let abort_syn_ack_seqs_conn = abort_syn_ack_seqs.clone();",
+			"${1}let abort_syn_ack_seqs_conn = abort_syn_ack_seqs.clone();\n" +
+			"${1}let abort_failed_direct_ips_conn = abort_failed_direct_ips.clone();",
 	},
 	{
 		// A successful connect and a later broken copy loop do not reset: only
@@ -1127,6 +1179,8 @@ const SYN_ACK_RECORD_WAIT: Duration = Duration::from_millis(500);`,
 			"${2}        &abort_syn_ack_seqs_conn,\n" +
 			"${2}        key,\n" +
 			"${2}        SYN_ACK_RECORD_WAIT,\n" +
+			"${2}        &abort_failed_direct_ips_conn,\n" +
+			"${2}        FAILED_DIRECT_MEMORY_TTL,\n" +
 			"${2}    )\n" +
 			"${2}    .await;\n" +
 			"${2}}\n" +
@@ -1139,6 +1193,50 @@ const SYN_ACK_RECORD_WAIT: Duration = Duration::from_millis(500);`,
 		Pattern: `(?m)^( +)if let Ok\(mut guard\) = active_tcp_conn\.write\(\) \{\n( +)guard\.remove\(&key\);\n( +)\}$`,
 		InsertAfter: "if let Ok(mut guard) = abort_syn_ack_seqs_conn.write() {\n" +
 			"${1}    guard.remove(&key);\n${1}}",
+	},
+	{
+		// A new TCP SYN to a destination whose direct connect failed takes the
+		// tunnel. The check goes after the established-flow branch and before
+		// evaluate_route, so open direct flows stay direct and UDP is untouched.
+		File: "rust-client/direct_relay.rs", Count: 1,
+		Pattern: `(?m)^( +)let domain = self\.dns_domain_map\.get\(&dst_ip\);$`,
+		InsertBefore: "// П10: a destination whose direct connect failed is not tried directly\n" +
+			"${1}// again while the memory entry is valid; the SYN takes the tunnel.\n" +
+			"${1}if protocol == 6\n" +
+			"${1}    && failed_direct_active(&self.failed_direct_ips, dst_ip, std::time::Instant::now())\n" +
+			"${1}{\n" +
+			"${1}    return false;\n" +
+			"${1}}",
+	},
+	{
+		// The memory is cleared only when the whole routing configuration is
+		// off: with IP routing alone the direct path can still be chosen.
+		File: "rust-client/direct_relay.rs", Count: 1,
+		Pattern: `(?m)^( +)if !config\.ip_routing_enabled \{\n( +)self\.direct_ips\n( +)\.store\(Arc::new\(std::collections::HashSet::new\(\)\)\);$`,
+		Replace: to("${0}\n" +
+			"${2}// П10: the whole routing configuration is off, so the failed-address\n" +
+			"${2}// memory goes with the direct addresses.\n" +
+			"${2}if let Ok(mut guard) = self.failed_direct_ips.write() {\n" +
+			"${2}    guard.clear();\n" +
+			"${2}}"),
+	},
+	{
+		// The cleanup task prunes expired failed-address entries as well.
+		File: "rust-client/direct_relay.rs", Count: 1,
+		Pattern: `(?m)^( +)let active_tcp_cleanup = active_tcp\.clone\(\);$`,
+		InsertAfter: "// П10: the failed-address memory is pruned by the same task.\n" +
+			"${1}let failed_direct_cleanup = failed_direct_ips.clone();",
+	},
+	{
+		// An expired entry is already ignored by the lookup; the prune only
+		// keeps the map small, on the same 30-second tick as active_tcp.
+		File: "rust-client/direct_relay.rs", Count: 1,
+		Pattern: `(?m)^( +)if let Ok\(mut guard\) = active_tcp_cleanup\.write\(\) \{\n( +)guard\.retain\(\|_, last_seen\| \{\n( +)now\.duration_since\(\*last_seen\) < Duration::from_secs\(120\)\n( +)\}\);\n( +)\}$`,
+		InsertAfter: "// П10: keep the failed-address memory small; the lookup already\n" +
+			"${1}// ignores an expired entry.\n" +
+			"${1}if let Ok(mut guard) = failed_direct_cleanup.write() {\n" +
+			"${1}    guard.retain(|_, deadline| *deadline > now);\n" +
+			"${1}}",
 	},
 	{
 		// The record and the handler are free functions beside the packet
