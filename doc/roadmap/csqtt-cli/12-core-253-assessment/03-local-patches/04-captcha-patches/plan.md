@@ -1,6 +1,6 @@
 ---
 kind: task
-status: in-progress
+status: done
 detailed: true
 base: 0b3ecdfbf8bfc5c5ff9b69194c58560ceed4070d
 ---
@@ -193,3 +193,47 @@ runs, captcha windows, live checks, or external writes are authorized.
   authorization must retain `doc/local/resume.md`'s memory/no-swap limits and timeout,
   plus Xvfb with `-noreset` for window tests; those rules do not authorize tests here.
   Licensing, platform changes and the final migration choice remain outside this task.
+
+## Outcome
+
+The ignored evidence record `doc/local/core-253-runtime-review.md` inventories all
+16 runtime rule entries requiring 18 matches at each exact ref. All raw anchors
+match their required counts, and neither added captcha/TURN regression-module path
+collides with upstream. The eleven TURN entries overlap the accepted P3 inventory;
+child 05 must deduplicate them by rule identity rather than add domain totals.
+No vendor pipeline was executed or claimed to pass.
+
+P5 and P7 remain needed. Captcha behavior is unchanged between the baseline and
+candidate: ordinary `wv` immediately hands off a selected request without core
+solver work, but waits only 120 seconds; the final manual request in the default
+chain waits 60 seconds. P5 preserves the fixed 180-second local requirement. Both
+upstream refs ignore `ONLY_PRINT_URL`; P7 remains a defensive guard if the solver
+path is reached, separate from the normal `wv` path that already avoids it.
+
+The shell has its own 180-second timer. It suppresses replies when the timeout
+path wins, ownership is superseded, or the attempt is cancelled. A successful token
+can take precedence at the deadline edge. A shorter core wait can lose a late token
+or let it answer a later request. Matching nominal budgets do not synchronize
+timers or add request identifiers; same-session handover resets the bridge timer
+without changing that wire contract. No universal late-reply guarantee is inferred.
+
+The UDP TURN correction also remains needed. Both upstream refs can treat an empty
+queue as drained while the writer still owns an accepted packet, allowing cleanup
+to clear the channel and begin the zero-lifetime Refresh too early. Candidate
+diagnostics do not correct this. The local contract accounts for queued and
+writer-held ownership through a local send attempt or discard and lease return,
+retaining the 250 ms best-effort budget and later writer join/abort timeout. It
+does not guarantee remote receipt. TCP/TLS, shell process-stop bounds and `auto_js`
+call cleanup are distinct contracts.
+
+No runtime-specific shell or helper adaptation was identified if these patches
+are preserved; the previously accepted process and P3 migration blockers remain.
+An independent non-coding reviewer checked the counts, behavior, consumers, test
+scopes and classifications against both exact refs and local artifacts. The
+specified source guards, Rust regressions, mock helpers and shell lifecycle tests
+were inspected, not run. Historical core-CI validation was used only for the
+existing local correction, not as candidate validation. Source counts and behavior
+do not establish generated-output, build, candidate-runtime or live-site success.
+The current pin, captcha policy and migration decision remain unchanged. No code,
+test, configuration, vendor command, build, live check, external write or legal
+conclusion was produced.
