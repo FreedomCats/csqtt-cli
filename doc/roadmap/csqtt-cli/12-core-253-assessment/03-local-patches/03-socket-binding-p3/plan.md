@@ -1,6 +1,6 @@
 ---
 kind: task
-status: in-progress
+status: done
 detailed: true
 base: 8e2e0cd84f0bc976e35609a9228260d00054ae1c
 ---
@@ -127,3 +127,37 @@ platform support, local pin, or migration decision.
 - This is a source-level migration assessment only. It does not alter the pinned
   2.5.0 core, the current release, the migration decision, or existing licence
   treatment, and makes no legal determination.
+
+## Outcome
+
+The ignored evidence matrix records all eight logical socket sites at the pinned
+2.5.0 baseline and candidate 2.5.3 source. Each site exists at both refs, and none
+of the ordinary socket paths explicitly binds to the shell-selected physical
+interface. This is a source-level finding; an effective route through a full-system
+TUN remains conditional on host routes and policy and was not observed live.
+
+Direct routing is opt-in through profile template/server-routing settings and is
+not always active. For a persistent full-TUN datapath, the shell rejects an enabled
+direct-routing setup without `BindIf` before starting the core. `socks`, Linux
+TUN-FD, and Windows Wintun/Link have distinct paths and conditions. Linux uses
+interface-index binding with a device-name fallback and conditionally sets
+`SO_MARK`; Windows uses the IPv4/IPv6 unicast-interface socket options and has no
+`SO_MARK`. Neither local shell behavior nor missing candidate CLI flags was used
+as a substitute for inspecting the candidate socket sites.
+
+The P3 inventory contains 33 rule entries requiring 35 total matches. Counts were
+checked separately from socket behavior. A candidate anchor mismatch at the
+ordinary TURN TCP site does not remove that socket path; candidate source also
+has an opt-in Gooby loopback SOCKS5 path whose external route is unknown. The two
+primp clients share one locked connector and remain two logical sites, not three.
+
+An independent reviewer checked all socket assertions, rule anchors, routing
+conditions, platform mapping, and test scopes against the two exact refs and local
+consumers. Local tests were inspected but not run; the netns test uses Link and
+does not establish exact-ref Linux TUN-FD routing. No build, vendor command, CI,
+live route check, migration, or external write was performed. The architecture's
+description of the system DNS fallback as only available before `TUNCONF` is stale
+for both refs and should be considered during final synthesis. P3 remains necessary
+for a hypothetical migration; this is not a defect in the current pinned product
+and does not authorize a migration. No current-product issue was left unresolved
+due to cost.
