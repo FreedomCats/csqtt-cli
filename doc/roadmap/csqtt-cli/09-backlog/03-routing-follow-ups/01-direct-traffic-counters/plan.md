@@ -1,6 +1,7 @@
 ---
 kind: stage
-status: todo
+status: in-progress
+base: 2353a19
 ---
 
 # Direct-traffic counters in `STATS`

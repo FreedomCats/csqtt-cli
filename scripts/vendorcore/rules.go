@@ -618,6 +618,313 @@ var rules = []rule{
 		InsertAfter: "// Правка П4 csqtt-cli: чужой uid — закрыть соединение и ждать следующего.\n" +
 			"${1}if !self.peer_check.admit(&descriptor) {\n${1}    continue;\n${1}}",
 	},
+	// P8: STATS traffic split by path — bytes_up/bytes_down count the tunnel
+	// only, direct_up/direct_down count the direct path in direct_relay.rs. A
+	// packet is credited once, by the path that accepted it. The Rust
+	// regression is files/rust-client/direct_stats_tests.rs; the event keys are
+	// covered there too.
+	{
+		File: "rust-client/stats.rs", Count: 1,
+		Pattern: `(?m)^( +)pub total_bytes_up: AtomicI64,\n( +)pub total_bytes_down: AtomicI64,$`,
+		Replace: to("${1}/// Tunnel uplink only: packets `Dispatcher::dispatch` accepted for the tunnel.\n" +
+			"${1}pub total_bytes_up: AtomicI64,\n" +
+			"${1}/// Tunnel downlink only: worker packets and reassembled fragments. A packet\n" +
+			"${1}/// is counted once, when it enters the inbound queue; a later queue eviction\n" +
+			"${1}/// or a failed device write does not adjust the counter.\n" +
+			"${1}pub total_bytes_down: AtomicI64,\n" +
+			"${1}/// Direct-path uplink only: packets accepted by `DirectRelay::try_handle`.\n" +
+			"${1}pub direct_bytes_up: AtomicI64,\n" +
+			"${1}/// Direct-path downlink only: packets produced by the direct stack, counted\n" +
+			"${1}/// once at the same inbound-queue point as the tunnel downlink.\n" +
+			"${1}pub direct_bytes_down: AtomicI64,"),
+	},
+	{
+		File: "rust-client/stats.rs", Count: 1,
+		Pattern: `(?m)^( +)let down = self\.total_bytes_down\.load\(Ordering::Relaxed\);$`,
+		Replace: to("${1}let down = self.total_bytes_down.load(Ordering::Relaxed);\n" +
+			"${1}let direct_up = self.direct_bytes_up.load(Ordering::Relaxed);\n" +
+			"${1}let direct_down = self.direct_bytes_down.load(Ordering::Relaxed);"),
+	},
+	{
+		// The periodic Russian log line keeps its wording; its traffic figure
+		// includes both paths.
+		File: "rust-client/stats.rs", Count: 1,
+		Pattern: `(?m)^( +)let total_mb = \(up \+ down\) as f64 / \(1024\.0 \* 1024\.0\);$`,
+		Replace: to("${1}let total_mb = (up + down + direct_up + direct_down) as f64 / (1024.0 * 1024.0);"),
+	},
+	{
+		File: "rust-client/stats.rs", Count: 1,
+		Pattern: `(?m)^( +)events\.stats\(active, up, down\);$`,
+		Replace: to("${1}events.stats(active, up, down, direct_up, direct_down);"),
+	},
+
+	{
+		File: "rust-client/events.rs", Count: 1,
+		Pattern: `(?m)^( +)pub fn stats\(&self, active: i32, bytes_up: i64, bytes_down: i64\) \{$`,
+		Replace: to("${1}pub fn stats(\n" +
+			"${1}    &self,\n" +
+			"${1}    active: i32,\n" +
+			"${1}    bytes_up: i64,\n" +
+			"${1}    bytes_down: i64,\n" +
+			"${1}    direct_up: i64,\n" +
+			"${1}    direct_down: i64,\n" +
+			"${1}) {"),
+	},
+	{
+		File: "rust-client/events.rs", Count: 1,
+		Pattern: `(?m)^( +)self\.emit\("STATS", \|\| \{\n( +)serde_json::json!\(\{\n( +)"active": active,\n( +)"bytes_up": bytes_up,\n( +)"bytes_down": bytes_down\n( +)\}\)\n( +)\}\);$`,
+		Replace: to("${1}self.emit(\"STATS\", || {\n" +
+			"${2}stats_payload(active, bytes_up, bytes_down, direct_up, direct_down)\n" +
+			"${7}});"),
+	},
+	{
+		// The payload is a function of its own so the Rust test asserts the
+		// same key set the event emits.
+		File: "rust-client/events.rs", Count: 1,
+		Pattern: `(?m)^()fn encode_event<T: Serialize>`,
+		InsertBefore: "/// JSON payload of the STATS event. Kept out of the emit closure so a\n" +
+			"/// test can assert the exact key set without copying the literal.\n" +
+			"pub(crate) fn stats_payload(\n" +
+			"    active: i32,\n" +
+			"    bytes_up: i64,\n" +
+			"    bytes_down: i64,\n" +
+			"    direct_up: i64,\n" +
+			"    direct_down: i64,\n" +
+			") -> serde_json::Value {\n" +
+			"    serde_json::json!({\n" +
+			"        \"active\": active,\n" +
+			"        \"bytes_up\": bytes_up,\n" +
+			"        \"bytes_down\": bytes_down,\n" +
+			"        \"direct_up\": direct_up,\n" +
+			"        \"direct_down\": direct_down\n" +
+			"    })\n" +
+			"}\n",
+	},
+
+	{
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern: `(?m)^()pub struct Dispatcher \{$`,
+		InsertBefore: "/// Which path accepted an uplink packet. The read loops credit exactly one\n" +
+			"/// counter per packet from this outcome.\n" +
+			"#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n" +
+			"pub(crate) enum DispatchOutcome {\n" +
+			"    /// The direct relay accepted the packet.\n" +
+			"    Direct,\n" +
+			"    /// The packet was accepted for the tunnel: handed to the worker path,\n" +
+			"    /// whole or fragmented. A fragment set lost to buffer exhaustion still\n" +
+			"    /// counts as tunnel uplink.\n" +
+			"    Tunnel,\n" +
+			"    /// No worker is registered, so the packet went nowhere.\n" +
+			"    Dropped,\n" +
+			"}\n",
+	},
+	{
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern:     `(?m)^( +)pool: Arc<PacketPool>,\n( +)reassembler: crate::wire_protocol::ShardedReassembler,$`,
+		InsertAfter: "stats: Arc<Stats>,",
+	},
+	{
+		// Both dispatcher constructors: start_test_tun and
+		// start_with_domain_routing.
+		File: "rust-client/dispatcher.rs", Count: 2,
+		Pattern:     `(?m)^( +)inbound: ArrayQueue::new\(profile\.inbound_capacity\),\n( +)outbound_capacity: profile\.outbound_capacity,$`,
+		InsertAfter: "stats: stats.clone(),",
+	},
+	{
+		// The test literals that share these capacities.
+		File: "rust-client/dispatcher.rs", Count: 2,
+		Pattern:     `(?m)^( +)inbound: ArrayQueue::new\(16\),\n( +)outbound_capacity: 64,$`,
+		InsertAfter: "stats: Arc::new(Stats::default()),",
+	},
+	{
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern:     `(?m)^( +)inbound: ArrayQueue::new\(16\),\n( +)outbound_capacity: 32,$`,
+		InsertAfter: "stats: Arc::new(Stats::default()),",
+	},
+	{
+		// The inbound-capacity test literal uses the queue profile variables.
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern:     `(?m)^( +)inbound: ArrayQueue::new\(inbound_capacity\),\n( +)outbound_capacity: profile\.outbound_capacity,$`,
+		InsertAfter: "stats: Arc::new(Stats::default()),",
+	},
+	{
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern: `(?m)^( +)pub async fn dispatch\(&self, packet: PacketBuf\) \{$`,
+		Replace: to("${1}pub async fn dispatch(&self, packet: PacketBuf) -> DispatchOutcome {"),
+	},
+	{
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern: `(?m)^( +)if let Some\(relay\) = &self\.direct_relay\n( +)&& relay\.try_handle\(&packet\)\.await\n( +)\{\n( +)return;\n( +)\}$`,
+		Replace: to("${1}if let Some(relay) = &self.direct_relay\n" +
+			"${2}&& relay.try_handle(&packet).await\n" +
+			"${3}{\n" +
+			"${4}return DispatchOutcome::Direct;\n" +
+			"${5}}"),
+	},
+	{
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern: `(?m)^( +)let workers = self\.workers\.load\(\);\n( +)if workers\.is_empty\(\) \{\n( +)return;\n( +)\}$`,
+		Replace: to("${1}let workers = self.workers.load();\n" +
+			"${2}if workers.is_empty() {\n" +
+			"${3}return DispatchOutcome::Dropped;\n" +
+			"${4}}"),
+	},
+	{
+		// The fragmentation branch and a fragment lost to packet buffers still
+		// belong to the tunnel: the packet passed the worker check and never
+		// reached the direct relay, so it cannot be Direct.
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern: `(?m)^( +)if frags\.len\(\) == expected_frags \{\n( +)self\.send_fragments_to_workers\(frags, &workers, flow, packet_len\)\n( +)\.await;\n( +)\} else \{\n( +)crate::log_error!\(\n( +)"\[ОШИБКА\] Dispatcher: фрагмент целиком потерян: \{\} из \{\} \(буферы\)",\n( +)frags\.len\(\),\n( +)expected_frags\n( +)\);\n( +)\}\n( +)\}\n( +)\}$`,
+		Replace: to("${1}if frags.len() == expected_frags {\n" +
+			"${2}self.send_fragments_to_workers(frags, &workers, flow, packet_len)\n" +
+			"${3}.await;\n" +
+			"${4}} else {\n" +
+			"${5}crate::log_error!(\n" +
+			"${6}\"[ОШИБКА] Dispatcher: фрагмент целиком потерян: {} из {} (буферы)\",\n" +
+			"${7}frags.len(),\n" +
+			"${8}expected_frags\n" +
+			"${9});\n" +
+			"${10}}\n" +
+			"${11}}\n" +
+			"${11}DispatchOutcome::Tunnel\n" +
+			"${12}}"),
+	},
+	{
+		// The early "no workers" exit in read_tun stays (candidate 14); only
+		// the accounting moves after dispatch.
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern: `(?m)^( +)stats\n( +)\.total_bytes_up\n( +)\.fetch_add\(length as i64, Ordering::Relaxed\);\n( +)self\.dispatch\(packet\)\.await;$`,
+		Replace: to("${4}let outcome = self.dispatch(packet).await;\n" +
+			"${4}credit_uplink(&stats, outcome, length);"),
+	},
+	{
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern: `(?m)^( +)stats\n( +)\.total_bytes_up\n( +)\.fetch_add\(packet\.len\(\) as i64, Ordering::Relaxed\);\n( +)self\.dispatch\(packet\)\.await;$`,
+		Replace: to("${4}let length = packet.len();\n" +
+			"${4}let outcome = self.dispatch(packet).await;\n" +
+			"${4}credit_uplink(&stats, outcome, length);"),
+	},
+	{
+		// Tunnel downlink from workers, reassembly and session.rs: counted where
+		// it enters the inbound queue, not where the device write succeeds.
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern: `(?m)^( +)pub fn return_packet\(&self, mut packet: PacketBuf\) \{\n( +)strip_legacy_downlink_prefix\(&mut packet\);\n( +)self\.inspect_domain_routing\(&packet\);$`,
+		Replace: to("${1}pub fn return_packet(&self, mut packet: PacketBuf) {\n" +
+			"${2}strip_legacy_downlink_prefix(&mut packet);\n" +
+			"${2}self.stats\n" +
+			"${2}    .total_bytes_down\n" +
+			"${2}    .fetch_add(packet.len() as i64, Ordering::Relaxed);\n" +
+			"${3}self.inspect_domain_routing(&packet);"),
+	},
+	{
+		// Direct downlink, counted at the direct stack's origin.
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern: `(?m)^( +)pub fn return_packet\(&self, mut packet: PacketBuf\) \{$`,
+		InsertBefore: "/// Queues a packet produced by the direct path. Its bytes are credited\n" +
+			"${1}/// here, at the origin, so a later queue eviction or a failed device write\n" +
+			"${1}/// does not change the counter.\n" +
+			"${1}pub fn push_direct_inbound(&self, packet: PacketBuf) {\n" +
+			"${1}    self.stats\n" +
+			"${1}        .direct_bytes_down\n" +
+			"${1}        .fetch_add(packet.len() as i64, Ordering::Relaxed);\n" +
+			"${1}    self.push_inbound(packet);\n" +
+			"${1}}\n",
+	},
+	{
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern: `(?m)^( +)pump_dispatcher\.push_inbound\(pkt\);$`,
+		Replace: to("${1}pump_dispatcher.push_direct_inbound(pkt);"),
+	},
+	{
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern: `(?m)^( +)async fn write_tun\(\n( +)&self,\n( +)device: Arc<tokio::io::unix::AsyncFd<File>>,\n( +)stats: Arc<Stats>,\n( +)cancel: CancellationToken,\n( +)\) \{$`,
+		Replace: to("${1}async fn write_tun(\n" +
+			"${2}&self,\n" +
+			"${3}device: Arc<tokio::io::unix::AsyncFd<File>>,\n" +
+			"${5}cancel: CancellationToken,\n" +
+			"${6}) {"),
+	},
+	{
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern: `(?m)^( +)let write_stats = stats\.clone\(\);\n( +)let mut write_task = tokio::spawn\(async move \{\n( +)write_dispatcher\n( +)\.write_tun\(device, write_stats, write_cancel\)\n( +)\.await;\n( +)\}\);$`,
+		Replace: to("${2}let mut write_task = tokio::spawn(async move {\n" +
+			"${3}write_dispatcher\n" +
+			"${4}.write_tun(device, write_cancel)\n" +
+			"${5}.await;\n" +
+			"${6}});"),
+	},
+	{
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern: `(?m)^ +stats\n +\.total_bytes_down\n +\.fetch_add\(packet\.len\(\) as i64, Ordering::Relaxed\);\n`,
+		Replace: to(""),
+	},
+	{
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern: `(?m)^( +)async fn write_udp\(\n( +)&self,\n( +)socket: Arc<UdpSocket>,\n( +)client: Arc<ArcSwapOption<SocketAddr>>,\n( +)stats: Arc<Stats>,\n( +)\) \{$`,
+		Replace: to("${1}async fn write_udp(\n" +
+			"${2}&self,\n" +
+			"${3}socket: Arc<UdpSocket>,\n" +
+			"${4}client: Arc<ArcSwapOption<SocketAddr>>,\n" +
+			"${6}) {"),
+	},
+	{
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern: `(?m)^( +)write_dispatcher\.write_udp\(socket, client, stats\)\.await;$`,
+		Replace: to("${1}write_dispatcher.write_udp(socket, client).await;"),
+	},
+	{
+		File: "rust-client/dispatcher.rs", Count: 2,
+		Pattern: `(?m)^ +Ok\(length\) if length == (?:packet|next_packet)\.len\(\) => \{\n +stats\n +\.total_bytes_down\n +\.fetch_add\(length as i64, Ordering::Relaxed\);\n +\}\n`,
+		Replace: to(""),
+	},
+	{
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern: `(?m)^( +)async fn write_udp_packet\(\n( +)&self,\n( +)socket: &UdpSocket,\n( +)address: Option<SocketAddr>,\n( +)stats: &Stats,\n( +)packet: &PacketBuf,\n( +)\) \{$`,
+		Replace: to("${1}async fn write_udp_packet(\n" +
+			"${2}&self,\n" +
+			"${3}socket: &UdpSocket,\n" +
+			"${4}address: Option<SocketAddr>,\n" +
+			"${6}packet: &PacketBuf,\n" +
+			"${7}) {"),
+	},
+	{
+		File: "rust-client/dispatcher.rs", Count: 2,
+		Pattern: `(?m)^( +)self\.write_udp_packet\(&socket, Some\(address\), &stats, &(next_packet|packet)\)$`,
+		Replace: to("${1}self.write_udp_packet(&socket, Some(address), &${2})"),
+	},
+	{
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern: `(?m)^ +Ok\(length\) if length == packet\.len\(\) => \{\n +stats\n +\.total_bytes_down\n +\.fetch_add\(length as i64, Ordering::Relaxed\);\n +return;\n +\}\n`,
+		Replace: to(""),
+	},
+	{
+		// Uplink accounting: one counter per packet, chosen by the outcome.
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern: `(?m)^()#\[inline\(always\)\]\nfn strip_legacy_downlink_prefix\(packet: &mut PacketBuf\) \{$`,
+		InsertBefore: "/// Credits an uplink packet to the path that accepted it. The read loops\n" +
+			"/// call this once per packet after `dispatch`; a packet dropped before\n" +
+			"/// dispatch never reaches this point.\n" +
+			"fn credit_uplink(stats: &Stats, outcome: DispatchOutcome, length: usize) {\n" +
+			"    match outcome {\n" +
+			"        DispatchOutcome::Direct => {\n" +
+			"            stats\n" +
+			"                .direct_bytes_up\n" +
+			"                .fetch_add(length as i64, Ordering::Relaxed);\n" +
+			"        }\n" +
+			"        DispatchOutcome::Tunnel => {\n" +
+			"            stats\n" +
+			"                .total_bytes_up\n" +
+			"                .fetch_add(length as i64, Ordering::Relaxed);\n" +
+			"        }\n" +
+			"        DispatchOutcome::Dropped => {}\n" +
+			"    }\n" +
+			"}\n",
+	},
+	{
+		File: "rust-client/dispatcher.rs", Count: 1,
+		Pattern:      `(?m)^()#\[cfg\(test\)\]\nmod tests \{$`,
+		InsertBefore: "#[cfg(test)]\n#[path = \"direct_stats_tests.rs\"]\nmod direct_stats_tests;\n",
+	},
 }
 
 // ================================================================================

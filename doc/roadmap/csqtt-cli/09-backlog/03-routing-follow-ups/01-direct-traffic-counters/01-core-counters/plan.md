@@ -1,6 +1,6 @@
 ---
 kind: task
-status: todo
+status: done
 detailed: true
 ---
 
@@ -151,3 +151,50 @@ accepted the packet.
   stage risks and must not be claimed as supported.
 - The direct and tunnel counters are not written to the server or to any persistent
   state; they remain local `STATS` fields.
+
+## Outcome
+
+`STATS` now carries `direct_up` and `direct_down` beside the unchanged `active`,
+`bytes_up` and `bytes_down`; the tunnel counters count only the tunnel path. The
+attribution lives in `core/rust-client/dispatcher.rs`: `dispatch` returns `Direct`,
+`Tunnel` or `Dropped`, and the TUN and UDP read loops credit the packet length by that
+outcome through one helper. Downlink is credited where the packet enters the inbound
+queue — `return_packet` for workers and reassembly, `push_direct_inbound` for the direct
+stack — so a queue eviction or a failed device write no longer adjusts the counters. The
+event payload is built by a `pub(crate)` function that the unit test calls, so the exact
+key set is tested rather than duplicated. The periodic `[СТАТИСТИКА]` line keeps its
+wording and now includes both paths.
+
+The peer-gate fixture observes admission through a direct TCP SYN to a documentation
+address (`192.0.2.0/24` with non-whitelist IP routing) and `direct_bytes_up`; its reply
+reader skips the IP packets of the direct stack, so the reply-routing assertions still
+see only the synthetic reply. Every foreign, pinned and reply assertion and the security
+property are unchanged.
+
+The core changes exist only as counted rules in `scripts/vendorcore/rules.go` (33 new
+rules) and two added files; `core/` was regenerated from the clean pinned checkout
+(2.5.0, `d02da9bd…`), regeneration is idempotent and `vendorcore -check` passes. The
+pin, protocol, dependencies and supported platforms are unchanged; no Go shell or
+supervisor file is edited.
+
+Focused vendor and build-script tests, `buildcore`, the full core suite, the new Rust
+regression and the peer-gate tests pass under the required scope. The known upstream
+integration flake did not appear. Hosted checks and any push remain pending.
+
+Decisions taken while working, which the diff alone does not show:
+
+- a fragment set lost to buffer exhaustion still returns `Tunnel` and counts as tunnel
+  uplink: the packet was accepted for the tunnel and never reached the direct path. The
+  enum and field comments say so;
+- the early `workers.is_empty()` skip in `read_tun` stays: the direct path in `-tun-uds`
+  without workers is candidate 14, the next task;
+- the `[СТАТИСТИКА]` line was not reworded; only its total now includes the direct
+  counters.
+
+Deferred to the dependent [Shell consumption](../02-shell-consumption/plan.md) task:
+parsing and display of the new fields, the supervisor's tunnel-only `bytes_down`
+behaviour and the §09 `Degraded` paragraph. The sentence in item 16 of
+`doc/upstream-proposals.md` that says we clear a suspicion only by `READY` describes the
+shell before that task and must be revisited there. Downlink counts accepted bytes, not
+bytes delivered to the device; an exact delivered count would need a per-packet path tag
+and is out of scope.

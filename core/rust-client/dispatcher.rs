@@ -483,6 +483,20 @@ pub struct WorkerEntry {
     pub channels: WorkerChannels,
 }
 
+/// Which path accepted an uplink packet. The read loops credit exactly one
+/// counter per packet from this outcome.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DispatchOutcome {
+    /// The direct relay accepted the packet.
+    Direct,
+    /// The packet was accepted for the tunnel: handed to the worker path,
+    /// whole or fragmented. A fragment set lost to buffer exhaustion still
+    /// counts as tunnel uplink.
+    Tunnel,
+    /// No worker is registered, so the packet went nowhere.
+    Dropped,
+}
+
 pub struct Dispatcher {
     workers: ArcSwap<Vec<WorkerEntry>>,
     inbound: ArrayQueue<PacketBuf>,
@@ -499,6 +513,7 @@ pub struct Dispatcher {
     uplink_state: Mutex<UplinkState>,
     pool: Arc<PacketPool>,
     reassembler: crate::wire_protocol::ShardedReassembler,
+    stats: Arc<Stats>,
     next_frag_id: std::sync::atomic::AtomicU16,
     termination: Arc<OnceLock<Termination>>,
 }
@@ -518,6 +533,7 @@ impl Dispatcher {
             workers: ArcSwap::from_pointee(Vec::new()),
             inbound: ArrayQueue::new(profile.inbound_capacity),
             outbound_capacity: profile.outbound_capacity,
+            stats: stats.clone(),
             tun_wake: Arc::new(Notify::new()),
             tun_io_lost: Arc::new(Notify::new()),
             cancel: cancel.clone(),
@@ -597,6 +613,7 @@ impl Dispatcher {
             workers: ArcSwap::from_pointee(Vec::new()),
             inbound: ArrayQueue::new(profile.inbound_capacity),
             outbound_capacity: profile.outbound_capacity,
+            stats: stats.clone(),
             tun_wake: Arc::new(Notify::new()),
             tun_io_lost: Arc::new(Notify::new()),
             cancel: cancel.clone(),
@@ -631,7 +648,7 @@ impl Dispatcher {
                         pkt = direct_inbound_rx.recv() => {
                             match pkt {
                                 Some(pkt) => {
-                                    pump_dispatcher.push_inbound(pkt);
+                                    pump_dispatcher.push_direct_inbound(pkt);
                                 }
                                 None => return,
                             }
@@ -741,7 +758,7 @@ impl Dispatcher {
                 dispatcher.cancel.clone(),
                 dispatcher.termination.clone(),
                 async move {
-                    write_dispatcher.write_udp(socket, client, stats).await;
+                    write_dispatcher.write_udp(socket, client).await;
                 },
             );
             dispatcher
@@ -808,8 +825,21 @@ impl Dispatcher {
         }
     }
 
+    /// Queues a packet produced by the direct path. Its bytes are credited
+    /// here, at the origin, so a later queue eviction or a failed device write
+    /// does not change the counter.
+    pub fn push_direct_inbound(&self, packet: PacketBuf) {
+        self.stats
+            .direct_bytes_down
+            .fetch_add(packet.len() as i64, Ordering::Relaxed);
+        self.push_inbound(packet);
+    }
+
     pub fn return_packet(&self, mut packet: PacketBuf) {
         strip_legacy_downlink_prefix(&mut packet);
+        self.stats
+            .total_bytes_down
+            .fetch_add(packet.len() as i64, Ordering::Relaxed);
         self.inspect_domain_routing(&packet);
         self.push_inbound(packet);
     }
@@ -892,10 +922,9 @@ impl Dispatcher {
 
             let write_dispatcher = self.clone();
             let write_cancel = generation_cancel.clone();
-            let write_stats = stats.clone();
             let mut write_task = tokio::spawn(async move {
                 write_dispatcher
-                    .write_tun(device, write_stats, write_cancel)
+                    .write_tun(device, write_cancel)
                     .await;
             });
 
@@ -1095,10 +1124,8 @@ impl Dispatcher {
                         if self.workers.load().is_empty() {
                             continue;
                         }
-                        stats
-                            .total_bytes_up
-                            .fetch_add(length as i64, Ordering::Relaxed);
-                        self.dispatch(packet).await;
+                        let outcome = self.dispatch(packet).await;
+                        credit_uplink(&stats, outcome, length);
                     }
                     Ok(Err(error)) if is_transient_tun_error(&error) => {
                         error_streak += 1;
@@ -1176,10 +1203,9 @@ impl Dispatcher {
                         if !gate.admit(address, &client) {
                             continue;
                         }
-                        stats
-                            .total_bytes_up
-                            .fetch_add(packet.len() as i64, Ordering::Relaxed);
-                        self.dispatch(packet).await;
+                        let length = packet.len();
+                        let outcome = self.dispatch(packet).await;
+                        credit_uplink(&stats, outcome, length);
                     }
                     Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         break;
@@ -1410,16 +1436,16 @@ impl Dispatcher {
         }
     }
 
-    pub async fn dispatch(&self, packet: PacketBuf) {
+    pub async fn dispatch(&self, packet: PacketBuf) -> DispatchOutcome {
         self.inspect_domain_routing(&packet);
         if let Some(relay) = &self.direct_relay
             && relay.try_handle(&packet).await
         {
-            return;
+            return DispatchOutcome::Direct;
         }
         let workers = self.workers.load();
         if workers.is_empty() {
-            return;
+            return DispatchOutcome::Dropped;
         }
 
         if packet.len() <= 1280 {
@@ -1456,13 +1482,13 @@ impl Dispatcher {
                 );
             }
         }
+        DispatchOutcome::Tunnel
     }
 
     #[cfg(unix)]
     async fn write_tun(
         &self,
         device: Arc<tokio::io::unix::AsyncFd<File>>,
-        stats: Arc<Stats>,
         cancel: CancellationToken,
     ) {
         let mut pending: Option<(PacketBuf, usize)> = None;
@@ -1513,9 +1539,6 @@ impl Dispatcher {
                         *written += length;
                         if *written == packet.len() {
                             error_streak = 0;
-                            stats
-                                .total_bytes_down
-                                .fetch_add(packet.len() as i64, Ordering::Relaxed);
                             burst += 1;
                             if let Some(mut next_packet) = self.pop_inbound() {
                                 strip_legacy_downlink_prefix(&mut next_packet);
@@ -1610,7 +1633,6 @@ impl Dispatcher {
         &self,
         socket: Arc<UdpSocket>,
         client: Arc<ArcSwapOption<SocketAddr>>,
-        stats: Arc<Stats>,
     ) {
         loop {
             let Some(address) = client.load().as_deref().copied() else {
@@ -1636,14 +1658,9 @@ impl Dispatcher {
             strip_legacy_downlink_prefix(&mut packet);
 
             match socket.try_send_to(packet.as_slice(), address) {
-                Ok(length) if length == packet.len() => {
-                    stats
-                        .total_bytes_down
-                        .fetch_add(length as i64, Ordering::Relaxed);
-                }
                 Ok(_) => {}
                 Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    self.write_udp_packet(&socket, Some(address), &stats, &packet)
+                    self.write_udp_packet(&socket, Some(address), &packet)
                         .await;
                 }
                 Err(_) => {}
@@ -1657,14 +1674,9 @@ impl Dispatcher {
                 strip_legacy_downlink_prefix(&mut next_packet);
                 burst += 1;
                 match socket.try_send_to(next_packet.as_slice(), address) {
-                    Ok(length) if length == next_packet.len() => {
-                        stats
-                            .total_bytes_down
-                            .fetch_add(length as i64, Ordering::Relaxed);
-                    }
                     Ok(_) => {}
                     Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        self.write_udp_packet(&socket, Some(address), &stats, &next_packet)
+                        self.write_udp_packet(&socket, Some(address), &next_packet)
                             .await;
                         break;
                     }
@@ -1678,7 +1690,6 @@ impl Dispatcher {
         &self,
         socket: &UdpSocket,
         address: Option<SocketAddr>,
-        stats: &Stats,
         packet: &PacketBuf,
     ) {
         if let Some(address) = address {
@@ -1693,18 +1704,31 @@ impl Dispatcher {
                 }
 
                 match socket.try_send_to(packet.as_slice(), address) {
-                    Ok(length) if length == packet.len() => {
-                        stats
-                            .total_bytes_down
-                            .fetch_add(length as i64, Ordering::Relaxed);
-                        return;
-                    }
                     Ok(_) => return,
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
                     Err(_) => return,
                 }
             }
         }
+    }
+}
+
+/// Credits an uplink packet to the path that accepted it. The read loops
+/// call this once per packet after `dispatch`; a packet dropped before
+/// dispatch never reaches this point.
+fn credit_uplink(stats: &Stats, outcome: DispatchOutcome, length: usize) {
+    match outcome {
+        DispatchOutcome::Direct => {
+            stats
+                .direct_bytes_up
+                .fetch_add(length as i64, Ordering::Relaxed);
+        }
+        DispatchOutcome::Tunnel => {
+            stats
+                .total_bytes_up
+                .fetch_add(length as i64, Ordering::Relaxed);
+        }
+        DispatchOutcome::Dropped => {}
     }
 }
 
@@ -1799,6 +1823,10 @@ async fn bind_udp(address: &str) -> Result<UdpSocket> {
     }
     UdpSocket::bind("127.0.0.1:0").await.map_err(Into::into)
 }
+
+#[cfg(test)]
+#[path = "direct_stats_tests.rs"]
+mod direct_stats_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1920,6 +1948,7 @@ mod tests {
             workers: ArcSwap::from_pointee(Vec::new()),
             inbound: ArrayQueue::new(16),
             outbound_capacity: 32,
+            stats: Arc::new(Stats::default()),
             tun_wake: Arc::new(Notify::new()),
             tun_io_lost: Arc::new(Notify::new()),
             cancel,
@@ -2097,6 +2126,7 @@ mod tests {
             workers: ArcSwap::from_pointee(Vec::new()),
             inbound: ArrayQueue::new(inbound_capacity),
             outbound_capacity: profile.outbound_capacity,
+            stats: Arc::new(Stats::default()),
             tun_wake: Arc::new(Notify::new()),
             tun_io_lost: Arc::new(Notify::new()),
             cancel,
@@ -2153,6 +2183,7 @@ mod tests {
             workers: ArcSwap::from_pointee(Vec::new()),
             inbound: ArrayQueue::new(16),
             outbound_capacity: 64,
+            stats: Arc::new(Stats::default()),
             tun_wake: Arc::new(Notify::new()),
             tun_io_lost: Arc::new(Notify::new()),
             cancel,
@@ -2224,6 +2255,7 @@ mod tests {
             workers: ArcSwap::from_pointee(Vec::new()),
             inbound: ArrayQueue::new(16),
             outbound_capacity: 64,
+            stats: Arc::new(Stats::default()),
             tun_wake: Arc::new(Notify::new()),
             tun_io_lost: Arc::new(Notify::new()),
             cancel,

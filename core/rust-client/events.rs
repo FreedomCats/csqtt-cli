@@ -81,13 +81,16 @@ impl Events {
         );
     }
 
-    pub fn stats(&self, active: i32, bytes_up: i64, bytes_down: i64) {
+    pub fn stats(
+        &self,
+        active: i32,
+        bytes_up: i64,
+        bytes_down: i64,
+        direct_up: i64,
+        direct_down: i64,
+    ) {
         self.emit("STATS", || {
-            serde_json::json!({
-                "active": active,
-                "bytes_up": bytes_up,
-                "bytes_down": bytes_down
-            })
+            stats_payload(active, bytes_up, bytes_down, direct_up, direct_down)
         });
     }
 
@@ -168,6 +171,24 @@ impl Events {
             );
         }
     }
+}
+
+/// JSON payload of the STATS event. Kept out of the emit closure so a
+/// test can assert the exact key set without copying the literal.
+pub(crate) fn stats_payload(
+    active: i32,
+    bytes_up: i64,
+    bytes_down: i64,
+    direct_up: i64,
+    direct_down: i64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "active": active,
+        "bytes_up": bytes_up,
+        "bytes_down": bytes_down,
+        "direct_up": direct_up,
+        "direct_down": direct_down
+    })
 }
 
 fn encode_event<T: Serialize>(kind: &str, payload: &T) -> Option<String> {
