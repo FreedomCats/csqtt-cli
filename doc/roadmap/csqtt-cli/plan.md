@@ -99,7 +99,7 @@ Published the accumulated changes with the existing vendored CSQTT 2.5.0 core.
 The release includes the existing supported platforms;
 it does not enable new core features or require completion of unrelated backlog.
 
-### 12. [Assess csqttr 2.5.3](12-core-253-assessment/plan.md) — in-progress
+### 12. [Assess csqttr 2.5.3](12-core-253-assessment/plan.md) — done
 
 The source assessment is complete and recommends deferring migration, retaining the
 patched 2.5.0 core in v0.8.0. A core migration requires separate user authorization

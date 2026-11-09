@@ -15,12 +15,10 @@ starts moving only after the user answers or the outside condition changes.
 
 ## Items waiting
 
-**Core update assessment.** The former wait for core 2.5.2 is superseded by
-[stage 12](../12-core-253-assessment/plan.md): assess `Afteroid/csqttr` 2.5.3 after
-publishing v0.8.0 on the current core. The assessment must verify compatibility and
-the maintenance transition before recommending an update. No migration is approved
-by the assessment request; the current pin remains unchanged. Background: journal
-`doc/local/plan-core.md`.
+**Core update assessment (completed).** [Stage 12](../12-core-253-assessment/plan.md)
+assessed `Afteroid/csqttr` 2.5.3 and recommends deferring migration while retaining
+the patched 2.5.0 core. No migration is authorized; any future migration requires a
+separate user decision. The assessment item is complete and is no longer waiting.
 
 **Sending `doc/upstream-proposals.md` to the upstream author.** The document is
 written: our core patches worth offering and defects of core 2.5.0 we did not patch.
@@ -30,6 +28,15 @@ user's call. Nothing to do until answered.
 **Reporting the LaLune and FOCSQ vulnerabilities.** They are recorded in
 `doc/local/alternatives.md` and are deliberately not published. Whether to tell the
 authors is the user's decision.
+
+**Backlog work order.** Stage 12 recommends retaining core 2.5.0 and deferring
+migration. The next eligible backlog groups are live verification
+([stage 09/02](../09-backlog/02-live-verification/plan.md)) and tunnel-bypass routing
+follow-ups ([stage 09/03](../09-backlog/03-routing-follow-ups/plan.md)). The user must
+choose which group starts first; if live verification is chosen, they also select the
+first check(s) and are present for them; if routing is chosen, they select the
+candidate order. The Windows-only small-defect tasks remain skipped under the current
+instruction. No work starts in either group until the choice is recorded.
 
 **Blocked-on-external, no action needed now:** the fork patch of `go-webview2` (export
 of `Chromium` instead of reflection) needs a push by the user; it is listed in

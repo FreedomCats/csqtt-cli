@@ -1,6 +1,6 @@
 ---
 kind: stage
-status: in-progress
+status: done
 depends: [11-release-080]
 base: 00004c3d78df4efb196508288775dff1c75362e1
 ---
@@ -46,3 +46,20 @@ Preserve the current core while gathering evidence.
   evidence limits, and a recommendation to migrate, defer, or stay on the current
   core. Private working notes remain outside git.
 - The user receives the recommendation and the decisions needed before any migration.
+
+## Outcome
+
+The read-only assessment of csqttr 2.5.3 is complete. It recommends deferring
+migration and retaining the patched 2.5.0 core in v0.8.0. The exact source
+provenance, protocol and shell incompatibilities, local patch carry, dependency and
+licence metadata, platform limits, security/privacy delta, migration work and
+evidence gaps are recorded in the accepted child Outcomes and the public report
+[`doc/csqttr-2.5.3-assessment.md`](../../../csqttr-2.5.3-assessment.md).
+
+Independent integration review accepted all five criteria over
+`00004c3d78df4efb196508288775dff1c75362e1..de9f23d57f863ba1a5800881bcc7e82dd601f3b2`.
+No migration, code change, build, test, Cargo/vendor action, live check or external
+write was performed. The current pin, release and licence boundary remain unchanged.
+Any future migration requires separate user authorization and decisions about
+Gooby scope and its local-listener trust boundary. The root project roadmap remains
+in progress because other stages have not been completed.

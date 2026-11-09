@@ -124,7 +124,7 @@ Independent integration review accepted all four criteria over
 `366d87ae618b81cb7733e4ee6a5747b6c09f4e53..4752be1c4ffaa638e4aab3897c473853f0320bd3`
 without correction-required findings. The acceptance record is ignored at
 `doc/local/core-253-risk-acceptance.md`; the sanitized public report is
-[`doc/csqttr-2.5.3-assessment.md`](../../../csqttr-2.5.3-assessment.md). No code,
+[`doc/csqttr-2.5.3-assessment.md`](../../../../csqttr-2.5.3-assessment.md). No code,
 tests, Cargo/vendor commands, builds, binaries, live checks, migration or external
 actions were performed. The pin, release, supported targets and licence treatment
 remain unchanged. No current-product correction was deferred because of cost.

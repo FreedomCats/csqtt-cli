@@ -1,9 +1,14 @@
 ---
 kind: stage
-status: todo
+status: blocked
 ---
 
 # Tunnel bypass routing follow-ups
+
+## Waiting for the user
+
+The user must choose whether to start this group and select the order of its three
+routing candidates. Until then, do not change routing behavior or expand the scope.
 
 ## Goal
 

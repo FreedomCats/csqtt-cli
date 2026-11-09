@@ -33,8 +33,10 @@ available. The reported core CI failure is the current priority within that grou
    candidate has a recorded outcome; checks that cannot be performed remain explicitly
    blocked rather than being treated as passed.
 3. [Routing follow-ups](03-routing-follow-ups/plan.md) — assess and deliver the three
-   collected tunnel-bypass follow-ups. Done when each candidate has an outcome and any
-   implemented behaviour passes its build and tests.
+   collected tunnel-bypass follow-ups. Blocked until the user chooses this group and
+   its candidate order. Done when each candidate has an outcome and any implemented
+   behaviour passes its build and tests.
 
-The live-verification and routing-follow-up groups still require the user's choice
-before work starts.
+The live-verification and routing-follow-up groups remain blocked until the user
+chooses which group to start. Live checks also require the user to choose the checks
+and be present; routing follow-ups require an explicit candidate order.

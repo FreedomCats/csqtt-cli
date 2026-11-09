@@ -1,9 +1,15 @@
 ---
 kind: stage
-status: todo
+status: blocked
 ---
 
 # Live verification
+
+## Waiting for the user
+
+The user must choose whether to start this group and which live candidates to perform
+first. Until then, do not request credentials, use an account, or run a live check.
+Unselected and unavailable checks remain unverified.
 
 ## Goal
 
